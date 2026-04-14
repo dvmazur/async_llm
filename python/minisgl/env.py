@@ -63,6 +63,8 @@ class EnvClassSingleton:
     SHELL_TOP_K = EnvInt(-1)
     SHELL_TOP_P = EnvFloat(1.0)
     SHELL_TEMPERATURE = EnvFloat(0.6)
+    # When true, each user turn uses AsyncReasoning: two prompts batched together (see api_server).
+    SHELL_ASYNC_REASONING = EnvBool(False)
 
     # backend runtime
     FLASHINFER_USE_TENSOR_CORES = EnvOption()
