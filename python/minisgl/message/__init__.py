@@ -1,6 +1,32 @@
-from .backend import AbortBackendMsg, BaseBackendMsg, BatchBackendMsg, ExitMsg, UserMsg
-from .frontend import BaseFrontendMsg, BatchFrontendMsg, UserReply
-from .tokenizer import AbortMsg, BaseTokenizerMsg, BatchTokenizerMsg, DetokenizeMsg, TokenizeMsg
+from .backend import (
+    AbortBackendMsg,
+    BaseBackendMsg,
+    BatchBackendMsg,
+    ExitMsg,
+    SharedCacheCreateBlockBackendMsg,
+    SharedCacheDecodeBackendMsg,
+    SharedCacheDeleteBackendMsg,
+    SharedCachePrefillBackendMsg,
+    UserMsg,
+)
+from .frontend import (
+    BaseFrontendMsg,
+    BatchFrontendMsg,
+    SharedCacheBlockReply,
+    SharedCacheDecodeReply,
+    UserReply,
+)
+from .tokenizer import (
+    AbortMsg,
+    BaseTokenizerMsg,
+    BatchTokenizerMsg,
+    DetokenizeMsg,
+    SharedCacheCreateBlockMsg,
+    SharedCacheDecodeMsg,
+    SharedCacheDeleteMsg,
+    SharedCachePrefillMsg,
+    TokenizeMsg,
+)
 
 __all__ = [
     "AbortMsg",
@@ -16,4 +42,14 @@ __all__ = [
     "BaseFrontendMsg",
     "BatchFrontendMsg",
     "UserReply",
+    "SharedCacheCreateBlockMsg",
+    "SharedCachePrefillMsg",
+    "SharedCacheDecodeMsg",
+    "SharedCacheDeleteMsg",
+    "SharedCacheCreateBlockBackendMsg",
+    "SharedCachePrefillBackendMsg",
+    "SharedCacheDecodeBackendMsg",
+    "SharedCacheDeleteBackendMsg",
+    "SharedCacheBlockReply",
+    "SharedCacheDecodeReply",
 ]

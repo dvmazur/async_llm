@@ -20,10 +20,13 @@ Run everything (needs GPU + model weights)::
     MINISGL_E2E_MODEL=meta-llama/Llama-3.2-1B \
         pytest tests/core/test_shared_cache.py -v -s
 
-Run only the end-to-end standalone script (no pytest)::
+Run only the standalone demo (no pytest) — preferred wrapper::
 
-    MINISGL_E2E_MODEL=meta-llama/Llama-3.2-1B \
-        python tests/core/test_shared_cache.py
+    MINISGL_E2E_MODEL=Qwen/Qwen2.5-0.5B python scripts/run_shared_cache_demo.py
+
+Or run the test module directly (``__name__ == "__main__"`` runs pytest then the demo)::
+
+    MINISGL_E2E_MODEL=Qwen/Qwen2.5-0.5B python tests/core/test_shared_cache.py
 """
 
 from __future__ import annotations

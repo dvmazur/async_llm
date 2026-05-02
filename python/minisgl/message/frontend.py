@@ -27,3 +27,16 @@ class UserReply(BaseFrontendMsg):
     uid: int
     incremental_output: str
     finished: bool
+
+
+@dataclass
+class SharedCacheBlockReply(BaseFrontendMsg):
+    uid: int
+    block_id: str
+
+
+@dataclass
+class SharedCacheDecodeReply(BaseFrontendMsg):
+    uid: int
+    worker_tokens: List[int]
+    finished: bool

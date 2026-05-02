@@ -14,6 +14,16 @@ from minisgl.message import (
     BatchFrontendMsg,
     BatchTokenizerMsg,
     DetokenizeMsg,
+    SharedCacheBlockReply,
+    SharedCacheCreateBlockBackendMsg,
+    SharedCacheCreateBlockMsg,
+    SharedCacheDecodeBackendMsg,
+    SharedCacheDecodeMsg,
+    SharedCacheDecodeReply,
+    SharedCacheDeleteBackendMsg,
+    SharedCacheDeleteMsg,
+    SharedCachePrefillBackendMsg,
+    SharedCachePrefillMsg,
     TokenizeMsg,
     UserMsg,
     UserReply,
@@ -67,7 +77,25 @@ def tokenize_worker(
             detokenize_msg = [m for m in pending_msg if isinstance(m, DetokenizeMsg)]
             tokenize_msg = [m for m in pending_msg if isinstance(m, TokenizeMsg)]
             abort_msg = [m for m in pending_msg if isinstance(m, AbortMsg)]
-            assert len(detokenize_msg) + len(tokenize_msg) + len(abort_msg) == len(pending_msg)
+            sc_create_msg = [m for m in pending_msg if isinstance(m, SharedCacheCreateBlockMsg)]
+            sc_prefill_msg = [m for m in pending_msg if isinstance(m, SharedCachePrefillMsg)]
+            sc_decode_msg = [m for m in pending_msg if isinstance(m, SharedCacheDecodeMsg)]
+            sc_delete_msg = [m for m in pending_msg if isinstance(m, SharedCacheDeleteMsg)]
+            sc_block_reply = [m for m in pending_msg if isinstance(m, SharedCacheBlockReply)]
+            sc_decode_reply = [m for m in pending_msg if isinstance(m, SharedCacheDecodeReply)]
+            assert (
+                len(detokenize_msg)
+                + len(tokenize_msg)
+                + len(abort_msg)
+                + len(sc_create_msg)
+                + len(sc_prefill_msg)
+                + len(sc_decode_msg)
+                + len(sc_delete_msg)
+                + len(sc_block_reply)
+                + len(sc_decode_reply)
+                == len(pending_msg)
+            )
+
             if len(detokenize_msg) > 0:
                 replies = detokenize_manager.detokenize(detokenize_msg)
                 batch_output = BatchFrontendMsg(
@@ -99,6 +127,7 @@ def tokenize_worker(
                 if len(batch_output.data) == 1:
                     batch_output = batch_output.data[0]
                 send_backend.put(batch_output)
+
             if len(abort_msg) > 0:
                 batch_output = BatchBackendMsg(
                     data=[AbortBackendMsg(uid=msg.uid) for msg in abort_msg]
@@ -106,5 +135,61 @@ def tokenize_worker(
                 if len(batch_output.data) == 1:
                     batch_output = batch_output.data[0]
                 send_backend.put(batch_output)
+
+            # --- shared cache: frontend → backend ---
+
+            if len(sc_create_msg) > 0:
+                batch_output = BatchBackendMsg(
+                    data=[SharedCacheCreateBlockBackendMsg(uid=msg.uid) for msg in sc_create_msg]
+                )
+                if len(batch_output.data) == 1:
+                    batch_output = batch_output.data[0]
+                send_backend.put(batch_output)
+
+            if len(sc_prefill_msg) > 0:
+                tensors = tokenize_manager.tokenize(sc_prefill_msg)
+                batch_output = BatchBackendMsg(
+                    data=[
+                        SharedCachePrefillBackendMsg(uid=msg.uid, input_ids=t)
+                        for msg, t in zip(sc_prefill_msg, tensors, strict=True)
+                    ]
+                )
+                if len(batch_output.data) == 1:
+                    batch_output = batch_output.data[0]
+                send_backend.put(batch_output)
+
+            if len(sc_decode_msg) > 0:
+                batch_output = BatchBackendMsg(
+                    data=[
+                        SharedCacheDecodeBackendMsg(
+                            uid=msg.uid,
+                            cache_structure=msg.cache_structure,
+                            write_to=msg.write_to,
+                            max_tokens=msg.max_tokens,
+                            sampling_params=msg.sampling_params,
+                        )
+                        for msg in sc_decode_msg
+                    ]
+                )
+                if len(batch_output.data) == 1:
+                    batch_output = batch_output.data[0]
+                send_backend.put(batch_output)
+
+            if len(sc_delete_msg) > 0:
+                batch_output = BatchBackendMsg(
+                    data=[SharedCacheDeleteBackendMsg(block_id=msg.block_id) for msg in sc_delete_msg]
+                )
+                if len(batch_output.data) == 1:
+                    batch_output = batch_output.data[0]
+                send_backend.put(batch_output)
+
+            # --- shared cache: backend → frontend (pass-through) ---
+
+            sc_frontend_replies = [*sc_block_reply, *sc_decode_reply]
+            if len(sc_frontend_replies) > 0:
+                batch_output = BatchFrontendMsg(data=sc_frontend_replies)
+                if len(batch_output.data) == 1:
+                    batch_output = batch_output.data[0]
+                send_frontend.put(batch_output)
     except KeyboardInterrupt:
         pass

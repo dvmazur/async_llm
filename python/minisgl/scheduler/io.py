@@ -131,3 +131,8 @@ class SchedulerIOMixin:
 
     def _reply_tokenizer_rank1(self, reply: List[DetokenizeMsg]) -> None:
         _ = reply  # do nothing for non-primary ranks
+
+    def send_sc_reply(self, msg) -> None:
+        """Forward a shared-cache reply to the frontend via the tokenizer channel (rank 0 only)."""
+        if hasattr(self, "_send_into_tokenizer"):
+            self._send_into_tokenizer.put(msg)

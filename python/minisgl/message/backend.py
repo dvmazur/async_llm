@@ -39,3 +39,28 @@ class UserMsg(BaseBackendMsg):
 @dataclass
 class AbortBackendMsg(BaseBackendMsg):
     uid: int
+
+
+@dataclass
+class SharedCacheCreateBlockBackendMsg(BaseBackendMsg):
+    uid: int
+
+
+@dataclass
+class SharedCachePrefillBackendMsg(BaseBackendMsg):
+    uid: int
+    input_ids: torch.Tensor  # CPU 1D int32
+
+
+@dataclass
+class SharedCacheDecodeBackendMsg(BaseBackendMsg):
+    uid: int
+    cache_structure: List[List[str]]
+    write_to: List[str]
+    max_tokens: int
+    sampling_params: SamplingParams
+
+
+@dataclass
+class SharedCacheDeleteBackendMsg(BaseBackendMsg):
+    block_id: str

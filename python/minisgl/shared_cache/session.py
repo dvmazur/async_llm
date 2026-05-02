@@ -66,7 +66,12 @@ class SharedCacheSession:
     pools would need to be coordinated.
     """
 
-    def __init__(self, engine: Engine, cos_sin_cache: Optional[torch.Tensor] = None):
+    def __init__(
+        self,
+        engine: Engine,
+        cos_sin_cache: Optional[torch.Tensor] = None,
+        max_pages: Optional[int] = None,
+    ):
         self.engine = engine
         self.device = engine.device
         self.page_table = engine.page_table
@@ -74,7 +79,8 @@ class SharedCacheSession:
         self.page_size: int = engine.ctx.page_size
         self.attn_backend = engine.attn_backend
 
-        num_token_slots = engine.num_pages * self.page_size
+        owned_pages = max_pages if max_pages is not None else engine.num_pages
+        num_token_slots = owned_pages * self.page_size
         self._free_pages = torch.arange(num_token_slots, dtype=torch.int32, device=self.device)
 
         max_table = engine.page_table.shape[0] - 1  # last row is dummy
