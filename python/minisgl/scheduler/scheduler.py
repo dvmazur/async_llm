@@ -275,7 +275,8 @@ class Scheduler(SchedulerIOMixin):
             return
         block_id = str(uuid.uuid4())
         block = self.sc_session.create_block()  # type: ignore[union-attr]
-        logits = self.sc_session.prefill_block(block, msg.input_ids)  # type: ignore[union-attr]
+        context = [self._sc_block_registry[bid] for bid in (msg.context or [])]
+        logits = self.sc_session.prefill_block(block, msg.input_ids, context=context)  # type: ignore[union-attr]
         self._sc_block_registry[block_id] = block
         self._sc_prefill_logits[block_id] = logits  # shape [1, vocab_size]
         self.send_sc_reply(SharedCacheBlockReply(uid=msg.uid, block_id=block_id))
@@ -290,16 +291,31 @@ class Scheduler(SchedulerIOMixin):
         write_to = [self._sc_block_registry[bid] for bid in msg.write_to]
         group = WorkerGroup(cache_structure=cache_structure, write_to=write_to)
 
-        # Seed first input token for each worker from the last prefilled block in its sequence.
-        first_ids: List[int] = []
-        for worker_seq in msg.cache_structure:
-            logits: Optional[torch.Tensor] = None
-            for bid in reversed(worker_seq):
-                if bid in self._sc_prefill_logits:
-                    logits = self._sc_prefill_logits[bid]
-                    break
-            assert logits is not None, f"No prefill logits found for a worker in decode group {msg.uid}"
-            first_ids.append(int(self._sample_from_logits(logits, msg.sampling_params).item()))
+        if msg.first_tokens is not None:
+            # Client-provided continuation tokens (e.g. the last token reported
+            # by a previous generate call) — no re-seeding, so the transcript
+            # in the cache stays continuous across calls.
+            assert len(msg.first_tokens) == len(msg.write_to), (
+                f"first_tokens has {len(msg.first_tokens)} entries "
+                f"for {len(msg.write_to)} workers"
+            )
+            first_ids: List[int] = [int(t) for t in msg.first_tokens]
+        else:
+            # Seed first input token for each worker from the last prefilled
+            # block in its sequence, and report the seeds as the first chunk
+            # so the client transcript matches the cache content.
+            first_ids = []
+            for worker_seq in msg.cache_structure:
+                logits: Optional[torch.Tensor] = None
+                for bid in reversed(worker_seq):
+                    if bid in self._sc_prefill_logits:
+                        logits = self._sc_prefill_logits[bid]
+                        break
+                assert logits is not None, f"No prefill logits found for a worker in decode group {msg.uid}"
+                first_ids.append(int(self._sample_from_logits(logits, msg.sampling_params).item()))
+            self.send_sc_reply(
+                SharedCacheDecodeReply(uid=msg.uid, worker_tokens=first_ids, finished=False)
+            )
 
         self._pending_sc_decodes.append(
             _PendingScDecode(

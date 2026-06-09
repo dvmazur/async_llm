@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import torch
 from minisgl.core import SamplingParams
@@ -50,6 +50,9 @@ class SharedCacheCreateBlockBackendMsg(BaseBackendMsg):
 class SharedCachePrefillBackendMsg(BaseBackendMsg):
     uid: int
     input_ids: torch.Tensor  # CPU 1D int32
+    # Existing block ids the new block should attend to during prefill, in
+    # view order (the new block is appended after them).
+    context: Optional[List[str]] = None
 
 
 @dataclass
@@ -59,6 +62,10 @@ class SharedCacheDecodeBackendMsg(BaseBackendMsg):
     write_to: List[str]
     max_tokens: int
     sampling_params: SamplingParams
+    # Per-worker first input token (e.g. the last token reported by a previous
+    # generate call).  When None, the scheduler samples a seed from the last
+    # prefilled block's logits and reports it as the first streamed chunk.
+    first_tokens: Optional[List[int]] = None
 
 
 @dataclass

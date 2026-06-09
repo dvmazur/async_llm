@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from minisgl.core import SamplingParams
 
@@ -53,6 +53,7 @@ class SharedCacheCreateBlockMsg(BaseTokenizerMsg):
 class SharedCachePrefillMsg(BaseTokenizerMsg):
     uid: int
     text: str | List[Dict[str, str]]
+    context: Optional[List[str]] = None
 
 
 @dataclass
@@ -62,6 +63,7 @@ class SharedCacheDecodeMsg(BaseTokenizerMsg):
     write_to: List[str]
     max_tokens: int
     sampling_params: SamplingParams
+    first_tokens: Optional[List[int]] = None
 
 
 @dataclass

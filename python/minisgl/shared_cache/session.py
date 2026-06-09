@@ -30,12 +30,12 @@ Usage::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional
 
 import torch
 from minisgl.core import Batch, Req, SamplingParams
 
-from .rope_correction import CorrectionKey, build_correction_plan, correct_kv_pages
+from .attention import SharedCacheAttention
 from .shared_block import NULL_CACHE_HANDLE, SharedBlock
 from .worker_group import WorkerGroup
 
@@ -98,8 +98,17 @@ class SharedCacheSession:
         else:
             self._cos_sin_cache = extract_cos_sin_cache(engine).to(self.device)
 
-        self._temp_pages: List[torch.Tensor] = []
-        self._correction_cache: Dict[CorrectionKey, torch.Tensor] = {}
+        # Query-rotation attention op for decode (arXiv:2512.10931).
+        attn0 = engine.model.model.layers.op_list[0].self_attn.attn
+        self.sc_attn = SharedCacheAttention(
+            kv_cache=self.kv_cache,
+            cos_sin_cache=self._cos_sin_cache,
+            num_qo_heads=attn0.num_qo_heads,
+            num_kv_heads=attn0.num_kv_heads,
+            head_dim=attn0.head_dim,
+            dtype=self.kv_cache.dtype,
+            device=self.device,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -113,15 +122,25 @@ class SharedCacheSession:
         self,
         block: SharedBlock,
         input_ids: torch.Tensor,
+        context: Optional[List[SharedBlock]] = None,
     ) -> torch.Tensor:
         """
         Prefill a single ``SharedBlock`` with *input_ids* and return logits.
 
         *input_ids* must be a 1-D CPU ``int32`` tensor.
+
+        When *context* blocks are given, the new tokens attend to them as if
+        the blocks were concatenated ``[ctx_0, ..., block]`` (mirrors the
+        reference's ``prefill_cache_block(text, [ctx..., new])``); the stored
+        KV stays block-relative either way.  Empty context blocks are skipped.
         """
         input_ids = input_ids.to(dtype=torch.int32).flatten().cpu()
         seq_len = len(input_ids)
         assert seq_len > 0
+
+        context = [b for b in (context or []) if b.num_tokens > 0]
+        if context:
+            return self._prefill_block_in_context(block, input_ids, context)
 
         pages = self._allocate_pages(seq_len)
         table_idx = self._allocate_table_idx()
@@ -151,6 +170,38 @@ class SharedCacheSession:
         finally:
             self._free_table_idx(table_idx)
 
+    def _prefill_block_in_context(
+        self,
+        block: SharedBlock,
+        input_ids: torch.Tensor,
+        context: List[SharedBlock],
+    ) -> torch.Tensor:
+        """Prefill *block* while attending to *context* blocks (all non-empty)."""
+        seq_len = len(input_ids)
+        pages = self._allocate_pages(seq_len)
+
+        req = Req(
+            input_ids=input_ids,
+            table_idx=self.page_table.shape[0] - 1,  # dummy row; page table bypassed
+            cached_len=0,
+            output_len=1,
+            uid=-1,
+            sampling_params=_DEFAULT_SAMPLING,
+            cache_handle=NULL_CACHE_HANDLE,
+        )
+        batch = Batch(reqs=[req], phase="prefill")
+        batch.padded_reqs = [req]
+        # block-relative RoPE positions for the stored keys
+        batch.positions = torch.arange(seq_len, dtype=torch.int64, device=self.device)
+        batch.input_ids = input_ids.to(self.device)
+        batch.out_loc = pages
+        batch.attn_metadata = self.sc_attn.prepare_context_prefill(context, pages)
+
+        logits = self._forward(batch)
+
+        block.grow(pages.cpu(), torch.arange(seq_len, dtype=torch.int64))
+        return logits[:1]
+
     @torch.inference_mode()
     def decode_step(
         self,
@@ -160,6 +211,12 @@ class SharedCacheSession:
         """
         Run one decode step for every worker in *group*.
 
+        Cached keys are stored at block-relative RoPE positions and are never
+        re-rotated; instead, per-(worker, segment) query copies are rotated and
+        partial attention outputs merged (see ``shared_cache.attention``).
+        Matching the AsyncReasoning reference, a worker reading another
+        worker's write block also sees that worker's current-step token.
+
         Args:
             group: the ``WorkerGroup`` defining the cache structure.
             input_ids: ``[num_workers]`` or ``[num_workers, 1]`` int tensor
@@ -168,39 +225,47 @@ class SharedCacheSession:
         Returns:
             Logits ``[num_workers, vocab_size]``.
         """
-        input_ids = input_ids.to(dtype=torch.int32).reshape(group.num_workers).cpu()
-        table_indices = [self._allocate_table_idx() for _ in range(group.num_workers)]
+        num_workers = group.num_workers
+        input_ids = input_ids.to(dtype=torch.int32).reshape(num_workers).cpu()
+        new_pages = self._allocate_pages(num_workers)
+        write_pos = [group.write_to[wi].num_tokens for wi in range(num_workers)]
 
-        try:
-            self._apply_corrections(group)
-            new_pages = self._fill_page_tables(group, table_indices, input_ids)
-
-            reqs: List[Req] = []
-            for wi in range(group.num_workers):
-                cached_len = group.worker_cache_length(wi)
-                full_ids = torch.zeros(cached_len + 1, dtype=torch.int32)
-                full_ids[cached_len] = input_ids[wi]
-                reqs.append(
-                    Req(
-                        input_ids=full_ids,
-                        table_idx=table_indices[wi],
-                        cached_len=cached_len,
-                        output_len=1,
-                        uid=-(wi + 1),
-                        sampling_params=_DEFAULT_SAMPLING,
-                        cache_handle=NULL_CACHE_HANDLE,
-                    )
+        # Reqs are bookkeeping only here (batch size / phase); the page table
+        # is bypassed entirely, so they point at the engine's dummy row.
+        dummy_table_idx = self.page_table.shape[0] - 1
+        reqs: List[Req] = []
+        for wi in range(num_workers):
+            cached_len = group.worker_cache_length(wi)
+            full_ids = torch.zeros(cached_len + 1, dtype=torch.int32)
+            full_ids[cached_len] = input_ids[wi]
+            reqs.append(
+                Req(
+                    input_ids=full_ids,
+                    table_idx=dummy_table_idx,
+                    cached_len=cached_len,
+                    output_len=1,
+                    uid=-(wi + 1),
+                    sampling_params=_DEFAULT_SAMPLING,
+                    cache_handle=NULL_CACHE_HANDLE,
                 )
+            )
 
-            batch = self._build_batch(reqs, phase="decode")
-            logits = self._forward(batch)
+        batch = Batch(reqs=reqs, phase="decode")
+        batch.padded_reqs = reqs
+        # block-relative RoPE positions for the new tokens' keys
+        batch.positions = torch.tensor(write_pos, dtype=torch.int64, device=self.device)
+        batch.input_ids = input_ids.to(self.device)
+        batch.out_loc = new_pages
+        batch.attn_metadata = self.sc_attn.prepare(group, new_pages)
 
-            self._record_writes(group, reqs, new_pages)
-            return logits[: group.num_workers]
-        finally:
-            self._cleanup_corrections()
-            for ti in table_indices:
-                self._free_table_idx(ti)
+        logits = self._forward(batch)
+
+        for wi in range(num_workers):
+            group.write_to[wi].grow(
+                new_pages[wi : wi + 1].cpu(),
+                torch.tensor([write_pos[wi]], dtype=torch.int64),
+            )
+        return logits[:num_workers]
 
     # ------------------------------------------------------------------
     # Page / table-index management
@@ -224,88 +289,7 @@ class SharedCacheSession:
         self._free_table_indices.append(idx)
 
     # ------------------------------------------------------------------
-    # RoPE correction
-    # ------------------------------------------------------------------
-
-    def _apply_corrections(self, group: WorkerGroup) -> None:
-        """Allocate temp pages and write RoPE-corrected KV for all blocks that need it."""
-        blocks_with_targets: List[Tuple[SharedBlock, int]] = []
-        for worker_seq in group.cache_structure:
-            pos = 0
-            for block in worker_seq:
-                blocks_with_targets.append((block, pos))
-                pos += block.num_tokens
-
-        plan = build_correction_plan(blocks_with_targets)
-        if not plan:
-            return
-
-        for key, (block, target_start, corrections) in plan.items():
-            n = block.num_tokens
-            temp = self._allocate_pages(n)
-            self._temp_pages.append(temp)
-
-            src = block.get_page_indices()
-            correct_kv_pages(
-                self.kv_cache,
-                source_pages=src,
-                dest_pages=temp,
-                corrections=corrections.to(self.device),
-                cos_sin_cache=self._cos_sin_cache,
-            )
-            self._correction_cache[key] = temp
-
-    def _cleanup_corrections(self) -> None:
-        for pages in self._temp_pages:
-            self._free_pages_back(pages)
-        self._temp_pages.clear()
-        self._correction_cache.clear()
-
-    # ------------------------------------------------------------------
-    # Page-table construction
-    # ------------------------------------------------------------------
-
-    def _fill_page_tables(
-        self,
-        group: WorkerGroup,
-        table_indices: List[int],
-        input_ids: torch.Tensor,
-    ) -> List[torch.Tensor]:
-        """
-        Fill the global ``page_table`` for every worker and allocate a new page
-        per worker for the incoming decode token.
-
-        Returns the list of new-page tensors (one per worker).
-        """
-        new_pages_list: List[torch.Tensor] = []
-
-        for wi in range(group.num_workers):
-            table_idx = table_indices[wi]
-            pos = 0
-
-            for block in group.cache_structure[wi]:
-                n = block.num_tokens
-                if n == 0:
-                    continue
-
-                key: CorrectionKey = (block.block_id, pos)
-                if key in self._correction_cache:
-                    pages = self._correction_cache[key]
-                else:
-                    pages = block.get_page_indices()
-
-                self.page_table[table_idx, pos : pos + n] = pages
-                pos += n
-
-            new_page = self._allocate_pages(1)
-            self.page_table[table_idx, pos] = new_page
-            self._token_pool[table_idx, pos] = input_ids[wi].to(self.device)
-            new_pages_list.append(new_page)
-
-        return new_pages_list
-
-    # ------------------------------------------------------------------
-    # Batch building & forward
+    # Batch building & forward (prefill path)
     # ------------------------------------------------------------------
 
     def _build_batch(self, reqs: List[Req], phase: str) -> Batch:
@@ -340,21 +324,3 @@ class SharedCacheSession:
     def _forward(self, batch: Batch) -> torch.Tensor:
         with self.engine.ctx.forward_batch(batch):
             return self.engine.model.forward()
-
-    # ------------------------------------------------------------------
-    # Post-forward bookkeeping
-    # ------------------------------------------------------------------
-
-    def _record_writes(
-        self,
-        group: WorkerGroup,
-        reqs: List[Req],
-        new_pages: List[torch.Tensor],
-    ) -> None:
-        """After forward, record new pages and stored positions in write targets."""
-        for wi, (req, new_page) in enumerate(zip(reqs, new_pages)):
-            target_block = group.write_to[wi]
-            stored_pos = torch.tensor(
-                [req.cached_len], dtype=torch.int64
-            )
-            target_block.grow(new_page.cpu(), stored_pos)

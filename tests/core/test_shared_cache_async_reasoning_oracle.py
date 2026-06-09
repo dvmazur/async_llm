@@ -927,6 +927,155 @@ def test_block_reuse_across_groups_matches_async_reasoning(
 
 
 @requires_e2e
+def test_context_prefill_matches_async_reasoning(
+    engine_and_session, hf_model, hf_tokenizer
+):
+    """Prefill a block IN CONTEXT of another block (the reference's
+    ``prefill_cache_block(text, [ctx, new])`` pattern): the new tokens attend
+    causally to themselves and fully to the context, but their KV is stored
+    block-relative.  Validates both the returned logits and a subsequent
+    decode step that reads the context-prefilled block."""
+    _, session = engine_and_session
+    prompt_ids = _encode("Why is the sky blue? Think step by step.", hf_tokenizer)
+    suffix_ids = _encode("\n</think>\nThe answer is", hf_tokenizer)
+    assert len(suffix_ids) > 1  # exercise S > 1 (causal self-segment)
+
+    # minisgl: prompt standalone, suffix in context of the prompt
+    ms_prompt = session.create_block()
+    session.prefill_block(ms_prompt, prompt_ids)
+    ms_close = session.create_block()
+    ms_logits = (
+        session.prefill_block(ms_close, suffix_ids, context=[ms_prompt])[0].float().cpu()
+    )
+
+    # AsyncReasoning: same pattern.  NOTE: the reference's batched multi-token
+    # update onto an existing cache breaks under transformers>=4.56 (mask
+    # shape mismatch in qwen2 eager attention; the repo targets 4.51), so feed
+    # the suffix one token at a time — with causal attention this is
+    # mathematically identical to a batched causal prefill.
+    ar_prompt = ar_sc.CacheBlock(config=hf_model.config)
+    _async_reasoning_prefill(hf_model, ar_prompt, prompt_ids)
+    ar_close = ar_sc.CacheBlock(config=hf_model.config)
+    ar_logits = None
+    for tok_int in suffix_ids.tolist():
+        ar_logits = _async_reasoning_decode_step(
+            hf_model,
+            cache_structure=[[ar_prompt, ar_close]],
+            write_to=[ar_close],
+            probe_id=int(tok_int),
+        )
+
+    # Looser raw-logit atol: the suffix KV is built token-by-token by HF eager
+    # on the reference side vs one batched bf16 prefill here, so tail-logit
+    # divergence compounds over the suffix length (argmax/softmax budgets stay
+    # default; the per-layer fp32-reference check bounds our own kernel at
+    # bf16 noise).
+    _assert_logits_close(ms_logits, ar_logits, atol=2.5, label="ctx_prefill")
+
+    # The stored KV must read back correctly: one decode step over
+    # [prompt, close, w] in both implementations.
+    probe_id = 11
+    ms_w = session.create_block()
+    ms_dec = (
+        session.decode_step(
+            WorkerGroup(
+                cache_structure=[[ms_prompt, ms_close, ms_w]], write_to=[ms_w]
+            ),
+            torch.tensor([probe_id], dtype=torch.int32),
+        )[0]
+        .float()
+        .cpu()
+    )
+    ar_dec = _async_reasoning_decode_step(
+        hf_model,
+        cache_structure=[[ar_prompt, ar_close, ar_sc.CacheBlock(config=hf_model.config)]],
+        write_to=None,
+        probe_id=probe_id,
+    )
+    _assert_logits_close(ms_dec, ar_dec, label="ctx_prefill_decode")
+
+
+@requires_e2e
+def test_interleaved_growth_matches_async_reasoning(
+    engine_and_session, hf_model, hf_tokenizer
+):
+    """Hogwild-style pattern: two workers decode in the SAME group every step,
+    each seeing the other's growing block:
+
+        thinker view: [prompt, W, T]     writes T
+        writer  view: [prompt, T, W]     writes W
+
+    T and W grow in alternation (one token each per step), so under a
+    view-global storage scheme each block's stored positions would be
+    non-contiguous (the per-token RoPE delta is not constant within a block).
+    Block-relative storage + query rotation must handle this exactly;
+    per-step argmax must match the AsyncReasoning reference, which also gives
+    each worker same-step visibility of the other's newest token.
+
+    NOTE: both views are kept the same length on purpose.  AsyncReasoning's
+    slow reference left-pads ragged multi-worker batches, and under
+    transformers>=4.56 (this repo's floor; the reference targets 4.51) that
+    path is broken — it disagrees with ITS OWN single-worker forward on the
+    same state (verified directly; minisgl's ragged path is self-consistent
+    and matches the reference's single-worker forward)."""
+    _, session = engine_and_session
+    K = 6
+    prompt_ids = _encode("Let me think about prime numbers.", hf_tokenizer)
+
+    # minisgl prefill + blocks
+    ms_prompt = session.create_block()
+    ms_first_logits = session.prefill_block(ms_prompt, prompt_ids)
+    ms_t, ms_w = session.create_block(), session.create_block()
+    ms_group = WorkerGroup(
+        cache_structure=[[ms_prompt, ms_w, ms_t], [ms_prompt, ms_t, ms_w]],
+        write_to=[ms_t, ms_w],
+    )
+
+    # AsyncReasoning prefill + blocks
+    ar_prompt = ar_sc.CacheBlock(config=hf_model.config)
+    ar_first_logits = _async_reasoning_prefill(hf_model, ar_prompt, prompt_ids)
+    ar_t = ar_sc.CacheBlock(config=hf_model.config)
+    ar_w = ar_sc.CacheBlock(config=hf_model.config)
+
+    assert int(ms_first_logits[0].argmax()) == int(ar_first_logits.argmax())
+
+    # Seed: thinker gets the prefill argmax, writer a distinct fixed probe.
+    t_tok = int(ar_first_logits.argmax())
+    w_tok = 42
+
+    for k in range(K):
+        ms_logits = session.decode_step(
+            ms_group, torch.tensor([t_tok, w_tok], dtype=torch.int32)
+        )
+        ms_logits_t = ms_logits[0].float().cpu()
+        ms_logits_w = ms_logits[1].float().cpu()
+
+        cm = ar_sc.SharedCacheManager(
+            cache_structure=[[ar_prompt, ar_w, ar_t], [ar_prompt, ar_t, ar_w]],
+            write_to=[ar_t, ar_w],
+        )
+        ids = torch.tensor([[t_tok], [w_tok]], dtype=torch.long, device=hf_model.device)
+        with torch.inference_mode():
+            out = hf_model(**cm.get_input_kwargs(input_ids=ids))
+        ar_logits_t = out.logits[0, -1].float().cpu()
+        ar_logits_w = out.logits[1, -1].float().cpu()
+
+        # Looser raw-logit atol than single-step tests: this is a 6-step
+        # rollout where each side's KV state is produced by a different
+        # attention kernel (flashinfer vs HF eager) and cross-worker
+        # same-step reads compound the bf16 divergence on tail logits.
+        # argmax and softmax-diff (the strict signals) keep default budgets.
+        _assert_logits_close(ms_logits_t, ar_logits_t, atol=2.0, label=f"interleave_t[k={k}]")
+        _assert_logits_close(ms_logits_w, ar_logits_w, atol=2.0, label=f"interleave_w[k={k}]")
+
+        # AsyncReasoning stays the absolute reference for the rollout.
+        t_tok = int(ar_logits_t.argmax())
+        w_tok = int(ar_logits_w.argmax())
+
+    assert ms_t.num_tokens == K and ms_w.num_tokens == K
+
+
+@requires_e2e
 def test_empty_block_in_group_matches_async_reasoning(
     engine_and_session, hf_model, hf_tokenizer
 ):

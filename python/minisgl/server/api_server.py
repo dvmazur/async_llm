@@ -243,6 +243,9 @@ app = FastAPI(title="MiniSGL API Server", version="0.0.1", lifespan=lifespan)
 
 class SharedCacheBlockRequest(BaseModel):
     text: str | None = None
+    # Existing block ids the new block should attend to during prefill (the
+    # new block is logically appended after them).  Only meaningful with text.
+    context: List[str] | None = None
 
 
 class SharedCacheDecodeRequest(BaseModel):
@@ -252,6 +255,11 @@ class SharedCacheDecodeRequest(BaseModel):
     temperature: float = 1.0
     top_k: int = -1
     top_p: float = 1.0
+    # Per-worker first input token (one per worker, same order as write_to) —
+    # pass the last token of a previous generate call to continue seamlessly.
+    # When omitted, the server seeds from the last prefilled block's logits
+    # and reports the seed as the first streamed chunk.
+    first_tokens: List[int] | None = None
 
 
 @app.post("/v1/shared-cache/blocks")
@@ -259,7 +267,7 @@ async def sc_create_block(req: SharedCacheBlockRequest):
     state = get_global_state()
     uid = state.new_user()
     if req.text is not None:
-        await state.send_one(SharedCachePrefillMsg(uid=uid, text=req.text))
+        await state.send_one(SharedCachePrefillMsg(uid=uid, text=req.text, context=req.context))
     else:
         await state.send_one(SharedCacheCreateBlockMsg(uid=uid))
     block_id = await state.await_sc_block_reply(uid)
@@ -288,6 +296,7 @@ async def sc_generate(req: SharedCacheDecodeRequest, request: Request):
                 top_k=req.top_k,
                 top_p=req.top_p,
             ),
+            first_tokens=req.first_tokens,
         )
     )
     return StreamingResponse(

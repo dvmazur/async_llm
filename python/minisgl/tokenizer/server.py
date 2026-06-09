@@ -150,7 +150,7 @@ def tokenize_worker(
                 tensors = tokenize_manager.tokenize(sc_prefill_msg)
                 batch_output = BatchBackendMsg(
                     data=[
-                        SharedCachePrefillBackendMsg(uid=msg.uid, input_ids=t)
+                        SharedCachePrefillBackendMsg(uid=msg.uid, input_ids=t, context=msg.context)
                         for msg, t in zip(sc_prefill_msg, tensors, strict=True)
                     ]
                 )
@@ -167,6 +167,7 @@ def tokenize_worker(
                             write_to=msg.write_to,
                             max_tokens=msg.max_tokens,
                             sampling_params=msg.sampling_params,
+                            first_tokens=msg.first_tokens,
                         )
                         for msg in sc_decode_msg
                     ]
