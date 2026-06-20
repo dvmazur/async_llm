@@ -18,12 +18,6 @@ from minisgl.message import (
     BaseFrontendMsg,
     BaseTokenizerMsg,
     BatchFrontendMsg,
-    SharedCacheBlockReply,
-    SharedCacheCreateBlockMsg,
-    SharedCacheDecodeMsg,
-    SharedCacheDecodeReply,
-    SharedCacheDeleteMsg,
-    SharedCachePrefillMsg,
     TokenizeMsg,
     UserReply,
 )
@@ -145,8 +139,7 @@ class FrontendManager:
             ack = None
             for ack in pending:
                 yield ack
-            # SharedCacheBlockReply has no `finished` field — treat it as always terminal
-            if ack and getattr(ack, "finished", True):
+            if ack and ack.finished:
                 break
 
         del self.ack_map[uid]
@@ -202,19 +195,6 @@ class FrontendManager:
             asyncio.create_task(self.abort_user(uid))
             raise
 
-    async def await_sc_block_reply(self, uid: int) -> str:
-        async for ack in self.wait_for_ack(uid):
-            assert isinstance(ack, SharedCacheBlockReply)
-            return ack.block_id
-        raise RuntimeError("No block reply received")
-
-    async def stream_sc_decode(self, uid: int):
-        async for ack in self.wait_for_ack(uid):
-            assert isinstance(ack, SharedCacheDecodeReply)
-            yield (json.dumps({"worker_tokens": ack.worker_tokens, "finished": ack.finished}) + "\n\n").encode()
-            if ack.finished:
-                break
-
     async def abort_user(self, uid: int):
         await asyncio.sleep(0.1)
         if uid in self.ack_map:
@@ -239,70 +219,6 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="MiniSGL API Server", version="0.0.1", lifespan=lifespan)
-
-
-class SharedCacheBlockRequest(BaseModel):
-    text: str | None = None
-    # Existing block ids the new block should attend to during prefill (the
-    # new block is logically appended after them).  Only meaningful with text.
-    context: List[str] | None = None
-
-
-class SharedCacheDecodeRequest(BaseModel):
-    cache_structure: List[List[str]]
-    write_to: List[str]
-    max_tokens: int = 64
-    temperature: float = 1.0
-    top_k: int = -1
-    top_p: float = 1.0
-    # Per-worker first input token (one per worker, same order as write_to) —
-    # pass the last token of a previous generate call to continue seamlessly.
-    # When omitted, the server seeds from the last prefilled block's logits
-    # and reports the seed as the first streamed chunk.
-    first_tokens: List[int] | None = None
-
-
-@app.post("/v1/shared-cache/blocks")
-async def sc_create_block(req: SharedCacheBlockRequest):
-    state = get_global_state()
-    uid = state.new_user()
-    if req.text is not None:
-        await state.send_one(SharedCachePrefillMsg(uid=uid, text=req.text, context=req.context))
-    else:
-        await state.send_one(SharedCacheCreateBlockMsg(uid=uid))
-    block_id = await state.await_sc_block_reply(uid)
-    return {"block_id": block_id}
-
-
-@app.delete("/v1/shared-cache/blocks/{block_id}")
-async def sc_delete_block(block_id: str):
-    state = get_global_state()
-    await state.send_one(SharedCacheDeleteMsg(block_id=block_id))
-    return {"ok": True}
-
-
-@app.post("/v1/shared-cache/generate")
-async def sc_generate(req: SharedCacheDecodeRequest, request: Request):
-    state = get_global_state()
-    uid = state.new_user()
-    await state.send_one(
-        SharedCacheDecodeMsg(
-            uid=uid,
-            cache_structure=req.cache_structure,
-            write_to=req.write_to,
-            max_tokens=req.max_tokens,
-            sampling_params=SamplingParams(
-                temperature=req.temperature,
-                top_k=req.top_k,
-                top_p=req.top_p,
-            ),
-            first_tokens=req.first_tokens,
-        )
-    )
-    return StreamingResponse(
-        state.stream_with_cancellation(state.stream_sc_decode(uid), request, uid),
-        media_type="text/event-stream",
-    )
 
 
 @app.post("/generate")

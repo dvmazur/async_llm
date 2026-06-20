@@ -218,14 +218,6 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     )
 
     parser.add_argument(
-        "--shared-cache-page-budget",
-        type=int,
-        dest="shared_cache_page_budget",
-        default=ServerArgs.shared_cache_page_budget,
-        help="Number of KV-cache pages reserved for shared-cache blocks (0 = disabled).",
-    )
-
-    parser.add_argument(
         "--shell-mode",
         action="store_true",
         help="Run the server in shell mode.",

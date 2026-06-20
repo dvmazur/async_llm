@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import uuid
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, List, NamedTuple, NoReturn, Optional, Set, Tuple, TypeAlias
+from typing import TYPE_CHECKING, List, NamedTuple, NoReturn, Set, Tuple, TypeAlias
 
 import torch
-from minisgl.core import Batch, Req, SamplingParams
+from minisgl.core import Batch, Req
 from minisgl.env import ENV
 from minisgl.message import (
     AbortBackendMsg,
@@ -13,15 +11,8 @@ from minisgl.message import (
     BatchBackendMsg,
     DetokenizeMsg,
     ExitMsg,
-    SharedCacheBlockReply,
-    SharedCacheCreateBlockBackendMsg,
-    SharedCacheDecodeBackendMsg,
-    SharedCacheDecodeReply,
-    SharedCacheDeleteBackendMsg,
-    SharedCachePrefillBackendMsg,
     UserMsg,
 )
-from minisgl.shared_cache import SharedBlock, SharedCacheSession, WorkerGroup
 from minisgl.utils import init_logger, load_tokenizer
 
 from .cache import CacheManager
@@ -38,15 +29,6 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 Indice2D: TypeAlias = Tuple[torch.Tensor, torch.Tensor]
-
-
-@dataclass
-class _PendingScDecode:
-    uid: int
-    group: WorkerGroup
-    next_ids: torch.Tensor  # [num_workers] CPU int32 — input for the next decode step
-    remaining: int
-    sampling_params: SamplingParams
 
 
 # For overlap scheduling, we also need to cache some other data to avoid IMA
@@ -72,20 +54,10 @@ class Scheduler(SchedulerIOMixin):
         self.engine_stream_ctx = torch.cuda.stream(self.engine.stream)
         torch.cuda.set_stream(self.stream)
 
-        # shared cache session (None when shared_cache_page_budget == 0)
-        sc_budget = config.shared_cache_page_budget
-        self.sc_session: Optional[SharedCacheSession] = (
-            SharedCacheSession(self.engine, max_pages=sc_budget) if sc_budget > 0 else None
-        )
-        self._sc_block_registry: Dict[str, SharedBlock] = {}
-        self._sc_prefill_logits: Dict[str, torch.Tensor] = {}  # [1, vocab] per prefilled block
-        self._pending_sc_decodes: List[_PendingScDecode] = []
-
-        # initialize other managers; normal requests use pages after the SC slice
+        # initialize the managers
         self.table_manager = TableManager(config.max_running_req, self.engine.page_table)
         self.cache_manager = CacheManager(
             self.engine.num_pages, config.page_size, self.engine.page_table, config.cache_type,
-            page_offset=sc_budget,
         )
         self.decode_manager = DecodeManager(config.page_size)
         self.prefill_manager = PrefillManager(
@@ -119,7 +91,6 @@ class Scheduler(SchedulerIOMixin):
             last_data is not None  # don't block if we have a batch to be processed
             or self.prefill_manager.runnable
             or self.decode_manager.runnable
-            or bool(self._pending_sc_decodes)
         )
         for msg in self.receive_msg(blocking=blocking):
             self._process_one_msg(msg)
@@ -133,20 +104,12 @@ class Scheduler(SchedulerIOMixin):
 
         self._process_last_data(last_data)
 
-        # Run one SC decode step only when the engine is free this iteration.
-        # After _process_last_data, the previous batch's GPU work is complete.
-        if ongoing_data is None and self._pending_sc_decodes:
-            with self.engine_stream_ctx:
-                self.engine.stream.wait_stream(self.stream)
-                self._step_sc_decodes()
-
         return ongoing_data
 
     def normal_loop(self) -> None:
         blocking = not (
             self.prefill_manager.runnable
             or self.decode_manager.runnable
-            or bool(self._pending_sc_decodes)
         )
         for msg in self.receive_msg(blocking=blocking):
             self._process_one_msg(msg)
@@ -157,9 +120,6 @@ class Scheduler(SchedulerIOMixin):
             ongoing_data = (forward_input, self._forward(forward_input))
 
         self._process_last_data(ongoing_data)
-
-        if ongoing_data is None and self._pending_sc_decodes:
-            self._step_sc_decodes()
 
     @torch.inference_mode()
     def run_forever(self) -> NoReturn:
@@ -237,14 +197,6 @@ class Scheduler(SchedulerIOMixin):
             req_to_free = req_to_free or self.decode_manager.abort_req(msg.uid)
             if req_to_free is not None:
                 self._free_req_resources(req_to_free)
-        elif isinstance(msg, SharedCacheCreateBlockBackendMsg):
-            self._sc_handle_create(msg)
-        elif isinstance(msg, SharedCachePrefillBackendMsg):
-            self._sc_handle_prefill(msg)
-        elif isinstance(msg, SharedCacheDecodeBackendMsg):
-            self._sc_handle_decode(msg)
-        elif isinstance(msg, SharedCacheDeleteBackendMsg):
-            self._sc_handle_delete(msg)
         else:
             logger.error(f"Unknown message type: {type(msg)}")
             raise NotImplementedError
@@ -252,123 +204,6 @@ class Scheduler(SchedulerIOMixin):
     def _free_req_resources(self, req: Req) -> None:
         self.table_manager.free(req.table_idx)
         self.cache_manager.cache_req(req, finished=True)
-
-    # ------------------------------------------------------------------
-    # Shared cache handlers
-    # ------------------------------------------------------------------
-
-    def _sc_check(self) -> bool:
-        if self.sc_session is None:
-            logger.error("Received shared-cache message but shared_cache_page_budget == 0")
-            return False
-        return True
-
-    def _sc_handle_create(self, msg: SharedCacheCreateBlockBackendMsg) -> None:
-        if not self._sc_check():
-            return
-        block_id = str(uuid.uuid4())
-        self._sc_block_registry[block_id] = self.sc_session.create_block()  # type: ignore[union-attr]
-        self.send_sc_reply(SharedCacheBlockReply(uid=msg.uid, block_id=block_id))
-
-    def _sc_handle_prefill(self, msg: SharedCachePrefillBackendMsg) -> None:
-        if not self._sc_check():
-            return
-        block_id = str(uuid.uuid4())
-        block = self.sc_session.create_block()  # type: ignore[union-attr]
-        context = [self._sc_block_registry[bid] for bid in (msg.context or [])]
-        logits = self.sc_session.prefill_block(block, msg.input_ids, context=context)  # type: ignore[union-attr]
-        self._sc_block_registry[block_id] = block
-        self._sc_prefill_logits[block_id] = logits  # shape [1, vocab_size]
-        self.send_sc_reply(SharedCacheBlockReply(uid=msg.uid, block_id=block_id))
-
-    def _sc_handle_decode(self, msg: SharedCacheDecodeBackendMsg) -> None:
-        if not self._sc_check():
-            return
-        cache_structure = [
-            [self._sc_block_registry[bid] for bid in worker_seq]
-            for worker_seq in msg.cache_structure
-        ]
-        write_to = [self._sc_block_registry[bid] for bid in msg.write_to]
-        group = WorkerGroup(cache_structure=cache_structure, write_to=write_to)
-
-        if msg.first_tokens is not None:
-            # Client-provided continuation tokens (e.g. the last token reported
-            # by a previous generate call) — no re-seeding, so the transcript
-            # in the cache stays continuous across calls.
-            assert len(msg.first_tokens) == len(msg.write_to), (
-                f"first_tokens has {len(msg.first_tokens)} entries "
-                f"for {len(msg.write_to)} workers"
-            )
-            first_ids: List[int] = [int(t) for t in msg.first_tokens]
-        else:
-            # Seed first input token for each worker from the last prefilled
-            # block in its sequence, and report the seeds as the first chunk
-            # so the client transcript matches the cache content.
-            first_ids = []
-            for worker_seq in msg.cache_structure:
-                logits: Optional[torch.Tensor] = None
-                for bid in reversed(worker_seq):
-                    if bid in self._sc_prefill_logits:
-                        logits = self._sc_prefill_logits[bid]
-                        break
-                assert logits is not None, f"No prefill logits found for a worker in decode group {msg.uid}"
-                first_ids.append(int(self._sample_from_logits(logits, msg.sampling_params).item()))
-            self.send_sc_reply(
-                SharedCacheDecodeReply(uid=msg.uid, worker_tokens=first_ids, finished=False)
-            )
-
-        self._pending_sc_decodes.append(
-            _PendingScDecode(
-                uid=msg.uid,
-                group=group,
-                next_ids=torch.tensor(first_ids, dtype=torch.int32),
-                remaining=msg.max_tokens,
-                sampling_params=msg.sampling_params,
-            )
-        )
-
-    def _sc_handle_delete(self, msg: SharedCacheDeleteBackendMsg) -> None:
-        block = self._sc_block_registry.pop(msg.block_id, None)
-        self._sc_prefill_logits.pop(msg.block_id, None)
-        if block is not None and self.sc_session is not None:
-            pages = block.clear()
-            if pages:
-                self.sc_session._free_pages_back(
-                    torch.tensor(pages, dtype=torch.int32, device=self.device)
-                )
-
-    def _step_sc_decodes(self) -> None:
-        still_pending: List[_PendingScDecode] = []
-        for pending in self._pending_sc_decodes:
-            logits = self.sc_session.decode_step(pending.group, pending.next_ids)  # type: ignore[union-attr]
-            next_ids = self._sample_from_logits(logits, pending.sampling_params)
-            pending.next_ids = next_ids.cpu().to(torch.int32)
-            pending.remaining -= 1
-            finished = pending.remaining <= 0
-            self.send_sc_reply(
-                SharedCacheDecodeReply(
-                    uid=pending.uid,
-                    worker_tokens=pending.next_ids.tolist(),
-                    finished=finished,
-                )
-            )
-            if not finished:
-                still_pending.append(pending)
-        self._pending_sc_decodes = still_pending
-
-    def _sample_from_logits(self, logits: torch.Tensor, params: SamplingParams) -> torch.Tensor:
-        """Sample one token per row from logits of shape [N, vocab_size], returning [N]."""
-        logits = logits.squeeze(0) if logits.dim() == 2 and logits.shape[0] == 1 else logits
-        if logits.dim() == 1:
-            logits = logits.unsqueeze(0)
-        if params.temperature == 0.0:
-            return logits.argmax(dim=-1)
-        scaled = logits / params.temperature
-        if 0 < params.top_k < scaled.shape[-1]:
-            top_k_vals = torch.topk(scaled, params.top_k, dim=-1).values
-            scaled = scaled.masked_fill(scaled < top_k_vals[..., -1:], float("-inf"))
-        probs = torch.softmax(scaled, dim=-1)
-        return torch.multinomial(probs, num_samples=1).squeeze(-1)
 
     def _prepare_batch(self, batch: Batch) -> ForwardInput:
         self.engine.graph_runner.pad_batch(batch)

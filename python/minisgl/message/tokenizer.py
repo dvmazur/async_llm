@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from minisgl.core import SamplingParams
 
-from .frontend import SharedCacheBlockReply, SharedCacheDecodeReply  # noqa: F401 — kept in globals() for decoder
 from .utils import deserialize_type, serialize_type
 
 
@@ -42,30 +41,3 @@ class TokenizeMsg(BaseTokenizerMsg):
 @dataclass
 class AbortMsg(BaseTokenizerMsg):
     uid: int
-
-
-@dataclass
-class SharedCacheCreateBlockMsg(BaseTokenizerMsg):
-    uid: int
-
-
-@dataclass
-class SharedCachePrefillMsg(BaseTokenizerMsg):
-    uid: int
-    text: str | List[Dict[str, str]]
-    context: Optional[List[str]] = None
-
-
-@dataclass
-class SharedCacheDecodeMsg(BaseTokenizerMsg):
-    uid: int
-    cache_structure: List[List[str]]
-    write_to: List[str]
-    max_tokens: int
-    sampling_params: SamplingParams
-    first_tokens: Optional[List[int]] = None
-
-
-@dataclass
-class SharedCacheDeleteMsg(BaseTokenizerMsg):
-    block_id: str
