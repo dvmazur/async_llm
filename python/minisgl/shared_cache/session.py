@@ -161,8 +161,7 @@ class SharedCacheSession:
             batch = self._build_batch([req], phase="prefill")
             logits = self._forward(batch)
 
-            positions = torch.arange(seq_len, dtype=torch.int64)
-            block.grow(pages.cpu(), positions)
+            block.grow(pages.cpu())
 
             # NOTE: ParallelLMHead.forward already extracts last-token logits
             # for prefill batches, so logits has shape [bs, vocab].
@@ -199,7 +198,7 @@ class SharedCacheSession:
 
         logits = self._forward(batch)
 
-        block.grow(pages.cpu(), torch.arange(seq_len, dtype=torch.int64))
+        block.grow(pages.cpu())
         return logits[:1]
 
     @torch.inference_mode()
@@ -261,10 +260,7 @@ class SharedCacheSession:
         logits = self._forward(batch)
 
         for wi in range(num_workers):
-            group.write_to[wi].grow(
-                new_pages[wi : wi + 1].cpu(),
-                torch.tensor([write_pos[wi]], dtype=torch.int64),
-            )
+            group.write_to[wi].grow(new_pages[wi : wi + 1].cpu())
         return logits[:num_workers]
 
     # ------------------------------------------------------------------
