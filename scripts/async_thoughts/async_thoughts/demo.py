@@ -35,9 +35,6 @@ from .engine import (
     vocab_id_or_none,
 )
 
-# All defaults live here (they used to be split between the old shell launcher
-# and the Python script).  ``MINISGL_DEMO_MODEL`` still overrides the model so
-# the demo stays drop-in compatible with the rest of the repo's tooling.
 
 # Default math problem from the original AsyncReasoning notebook.
 DEFAULT_PROBLEM = "Calculate x - x^2 + x^3 for x = 5, 6, 7, 8. Return all 4 answers in \\boxed{ }."
