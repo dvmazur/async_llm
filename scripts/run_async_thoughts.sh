@@ -23,10 +23,15 @@
 #   MAX_STEPS            Total decode steps before forced termination. Default: 800.
 #   PROBE_PERIOD         Run the mode-switching probe every N decode steps.
 #                        Default: 30.
-#   MEMORY_RATIO         Fraction of free GPU memory to reserve for the KV
-#                        pool. Default: 0.6 (needed for Qwen3-32B at bf16 on
-#                        a single GPU; lower it to ~0.3 for 8B-class models
-#                        if you also want to keep an HF model alongside).
+#   MEMORY_RATIO         Fraction of free-before-load GPU memory the engine
+#                        may use for weights + KV cache. KV space is computed
+#                        as MEMORY_RATIO * free_before_load - weights, so the
+#                        ratio must exceed the weights' share of free memory or
+#                        the engine aborts with "Not enough memory for KV
+#                        cache". Default: 0.9, which fits Qwen3-32B at bf16 on a
+#                        single 80 GiB GPU (~64 GiB weights, leaving ~6 GiB KV +
+#                        headroom). Lower it to ~0.3 for 8B-class models if you
+#                        also want to keep an HF model alongside.
 #   CUDA_VISIBLE_DEVICES Which GPU to pin to. Default: 0.
 #
 # Any additional CLI flags after the env-var prefix are forwarded to the
@@ -47,7 +52,7 @@ MODEL="${MODEL:-Qwen/Qwen3-32B}"
 PROBLEM="${PROBLEM:-Calculate x - x^2 + x^3 for x = 5, 6, 7, 8.  Return all 4 answers in \\boxed{ }.}"
 MAX_STEPS="${MAX_STEPS:-800}"
 PROBE_PERIOD="${PROBE_PERIOD:-30}"
-MEMORY_RATIO="${MEMORY_RATIO:-0.6}"
+MEMORY_RATIO="${MEMORY_RATIO:-0.9}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 if ! command -v uv >/dev/null 2>&1; then
