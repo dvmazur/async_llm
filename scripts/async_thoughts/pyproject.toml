@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "async-thoughts"
+version = "0.1.0"
+description = "AsyncReasoning-style concurrent thinker/writer demo on minisgl's shared cache"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "torch",
+    "transformers",
+]
+
+# minisgl is provided by the parent repo (this package imports it but does not
+# pull it from an index). Install the parent in the same environment first.
+
+[project.scripts]
+async-thoughts = "async_thoughts.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["async_thoughts*"]
