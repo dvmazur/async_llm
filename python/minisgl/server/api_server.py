@@ -6,7 +6,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Literal, Tuple, TypeVar
+from typing import Callable, Dict, List, Literal, Tuple
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -40,9 +40,14 @@ def get_global_state() -> FrontendManager:
     return _GLOBAL_STATE
 
 
-def _unwrap_msg(msg: BaseFrontendMsg) -> List[BaseFrontendMsg]:
+def _unwrap_msg(msg: BaseFrontendMsg) -> List[UserReply]:
     if isinstance(msg, BatchFrontendMsg):
-        return list(msg.data)
+        result = []
+        for reply in msg.data:
+            assert isinstance(reply, UserReply)
+            result.append(reply)
+        return result
+    assert isinstance(msg, UserReply)
     return [msg]
 
 
@@ -99,7 +104,7 @@ class FrontendManager:
     recv_tokenizer: ZmqAsyncPullQueue[BaseFrontendMsg]
     uid_counter: int = 0
     initialized: bool = False
-    ack_map: Dict[int, List[BaseFrontendMsg]] = field(default_factory=dict)
+    ack_map: Dict[int, List[UserReply]] = field(default_factory=dict)
     event_map: Dict[int, asyncio.Event] = field(default_factory=dict)
 
     def new_user(self) -> int:
