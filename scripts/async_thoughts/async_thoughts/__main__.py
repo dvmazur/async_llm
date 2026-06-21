@@ -15,6 +15,7 @@ from .demo import (
     DEFAULT_MODEL,
     DEFAULT_PROBE_PERIOD,
     DEFAULT_PROBLEM,
+    DEFAULT_PAGE_SIZE,
     DemoConfig,
     run,
 )
@@ -55,6 +56,12 @@ def parse_args(argv: list[str] | None = None) -> DemoConfig:
         help="Fraction of free GPU memory to reserve for weights + KV "
         f"cache (default: {DEFAULT_MEMORY_RATIO}).",
     )
+    p.add_argument(
+        "--page_size",
+        type=int,
+        default=DEFAULT_PAGE_SIZE,
+        help="The number of tokens in a page.",
+    )
     args = p.parse_args(argv)
     return DemoConfig(
         model=args.model,
@@ -62,6 +69,7 @@ def parse_args(argv: list[str] | None = None) -> DemoConfig:
         max_steps=args.max_steps,
         probe_period=args.probe_period,
         memory_ratio=args.memory_ratio,
+        page_size=page_size,
     )
 
 

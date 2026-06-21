@@ -45,6 +45,7 @@ DEFAULT_MODEL = os.environ.get("MINISGL_DEMO_MODEL", "Qwen/Qwen3-32B")
 DEFAULT_MAX_STEPS = 800
 DEFAULT_PROBE_PERIOD = 30
 DEFAULT_MEMORY_RATIO = 0.9
+DEFAULT_PAGE_SIZE = 1
 
 
 @dataclass
@@ -56,6 +57,7 @@ class DemoConfig:
     max_steps: int = DEFAULT_MAX_STEPS
     probe_period: int = DEFAULT_PROBE_PERIOD
     memory_ratio: float = DEFAULT_MEMORY_RATIO
+    page_size: int = DEFAULT_PAGE_SIZE
 
 
 class Prompting:
@@ -289,7 +291,7 @@ def run(config: DemoConfig) -> None:
 
     print("\nLoading tokenizer & engine...")
     tokenizer = AutoTokenizer.from_pretrained(config.model, trust_remote_code=True)
-    engine = build_engine(config.model, memory_ratio=config.memory_ratio)
+    engine = build_engine(config.model, memory_ratio=config.memory_ratio, page_size=config.page_size)
     session = SharedCacheSession(engine)
     prompting = Prompting(config.problem)
 

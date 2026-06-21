@@ -16,7 +16,11 @@ from minisgl.shared_cache import SharedBlock, SharedCacheSession, WorkerGroup
 from transformers import AutoTokenizer
 
 
-def build_engine(model_path: str, memory_ratio: float) -> Engine:
+def build_engine(
+    model_path: str,
+    memory_ratio: float,
+    page_size: int = 1,
+) -> Engine:
     """Build a single-GPU engine sized for 1- or 2-worker decode."""
     config = EngineConfig(
         model_path=model_path,
@@ -27,6 +31,7 @@ def build_engine(model_path: str, memory_ratio: float) -> Engine:
         cuda_graph_max_bs=2,
         memory_ratio=memory_ratio,
         max_seq_len_override=4096,
+        page_size=page_size,
     )
     return Engine(config)
 
