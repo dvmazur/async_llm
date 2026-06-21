@@ -36,7 +36,7 @@ def build_engine(
     return Engine(config)
 
 
-def encode(text: str, tokenizer) -> torch.Tensor:
+def encode(text: str, tokenizer: AutoTokenizer) -> torch.Tensor:
     """1-D int32 CPU tensor.
 
     ``add_special_tokens=False`` because all the boundary markers are encoded
@@ -49,7 +49,7 @@ def encode(text: str, tokenizer) -> torch.Tensor:
     )
 
 
-def single_token_id(text: str, tokenizer) -> int:
+def single_token_id(text: str, tokenizer: AutoTokenizer) -> int:
     """Resolve a string we expect to be exactly one token to its vocab id.
 
     Used both for the literal ``"\\n\\n"`` separator and for the ``yes``/``no``
