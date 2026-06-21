@@ -181,22 +181,18 @@ def _run_loop(
     next_print_thinker = len(thinker_prefix_ids)
     next_print_writer = len(writer_prefix_ids)
 
-    # WorkerGroup factories.  Recreate per step -- they're just references; the
-    # blocks themselves grow in-place.
-    def thinker_only_group() -> WorkerGroup:
-        return WorkerGroup(
-            cache_structure=[[prompt_blk, thinker_blk]],
-            write_to=[thinker_blk],
-        )
+    thinker_only_group = WorkerGroup(
+        cache_structure=[[prompt_blk, thinker_blk]],
+        write_to=[thinker_blk],
+    )
 
-    def thinker_and_writer_group() -> WorkerGroup:
-        return WorkerGroup(
-            cache_structure=[
-                [prompt_blk, thinker_blk],
-                [prompt_blk, thinker_blk, writer_blk],
-            ],
-            write_to=[thinker_blk, writer_blk],
-        )
+    thinker_and_writer_group =  WorkerGroup(
+        cache_structure=[
+            [prompt_blk, thinker_blk],
+            [prompt_blk, thinker_blk, writer_blk],
+        ],
+        write_to=[thinker_blk, writer_blk],
+    )
 
     # Main decode loop.
     state = "thinker_only"
@@ -209,14 +205,14 @@ def _run_loop(
         # decode one (or two) tokens
         if state == "thinker_only":
             inp = torch.tensor([thinker_tokens[-1]], dtype=torch.int32)
-            logits = session.decode_step(thinker_only_group(), inp)[0].float()
+            logits = session.decode_step(thinker_only_group, inp)[0].float()
             logits[thinker_forbid_ids] -= 100.0
             t_next = int(logits.argmax().item())
             thinker_tokens.append(t_next)
 
         elif state == "thinker_and_writer":
             inp = torch.tensor([thinker_tokens[-1], writer_tokens[-1]], dtype=torch.int32)
-            logits = session.decode_step(thinker_and_writer_group(), inp).float()
+            logits = session.decode_step(thinker_and_writer_group, inp).float()
             logits[0, thinker_forbid_ids] -= 100.0
             logits[1, writer_forbid_ids] -= 100.0
             t_next = int(logits[0].argmax().item())
