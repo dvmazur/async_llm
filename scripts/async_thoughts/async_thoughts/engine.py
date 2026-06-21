@@ -78,11 +78,8 @@ def ends_with_double_newline(token_ids: List[int], tokenizer: AutoTokenizer) -> 
 
 
 def free_block(session: SharedCacheSession, block: SharedBlock) -> None:
-    """Return a block's pages to the session pool and reset it."""
-    pages = block.get_page_indices()
-    block.clear()
-    if pages.numel():
-        session._free_pages_back(pages)  # noqa: SLF001 -- internal but stable
+    """Return a block's pages to the engine's page allocator and reset it."""
+    session.free_block(block)
 
 
 def prefill_block_in_context(

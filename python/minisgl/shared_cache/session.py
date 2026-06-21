@@ -30,10 +30,11 @@ Usage::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import torch
 from minisgl.core import Batch, Req, SamplingParams
+from minisgl.utils import div_ceil
 
 from .attention import SharedCacheAttention
 from .shared_block import NULL_CACHE_HANDLE, SharedBlock
@@ -60,17 +61,18 @@ class SharedCacheSession:
     Manages ``SharedBlock`` pages and drives batched forward passes for a
     ``WorkerGroup`` on a mini-sglang ``Engine``.
 
-    The session owns its own page pool (taken from the Engine's KV-cache
-    capacity) and table-index pool.  It is designed for **standalone** use,
-    bypassing the scheduler.  To integrate with the live scheduler, the page
-    pools would need to be coordinated.
+    Pages are **borrowed from the engine's main page cache**
+    (``engine.page_allocator``) rather than from a private pool, so allocations
+    are page-aligned and drawn from the same physical pages the engine owns.
+    The session is designed for **standalone** use, bypassing the scheduler; to
+    run alongside the live scheduler the two consumers would need to share one
+    allocator instance.
     """
 
     def __init__(
         self,
         engine: Engine,
         cos_sin_cache: Optional[torch.Tensor] = None,
-        max_pages: Optional[int] = None,
     ):
         self.engine = engine
         self.device = engine.device
@@ -78,10 +80,7 @@ class SharedCacheSession:
         self.kv_cache = engine.kv_cache
         self.page_size: int = engine.ctx.page_size
         self.attn_backend = engine.attn_backend
-
-        owned_pages = max_pages if max_pages is not None else engine.num_pages
-        num_token_slots = owned_pages * self.page_size
-        self._free_pages = torch.arange(num_token_slots, dtype=torch.int32, device=self.device)
+        self.page_allocator = engine.page_allocator
 
         max_table = engine.page_table.shape[0] - 1  # last row is dummy
         self._free_table_indices: List[int] = list(range(max_table))
@@ -106,6 +105,7 @@ class SharedCacheSession:
             num_qo_heads=attn0.num_qo_heads,
             num_kv_heads=attn0.num_kv_heads,
             head_dim=attn0.head_dim,
+            page_size=self.page_size,
             dtype=self.kv_cache.dtype,
             device=self.device,
         )
@@ -115,7 +115,15 @@ class SharedCacheSession:
     # ------------------------------------------------------------------
 
     def create_block(self) -> SharedBlock:
-        return SharedBlock(self.device)
+        return SharedBlock(self.device, page_size=self.page_size)
+
+    def free_block(self, block: SharedBlock) -> None:
+        """Return a block's pages to the engine's page allocator and reset it."""
+        page_starts = block.clear()
+        if page_starts:
+            self.page_allocator.free_pages(
+                torch.tensor(page_starts, dtype=torch.int32, device=self.device)
+            )
 
     @torch.inference_mode()
     def prefill_block(
@@ -142,11 +150,11 @@ class SharedCacheSession:
         if context:
             return self._prefill_block_in_context(block, input_ids, context)
 
-        pages = self._allocate_pages(seq_len)
+        page_starts, token_slots = self._alloc_token_storage(seq_len)
         table_idx = self._allocate_table_idx()
 
         try:
-            self.page_table[table_idx, :seq_len] = pages
+            self.page_table[table_idx, : token_slots.numel()] = token_slots
             self._token_pool[table_idx, :seq_len] = input_ids.to(self.device)
 
             req = Req(
@@ -161,7 +169,7 @@ class SharedCacheSession:
             batch = self._build_batch([req], phase="prefill")
             logits = self._forward(batch)
 
-            block.grow(pages.cpu())
+            block.grow_pages(page_starts, seq_len)
 
             # NOTE: ParallelLMHead.forward already extracts last-token logits
             # for prefill batches, so logits has shape [bs, vocab].
@@ -177,7 +185,8 @@ class SharedCacheSession:
     ) -> torch.Tensor:
         """Prefill *block* while attending to *context* blocks (all non-empty)."""
         seq_len = len(input_ids)
-        pages = self._allocate_pages(seq_len)
+        page_starts, token_slots = self._alloc_token_storage(seq_len)
+        out_loc = token_slots[:seq_len]
 
         req = Req(
             input_ids=input_ids,
@@ -193,12 +202,12 @@ class SharedCacheSession:
         # block-relative RoPE positions for the stored keys
         batch.positions = torch.arange(seq_len, dtype=torch.int64, device=self.device)
         batch.input_ids = input_ids.to(self.device)
-        batch.out_loc = pages
-        batch.attn_metadata = self.sc_attn.prepare_context_prefill(context, pages)
+        batch.out_loc = out_loc
+        batch.attn_metadata = self.sc_attn.prepare_context_prefill(context, page_starts, seq_len)
 
         logits = self._forward(batch)
 
-        block.grow(pages.cpu())
+        block.grow_pages(page_starts, seq_len)
         return logits[:1]
 
     @torch.inference_mode()
@@ -226,8 +235,10 @@ class SharedCacheSession:
         """
         num_workers = group.num_workers
         input_ids = input_ids.to(dtype=torch.int32).reshape(num_workers).cpu()
-        new_pages = self._allocate_pages(num_workers)
-        write_pos = [group.write_to[wi].num_tokens for wi in range(num_workers)]
+
+        # Decide, per (distinct) write block, whether the new token starts a
+        # fresh page, then borrow all needed pages from the engine in one shot.
+        new_page_for_block, new_token_slots, write_pos = self._plan_decode_writes(group)
 
         # Reqs are bookkeeping only here (batch size / phase); the page table
         # is bypassed entirely, so they point at the engine's dummy row.
@@ -254,29 +265,69 @@ class SharedCacheSession:
         # block-relative RoPE positions for the new tokens' keys
         batch.positions = torch.tensor(write_pos, dtype=torch.int64, device=self.device)
         batch.input_ids = input_ids.to(self.device)
-        batch.out_loc = new_pages
-        batch.attn_metadata = self.sc_attn.prepare(group, new_pages)
+        batch.out_loc = new_token_slots
+        batch.attn_metadata = self.sc_attn.prepare(group, new_page_for_block, new_token_slots)
 
         logits = self._forward(batch)
 
-        for wi in range(num_workers):
-            group.write_to[wi].grow(new_pages[wi : wi + 1].cpu())
+        # Commit growth now that the forward (which read post-append lengths) is done.
+        for wt in group.write_to:
+            wt.append_token(new_page_for_block[id(wt)])
         return logits[:num_workers]
 
     # ------------------------------------------------------------------
     # Page / table-index management
     # ------------------------------------------------------------------
 
-    def _allocate_pages(self, n: int) -> torch.Tensor:
-        assert len(self._free_pages) >= n, (
-            f"Out of pages: requested {n}, available {len(self._free_pages)}"
-        )
-        allocated = self._free_pages[:n].clone()
-        self._free_pages = self._free_pages[n:]
-        return allocated
+    def _alloc_token_storage(self, seq_len: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Borrow ``ceil(seq_len/P)`` pages; return ``(page_starts, token_slots)``
+        where ``token_slots`` are the ``num_pages * P`` per-token slots (the
+        first ``seq_len`` are the real write locations)."""
+        n_pages = div_ceil(seq_len, self.page_size)
+        page_starts = self.page_allocator.alloc_pages(n_pages)
+        return page_starts, self.page_allocator.pages_to_tokens(page_starts)
 
-    def _free_pages_back(self, pages: torch.Tensor) -> None:
-        self._free_pages = torch.cat([self._free_pages, pages.to(self.device)])
+    def _plan_decode_writes(
+        self, group: WorkerGroup
+    ) -> Tuple[Dict[int, Optional[int]], torch.Tensor, List[int]]:
+        """For one decode step, choose the destination slot of each worker's new
+        token and which write blocks need a freshly-allocated page.
+
+        Returns ``(new_page_for_block, new_token_slots, write_pos)`` where
+        ``new_page_for_block`` maps ``id(block)`` -> page-start slot (or None),
+        ``new_token_slots`` is ``[num_workers]`` int32 destination slots, and
+        ``write_pos`` is the per-worker block-relative RoPE position.
+        """
+        num_workers = group.num_workers
+        new_page_for_block: Dict[int, Optional[int]] = {}
+        blocks_needing_page: List[SharedBlock] = []
+        for wt in group.write_to:
+            if id(wt) in new_page_for_block:
+                raise ValueError(
+                    "WorkerGroup has two workers writing the same block in one step"
+                )
+            if wt.has_capacity:
+                new_page_for_block[id(wt)] = None
+            else:
+                new_page_for_block[id(wt)] = None  # filled in below once allocated
+                blocks_needing_page.append(wt)
+
+        if blocks_needing_page:
+            fresh = self.page_allocator.alloc_pages(len(blocks_needing_page))
+            for k, wt in enumerate(blocks_needing_page):
+                new_page_for_block[id(wt)] = int(fresh[k].item())
+
+        out_loc: List[int] = []
+        write_pos: List[int] = []
+        for wt in group.write_to:
+            t = wt.num_tokens
+            new_page = new_page_for_block[id(wt)]
+            page_start = new_page if new_page is not None else wt.page_starts[-1]
+            out_loc.append(page_start + (t % self.page_size))
+            write_pos.append(t)
+
+        new_token_slots = torch.tensor(out_loc, dtype=torch.int32, device=self.device)
+        return new_page_for_block, new_token_slots, write_pos
 
     def _allocate_table_idx(self) -> int:
         return self._free_table_indices.pop()

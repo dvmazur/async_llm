@@ -8,6 +8,7 @@ import pytest
 import torch
 
 import minisgl.core as core
+from minisgl.kvcache import PageAllocator
 from minisgl.scheduler.cache import CacheManager
 
 
@@ -25,7 +26,8 @@ def _make_cache_manager(num_pages: int, page_size: int) -> CacheManager:
     page_table = torch.empty((1,))
     ctx = core.Context(page_size=page_size)
     core.set_global_ctx(ctx)
-    return CacheManager(num_pages, page_size, page_table, type="radix")
+    allocator = PageAllocator(num_pages, page_size, device=torch.device("cpu"))
+    return CacheManager(allocator, page_table, type="radix")
 
 
 def _insert_evictable(cm: CacheManager, input_ids: torch.Tensor, indices: torch.Tensor):

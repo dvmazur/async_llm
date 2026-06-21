@@ -53,26 +53,52 @@ class TestSharedBlock:
     def test_empty_block(self):
         block = SharedBlock(torch.device("cpu"))
         assert block.num_tokens == 0
+        assert block.num_pages == 0
+        assert block.last_page_len == 0
+        assert not block.has_capacity
 
-    def test_grow(self):
-        block = SharedBlock(torch.device("cpu"))
-        pages = torch.tensor([10, 11, 12], dtype=torch.int32)
-        block.grow(pages)
+    def test_grow_pages_page_size_1(self):
+        block = SharedBlock(torch.device("cpu"), page_size=1)
+        block.grow_pages(torch.tensor([10, 11, 12], dtype=torch.int32), 3)
         assert block.num_tokens == 3
-        assert block.page_indices == [10, 11, 12]
+        assert block.num_pages == 3
+        assert block.page_starts == [10, 11, 12]
+        # at page_size=1, token slots == page starts == page numbers
+        assert block.token_slots_tensor().tolist() == [10, 11, 12]
+        assert block.page_numbers_tensor().tolist() == [10, 11, 12]
 
-    def test_grow_multiple_times(self):
-        block = SharedBlock(torch.device("cpu"))
-        block.grow(torch.tensor([5, 6]))
-        block.grow(torch.tensor([7, 8, 9]))
-        assert block.page_indices == [5, 6, 7, 8, 9]
+    def test_grow_pages_page_size_4(self):
+        block = SharedBlock(torch.device("cpu"), page_size=4)
+        # 5 tokens packed into 2 pages starting at slots 0 and 4
+        block.grow_pages(torch.tensor([0, 4], dtype=torch.int32), 5)
+        assert block.num_tokens == 5
+        assert block.num_pages == 2
+        assert block.last_page_len == 1
+        assert block.has_capacity  # room for 3 more in page 1
+        assert block.token_slots_tensor().tolist() == [0, 1, 2, 3, 4]
+        assert block.page_numbers_tensor().tolist() == [0, 1]
+
+    def test_append_token_decode_growth(self):
+        block = SharedBlock(torch.device("cpu"), page_size=4)
+        block.grow_pages(torch.tensor([0, 4], dtype=torch.int32), 5)  # last page has room
+        block.append_token(None)  # fits in page 1 (offset 1)
+        assert block.num_tokens == 6
+        assert block.last_page_len == 2
+        block.append_token(None)
+        block.append_token(None)  # now page 1 is full (8 tokens)
+        assert block.num_tokens == 8 and not block.has_capacity
+        block.append_token(8)  # new page at slot 8
+        assert block.num_tokens == 9
+        assert block.page_starts == [0, 4, 8]
+        assert block.last_page_len == 1
+        assert block.token_slots_tensor().tolist() == list(range(9))
 
     def test_clear(self):
-        block = SharedBlock(torch.device("cpu"))
-        block.grow(torch.tensor([5, 6]))
+        block = SharedBlock(torch.device("cpu"), page_size=4)
+        block.grow_pages(torch.tensor([8, 12], dtype=torch.int32), 6)
         pages = block.clear()
-        assert pages == [5, 6]
-        assert block.num_tokens == 0
+        assert pages == [8, 12]
+        assert block.num_tokens == 0 and block.num_pages == 0
 
     def test_unique_block_ids(self):
         b1 = SharedBlock(torch.device("cpu"))
@@ -85,9 +111,9 @@ class TestWorkerGroup:
         prompt = SharedBlock(device)
         w1 = SharedBlock(device)
         w2 = SharedBlock(device)
-        prompt.grow(torch.arange(5))
-        w1.grow(torch.arange(5, 8))
-        w2.grow(torch.arange(8, 10))
+        prompt.grow_pages(torch.arange(5, dtype=torch.int32), 5)
+        w1.grow_pages(torch.arange(5, 8, dtype=torch.int32), 3)
+        w2.grow_pages(torch.arange(8, 10, dtype=torch.int32), 2)
         group = WorkerGroup(
             cache_structure=[
                 [prompt, w2, w1],
@@ -232,6 +258,7 @@ def _build_engine(model_path: str):
         max_running_req=8,
         cuda_graph_bs=[2, 4],
         cuda_graph_max_bs=4,
+        page_size=int(os.environ.get("MINISGL_TEST_PAGE_SIZE", "1")),
         memory_ratio=0.7,
         max_seq_len_override=2048,
     )

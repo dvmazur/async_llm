@@ -9,20 +9,34 @@ from minisgl.kvcache import BaseCacheHandle, MatchResult, create_prefix_cache
 from minisgl.utils import div_ceil
 
 if TYPE_CHECKING:
+    from minisgl.kvcache import PageAllocator
+
     from .utils import PendingReq
 
 
 class CacheManager:
-    def __init__(self, num_pages: int, page_size: int, page_table: torch.Tensor, type: str):
-        # The `_free_slots` follows a page-aligned manner. For example, if page_size = 2,
-        # the `_free_slots` may look like [0, 2, 4, 6, ...], and each slot represents a page.
+    """Prefix-cache + eviction on top of a shared page pool.
+
+    The page-aligned free pool lives in a ``PageAllocator`` (the engine's main
+    page cache); this manager borrows/returns pages from it and adds the radix
+    prefix cache and eviction policy on top.  Sharing one allocator means the
+    scheduler and any in-process consumer (e.g. ``SharedCacheSession``) draw
+    from the same physical pages.
+    """
+
+    def __init__(self, page_allocator: PageAllocator, page_table: torch.Tensor, type: str):
         device = page_table.device
-        self.free_slots = torch.arange(num_pages, dtype=torch.int32, device=device) * page_size
+        self.page_allocator = page_allocator
         self.prefix_cache = create_prefix_cache(device=device, type=type)
         self.device = device
-        self.num_pages = num_pages
+        self.num_pages = page_allocator.num_pages
         self.page_table = page_table
-        self.page_size = page_size
+        self.page_size = page_allocator.page_size
+
+    @property
+    def free_slots(self) -> torch.Tensor:
+        # Page-aligned free list (page-start slots), owned by the allocator.
+        return self.page_allocator.free_page_starts
 
     def match_req(self, req: PendingReq) -> MatchResult:
         input_len = req.input_len
@@ -31,7 +45,8 @@ class CacheManager:
 
     @property
     def available_size(self) -> int:
-        return self.prefix_cache.size_info.evictable_size + len(self.free_slots) * self.page_size
+        evictable = self.prefix_cache.size_info.evictable_size
+        return evictable + self.page_allocator.num_free_pages * self.page_size
 
     def lock(self, handle: BaseCacheHandle) -> None:
         self.prefix_cache.lock_handle(handle, unlock=False)
@@ -101,27 +116,24 @@ class CacheManager:
             yield
         finally:
             del self._free
-            self.free_slots = torch.cat([self.free_slots] + lazy_free_list)
+            if lazy_free_list:
+                self.page_allocator.free_pages(torch.cat(lazy_free_list))
 
     def _allocate(self, needed_pages: int) -> torch.Tensor:
-        if needed_pages > (free_pages := len(self.free_slots)):
+        if needed_pages > (free_pages := self.page_allocator.num_free_pages):
             evicted = self.prefix_cache.evict((needed_pages - free_pages) * self.page_size)
-            self.free_slots = torch.cat([self.free_slots, evicted[:: self.page_size]])
-            assert len(self.free_slots) >= needed_pages, "Eviction did not free enough space."
-        allocated = self.free_slots[:needed_pages]
-        self.free_slots = self.free_slots[needed_pages:]
-        return allocated
+            self.page_allocator.free_pages(evicted[:: self.page_size])
+            assert (
+                self.page_allocator.num_free_pages >= needed_pages
+            ), "Eviction did not free enough space."
+        return self.page_allocator.alloc_pages(needed_pages)
 
     def _free(self, indices: torch.Tensor) -> None:
         if len(indices) > 0:
-            self.free_slots = torch.cat([self.free_slots, indices[:: self.page_size]])
+            self.page_allocator.free_pages(indices[:: self.page_size])
 
     def _page_to_token(self, pages: torch.Tensor) -> torch.Tensor:
-        if self.page_size == 1:
-            return pages
-        # [X * page_size] -> [X * page_size, ..., X * page_size + page_size - 1]
-        offsets = torch.arange(self.page_size, device=self.device, dtype=torch.int32)
-        return (pages.unsqueeze(1) + offsets).flatten()
+        return self.page_allocator.pages_to_tokens(pages)
 
 
 def _write_page_table(

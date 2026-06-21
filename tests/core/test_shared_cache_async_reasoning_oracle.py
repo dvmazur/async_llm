@@ -376,6 +376,7 @@ def _build_engine(model_path: str):
         max_running_req=8,
         cuda_graph_bs=[1, 2, 4],
         cuda_graph_max_bs=4,
+        page_size=int(os.environ.get("MINISGL_TEST_PAGE_SIZE", "1")),
         memory_ratio=float(os.environ.get("MINISGL_TEST_MEMORY_RATIO", "0.35")),
         max_seq_len_override=2048,
     )
@@ -694,9 +695,9 @@ def test_prefill_kv_layer0_matches_async_reasoning(
     # ===== minisgl side: prefill, then read out layer-0 KV =====
     ms_prompt = session.create_block()
     session.prefill_block(ms_prompt, prompt_ids)
-    pages = ms_prompt.get_page_indices().to(engine.device).long()
+    pages = ms_prompt.token_slots_tensor().to(engine.device).long()
     # k_cache(0) shape: [num_pages, page_size, local_kv_heads, head_dim].
-    # With page_size=1, we can flatten the first two dims and index by page.
+    # Flatten the first two dims to a flat token-slot layout and gather by slot.
     k0_full = engine.kv_cache.k_cache(0).flatten(0, 1)  # [num_pages * page_size, H, D]
     v0_full = engine.kv_cache.v_cache(0).flatten(0, 1)
     ms_k0 = k0_full[pages].float().cpu()  # [N, H, D]

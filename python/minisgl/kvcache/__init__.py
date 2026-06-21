@@ -15,6 +15,7 @@ from .base import (
     MatchResult,
     SizeInfo,
 )
+from .page_allocator import PageAllocator
 
 
 class CacheManagerCreator(Protocol):
@@ -68,6 +69,7 @@ __all__ = [
     "BaseKVCachePool",
     "BaseCacheHandle",
     "BasePrefixCache",
+    "PageAllocator",
     "SizeInfo",
     "MatchResult",
     "SUPPORTED_CACHE_MANAGER",
