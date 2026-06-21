@@ -30,7 +30,6 @@ from .engine import (
     check_continue_writing,
     encode,
     ends_with_double_newline,
-    prefill_block_in_context,
     single_token_id,
     vocab_id_or_none,
 )
@@ -152,22 +151,16 @@ def _run_loop(
     session.prefill_block(prompt_blk, prompt_ids)
 
     # thinker_output_prefix: prefilled IN CONTEXT of [prompt].  AR does this via
-    # SharedCacheManager(view=[input_prompt, thinker_output]).  minisgl has no
-    # public multi-token in-context prefill, so we feed the prefix tokens one at
-    # a time via decode_step.
+    # SharedCacheManager(view=[input_prompt, thinker_output]); minisgl's
+    # prefill_block(..., context=[...]) does the same in a single batched
+    # prefill pass (the new tokens attend causally to themselves and fully to
+    # the context), instead of one decode step per token.
     thinker_prefix_ids = encode(prompting.thinker_output_prefix, tokenizer)
-    prefill_block_in_context(
-        session, write_to=thinker_blk, context=[prompt_blk], token_ids=thinker_prefix_ids
-    )
+    session.prefill_block(thinker_blk, thinker_prefix_ids, context=[prompt_blk])
 
     # writer_output_prefix: prefilled IN CONTEXT of [prompt, thinker].
     writer_prefix_ids = encode(prompting.writer_output_prefix, tokenizer)
-    prefill_block_in_context(
-        session,
-        write_to=writer_blk,
-        context=[prompt_blk, thinker_blk],
-        token_ids=writer_prefix_ids,
-    )
+    session.prefill_block(writer_blk, writer_prefix_ids, context=[prompt_blk, thinker_blk])
 
     # Token-sequence bookkeeping for display + the mode-switching probe.
     # Includes the "\n\n" separator that AR appends but does NOT prefill; it

@@ -12,7 +12,7 @@ from typing import List
 import torch
 from minisgl.distributed import DistributedInfo
 from minisgl.engine import Engine, EngineConfig
-from minisgl.shared_cache import SharedBlock, SharedCacheSession, WorkerGroup
+from minisgl.shared_cache import SharedBlock, SharedCacheSession
 from transformers import AutoTokenizer
 
 
@@ -80,28 +80,6 @@ def ends_with_double_newline(token_ids: List[int], tokenizer: AutoTokenizer) -> 
 def free_block(session: SharedCacheSession, block: SharedBlock) -> None:
     """Return a block's pages to the engine's page allocator and reset it."""
     session.free_block(block)
-
-
-def prefill_block_in_context(
-    session: SharedCacheSession,
-    write_to: SharedBlock,
-    context: List[SharedBlock],
-    token_ids: torch.Tensor,
-) -> None:
-    """Append ``token_ids`` to ``write_to`` one token at a time, with the rest
-    of ``context`` visible as past KV.
-
-    This emulates AsyncReasoning's multi-token in-context prefill, which
-    minisgl's ``prefill_block`` does not expose directly (it only supports
-    cached_len=0).  The cost is N forward passes for N tokens, but it runs once
-    at setup so the overhead is small.
-    """
-    group = WorkerGroup(
-        cache_structure=[list(context) + [write_to]],
-        write_to=[write_to],
-    )
-    for tok_id in token_ids.tolist():
-        session.decode_step(group, torch.tensor([int(tok_id)], dtype=torch.int32))
 
 
 def check_continue_writing(
