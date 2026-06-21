@@ -29,19 +29,13 @@ worker's current-step token as well.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Literal
 
 import torch
 from minisgl.attention import BaseAttnMetadata
 
 from .rope_correction import apply_rope_correction
-
-# MINISGL_SC_SDPA=1     -> use the naive fp32 torch reference instead of FlashInfer
-# MINISGL_SC_COMPARE=1  -> run both per layer and print the max divergence
-_USE_SDPA_REFERENCE = os.environ.get("MINISGL_SC_SDPA", "0") == "1"
-_DEBUG_COMPARE = os.environ.get("MINISGL_SC_COMPARE", "0") == "1"
 
 if TYPE_CHECKING:
     from flashinfer import BatchDecodeWithPagedKVCacheWrapper
@@ -64,7 +58,7 @@ class SharedCacheAttnMetadata(BaseAttnMetadata):
     pad_slot: torch.Tensor  # [N_sub] int64 — scatter index into [W * max_segments]
     num_workers: int  # number of output rows (workers for decode, tokens for prefill)
     max_segments: int
-    phase: str = "decode"  # "decode" | "context_prefill"
+    phase: Literal["decode", "context_prefill"] = "decode"
 
     def get_last_indices(self, bs: int) -> torch.Tensor:
         if self.phase == "context_prefill":
@@ -86,7 +80,7 @@ class SharedCacheAttention:
         dtype: torch.dtype,
         device: torch.device,
     ) -> None:
-        from flashinfer import BatchDecodeWithPagedKVCacheWrapper
+        from flashinfer import BatchDecodeWithPagedKVCacheWrapper, BatchPrefillWithPagedKVCacheWrapper
 
         self.kv_cache = kv_cache
         self.cos_sin_cache = cos_sin_cache
@@ -95,8 +89,6 @@ class SharedCacheAttention:
         self.head_dim = head_dim
         self.dtype = dtype
         self.device = device
-
-        from flashinfer import BatchPrefillWithPagedKVCacheWrapper
 
         self._workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
         gqa = num_qo_heads // num_kv_heads
@@ -117,15 +109,9 @@ class SharedCacheAttention:
         self.prefill_ctx_wrapper = BatchPrefillWithPagedKVCacheWrapper(
             self._workspace, kv_layout="NHD", backend="fa2"
         )
-        # FlashInfer planning stages plan inputs in a pinned host buffer and
-        # copies async; wait for the previous copy before mutating it again
-        # (same pattern as FlashInferBackend._initialize_metadata_once).
+
         self._plan_event = torch.cuda.Event()
         self._plan_event.record()
-
-    # ------------------------------------------------------------------
-    # Per-step metadata + wrapper planning
-    # ------------------------------------------------------------------
 
     def prepare(self, group: WorkerGroup, new_pages: torch.Tensor) -> SharedCacheAttnMetadata:
         """
@@ -217,11 +203,9 @@ class SharedCacheAttention:
             num_workers=num_workers,
             max_segments=max_segments,
         )
-        # Keep plan inputs + per-sub page lists alive through the forward (the
-        # async plan copy reads the pinned tensors; the lists feed the torch
-        # reference path).
+        # Keep plan inputs alive through the forward: the async plan copy reads
+        # the pinned tensors after prepare() returns.
         meta._plan_refs = (kv_indptr_cpu, seq_lens_cpu, last_page_len_cpu, kv_indices)
-        meta._kv_parts = kv_parts
         return meta
 
     def prepare_context_prefill(
@@ -312,12 +296,7 @@ class SharedCacheAttention:
             ctx_kv_indptr, ctx_qo_indptr, ctx_seq_lens, ctx_last_page, ctx_kv_indices,
             self_indptr, self_seq_lens, self_last_page, self_kv_indices,
         )
-        meta._kv_parts = ctx_kv_parts + [new_pages]
         return meta
-
-    # ------------------------------------------------------------------
-    # Per-layer forward
-    # ------------------------------------------------------------------
 
     def forward(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
@@ -350,9 +329,6 @@ class SharedCacheAttention:
         if meta.phase == "context_prefill":
             return self._forward_context_prefill(q_sub, meta, layer_id)
 
-        if _USE_SDPA_REFERENCE:
-            return self._sdpa_reference(q_sub, meta, layer_id).view(W, -1)
-
         def _paged(cache: torch.Tensor) -> torch.Tensor:  # page_size = 1
             return cache.view(-1, 1, cache.shape[2], cache.shape[3])
 
@@ -373,10 +349,6 @@ class SharedCacheAttention:
             merged, _ = merge_states(v_pad.view(W, M, Hq, D), s_pad.view(W, M, Hq))
             result = merged.view(W, -1)
 
-        if _DEBUG_COMPARE:
-            ref = self._sdpa_reference(q_sub, meta, layer_id).view(W, -1)
-            diff = (result.float() - ref.float()).abs().max().item()
-            print(f"[sc-attn debug] layer={layer_id} flashinfer-vs-sdpa max|diff|={diff:.6f}")
         return result
 
     def _forward_context_prefill(
@@ -411,72 +383,4 @@ class SharedCacheAttention:
         )
         result = merged.view(S, -1)
 
-        if _DEBUG_COMPARE:
-            ref = self._sdpa_reference_prefill(q_sub, meta, layer_id).reshape(S, -1)
-            diff = (result.float() - ref.float()).abs().max().item()
-            print(f"[sc-attn debug] layer={layer_id} ctx-prefill-vs-sdpa max|diff|={diff:.6f}")
         return result
-
-    def _sdpa_reference_prefill(
-        self, q_sub: torch.Tensor, meta: SharedCacheAttnMetadata, layer_id: int
-    ) -> torch.Tensor:
-        """Naive fp32 reference for context prefill (causal in the self segment)."""
-        S, Hq, D = meta.num_workers, self.num_qo_heads, self.head_dim
-        gqa = Hq // self.num_kv_heads
-        scale = D**-0.5
-        k_flat = self.kv_cache.k_cache(layer_id).reshape(-1, self.num_kv_heads, D)
-        v_flat = self.kv_cache.v_cache(layer_id).reshape(-1, self.num_kv_heads, D)
-
-        scores, values = [], []
-        n_sub = len(meta._kv_parts)
-        for j, pages in enumerate(meta._kv_parts):
-            pages = pages.to(dtype=torch.int64)
-            k_seg = k_flat[pages].float().repeat_interleave(gqa, dim=1)  # [L, Hq, D]
-            v_seg = v_flat[pages].float().repeat_interleave(gqa, dim=1)
-            q_j = q_sub[j * S : (j + 1) * S].float()  # [S, Hq, D]
-            score = torch.einsum("shd,lhd->shl", q_j, k_seg) * scale
-            if j == n_sub - 1:  # causal self segment
-                mask = torch.arange(S, device=score.device)[:, None] < torch.arange(
-                    S, device=score.device
-                )[None, :]
-                score.masked_fill_(mask[:, None, :], float("-inf"))
-            scores.append(score)
-            values.append(v_seg)
-
-        att = torch.softmax(torch.cat(scores, dim=-1), dim=-1)  # [S, Hq, L_total]
-        v_all = torch.cat(values, dim=0)  # [L_total, Hq, D]
-        return torch.einsum("shl,lhd->shd", att, v_all).to(q_sub.dtype)
-
-    def _sdpa_reference(
-        self, q_sub: torch.Tensor, meta: SharedCacheAttnMetadata, layer_id: int
-    ) -> torch.Tensor:
-        """
-        Naive fp32 reference: per-worker softmax over the concatenation of all
-        segment scores, using the same rotated per-segment queries and the same
-        stored KV pages as the FlashInfer path.  Mirrors the reference's
-        ``async_reasoning_sdpa_pt``.
-        """
-        W, Hq, D = meta.num_workers, self.num_qo_heads, self.head_dim
-        gqa = Hq // self.num_kv_heads
-        scale = D**-0.5
-        k_flat = self.kv_cache.k_cache(layer_id).reshape(-1, self.num_kv_heads, D)
-        v_flat = self.kv_cache.v_cache(layer_id).reshape(-1, self.num_kv_heads, D)
-
-        scores: List[List[torch.Tensor]] = [[] for _ in range(W)]
-        values: List[List[torch.Tensor]] = [[] for _ in range(W)]
-        sub_worker = meta.sub_worker.tolist()
-        for i, pages in enumerate(meta._kv_parts):
-            w = sub_worker[i]
-            pages = pages.to(dtype=torch.int64)
-            k_seg = k_flat[pages].float().repeat_interleave(gqa, dim=1)  # [L, Hq, D]
-            v_seg = v_flat[pages].float().repeat_interleave(gqa, dim=1)
-            q_i = q_sub[i].float()  # [Hq, D] — already rotated for this segment
-            scores[w].append(torch.einsum("hd,lhd->hl", q_i, k_seg) * scale)
-            values[w].append(v_seg)
-
-        outs = []
-        for w in range(W):
-            att = torch.softmax(torch.cat(scores[w], dim=-1), dim=-1)  # [Hq, L_total]
-            v_all = torch.cat(values[w], dim=0)  # [L_total, Hq, D]
-            outs.append(torch.einsum("hl,lhd->hd", att, v_all))
-        return torch.stack(outs).to(q_sub.dtype)
