@@ -69,7 +69,7 @@ def parse_args(argv: list[str] | None = None) -> DemoConfig:
         max_steps=args.max_steps,
         probe_period=args.probe_period,
         memory_ratio=args.memory_ratio,
-        page_size=page_size,
+        page_size=args.page_size,
     )
 
 
