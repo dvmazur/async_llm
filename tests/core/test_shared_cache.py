@@ -4,8 +4,7 @@ Tests for ``minisgl.shared_cache``.
 This file contains two groups of tests:
 
 * **Unit tests** (always run) that exercise pure-Python/torch logic:
-  ``SharedBlock``, ``WorkerGroup``, ``build_correction_plan`` and the
-  ``apply_rope_correction`` math.
+  ``SharedBlock``, ``WorkerGroup`` and the ``apply_rope_correction`` math.
 
 * **End-to-end tests** (require ``MINISGL_E2E_MODEL`` env var pointing to an
   HF model path and a working CUDA device) that spin up a real ``Engine`` and
@@ -43,7 +42,6 @@ from minisgl.shared_cache import (
     WorkerGroup,
     apply_rope_correction,
 )
-from minisgl.shared_cache.rope_correction import build_correction_plan
 
 
 # =============================================================================
@@ -55,51 +53,23 @@ class TestSharedBlock:
     def test_empty_block(self):
         block = SharedBlock(torch.device("cpu"))
         assert block.num_tokens == 0
-        assert not block.needs_correction(0)
-        assert not block.needs_correction(100)
 
     def test_grow(self):
         block = SharedBlock(torch.device("cpu"))
         pages = torch.tensor([10, 11, 12], dtype=torch.int32)
-        positions = torch.tensor([0, 1, 2], dtype=torch.int64)
-        block.grow(pages, positions)
+        block.grow(pages)
         assert block.num_tokens == 3
         assert block.page_indices == [10, 11, 12]
-        assert block.stored_positions == [0, 1, 2]
 
     def test_grow_multiple_times(self):
         block = SharedBlock(torch.device("cpu"))
-        block.grow(torch.tensor([5, 6]), torch.tensor([0, 1]))
-        block.grow(torch.tensor([7, 8, 9]), torch.tensor([2, 3, 4]))
+        block.grow(torch.tensor([5, 6]))
+        block.grow(torch.tensor([7, 8, 9]))
         assert block.page_indices == [5, 6, 7, 8, 9]
-        assert block.stored_positions == [0, 1, 2, 3, 4]
-
-    def test_needs_correction_same_position(self):
-        block = SharedBlock(torch.device("cpu"))
-        block.grow(torch.tensor([0, 1, 2]), torch.tensor([0, 1, 2]))
-        assert not block.needs_correction(0)
-
-    def test_needs_correction_shifted(self):
-        block = SharedBlock(torch.device("cpu"))
-        block.grow(torch.tensor([0, 1, 2]), torch.tensor([0, 1, 2]))
-        assert block.needs_correction(5)
-        assert block.needs_correction(-3)
-
-    def test_compute_corrections(self):
-        block = SharedBlock(torch.device("cpu"))
-        block.grow(torch.tensor([0, 1, 2]), torch.tensor([10, 11, 12]))
-        corr = block.compute_corrections(target_start=100)
-        assert torch.equal(corr, torch.tensor([90, 90, 90], dtype=torch.int64))
-
-    def test_compute_corrections_negative(self):
-        block = SharedBlock(torch.device("cpu"))
-        block.grow(torch.tensor([0, 1, 2]), torch.tensor([10, 11, 12]))
-        corr = block.compute_corrections(target_start=5)
-        assert torch.equal(corr, torch.tensor([-5, -5, -5], dtype=torch.int64))
 
     def test_clear(self):
         block = SharedBlock(torch.device("cpu"))
-        block.grow(torch.tensor([5, 6]), torch.tensor([0, 1]))
+        block.grow(torch.tensor([5, 6]))
         pages = block.clear()
         assert pages == [5, 6]
         assert block.num_tokens == 0
@@ -115,9 +85,9 @@ class TestWorkerGroup:
         prompt = SharedBlock(device)
         w1 = SharedBlock(device)
         w2 = SharedBlock(device)
-        prompt.grow(torch.arange(5), torch.arange(5))
-        w1.grow(torch.arange(5, 8), torch.arange(5, 8))
-        w2.grow(torch.arange(8, 10), torch.arange(5, 7))  # stored at positions 5,6
+        prompt.grow(torch.arange(5))
+        w1.grow(torch.arange(5, 8))
+        w2.grow(torch.arange(8, 10))
         group = WorkerGroup(
             cache_structure=[
                 [prompt, w2, w1],
@@ -148,42 +118,6 @@ class TestWorkerGroup:
         # write_to defaults to last block per worker
         assert group.write_to[0] is b
         assert group.write_to[1] is c
-
-
-class TestBuildCorrectionPlan:
-    def test_empty_block_skipped(self):
-        block = SharedBlock(torch.device("cpu"))
-        plan = build_correction_plan([(block, 0)])
-        assert plan == {}
-
-    def test_no_correction_needed(self):
-        block = SharedBlock(torch.device("cpu"))
-        block.grow(torch.tensor([0, 1, 2]), torch.tensor([0, 1, 2]))
-        plan = build_correction_plan([(block, 0)])
-        assert plan == {}
-
-    def test_correction_needed(self):
-        block = SharedBlock(torch.device("cpu"))
-        block.grow(torch.tensor([0, 1, 2]), torch.tensor([0, 1, 2]))
-        plan = build_correction_plan([(block, 5)])
-        assert len(plan) == 1
-        key = (block.block_id, 5)
-        assert key in plan
-        _, _, corrections = plan[key]
-        assert torch.equal(corrections, torch.tensor([5, 5, 5]))
-
-    def test_dedup_same_target(self):
-        block = SharedBlock(torch.device("cpu"))
-        block.grow(torch.tensor([0, 1]), torch.tensor([0, 1]))
-        # Same (block, target) requested twice — should appear once in the plan
-        plan = build_correction_plan([(block, 10), (block, 10)])
-        assert len(plan) == 1
-
-    def test_different_targets_different_entries(self):
-        block = SharedBlock(torch.device("cpu"))
-        block.grow(torch.tensor([0, 1]), torch.tensor([0, 1]))
-        plan = build_correction_plan([(block, 10), (block, 20)])
-        assert len(plan) == 2
 
 
 class TestApplyRopeCorrection:
