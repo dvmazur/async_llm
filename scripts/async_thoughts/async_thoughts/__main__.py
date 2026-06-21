@@ -57,7 +57,7 @@ def parse_args(argv: list[str] | None = None) -> DemoConfig:
         f"cache (default: {DEFAULT_MEMORY_RATIO}).",
     )
     p.add_argument(
-        "--page_size",
+        "--page-size",
         type=int,
         default=DEFAULT_PAGE_SIZE,
         help="The number of tokens in a page.",
