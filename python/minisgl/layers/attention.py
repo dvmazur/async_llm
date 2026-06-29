@@ -51,6 +51,13 @@ class AttentionLayer(StateLessOP):
             self.q_norm.forward_inplace(q.view(-1, self.num_qo_heads, self.head_dim))
         if self.k_norm is not None:
             self.k_norm.forward_inplace(k.view(-1, self.num_kv_heads, self.head_dim))
+        # Shared-cache decode (duck-typed to avoid importing shared_cache here):
+        # the op rotates K block-relative and rotates per-segment query copies
+        # itself, so q/k must be passed through unrotated.
+        sc_op = getattr(ctx.batch.attn_metadata, "shared_cache_op", None)
+        if sc_op is not None:
+            o = sc_op.forward(q, k, v, self.layer_id, ctx.batch)
+            return o.view(-1, self.qo_attn_dim)
         q, k = self.rotary.forward(ctx.batch.positions, q, k)
         q = q.view(-1, self.num_qo_heads, self.head_dim)
         o = ctx.attn_backend.forward(q, k, v, self.layer_id, ctx.batch)

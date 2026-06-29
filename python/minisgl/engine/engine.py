@@ -7,7 +7,7 @@ import torch
 from minisgl.attention import create_attention_backend
 from minisgl.core import Batch, Context, Req, set_global_ctx
 from minisgl.distributed import destroy_distributed, enable_pynccl_distributed, set_tp_info
-from minisgl.kvcache import create_kvcache_pool
+from minisgl.kvcache import PageAllocator, create_kvcache_pool
 from minisgl.layers import set_rope_device
 from minisgl.models import create_model, load_weight
 from minisgl.moe import create_moe_backend
@@ -61,6 +61,11 @@ class Engine:
             device=self.device,
             dtype=self.dtype,
         )
+
+        # Main page cache: the page-aligned pool over the real KV pages.  The
+        # live scheduler manages its own CacheManager; standalone in-process
+        # consumers (e.g. SharedCacheSession) borrow pages from here instead.
+        self.page_allocator = PageAllocator(self.num_pages, config.page_size, self.device)
 
         # ======================= Page table initialization ========================
         # NOTE: 1. aligned to 128 bytes; 2. store raw locations instead of pages
