@@ -32,10 +32,53 @@ class ModelConfig:
     norm_topk_prob: bool
     model_type: str
     architectures: list[str]
+    # Qwen3.5-style hybrid (Gated DeltaNet) extensions; defaults keep other models unchanged.
+    partial_rotary_factor: float = 1.0
+    attn_output_gate: bool = False
+    layer_types: tuple[str, ...] | None = None
+    linear_num_key_heads: int = 0
+    linear_num_value_heads: int = 0
+    linear_key_head_dim: int = 0
+    linear_value_head_dim: int = 0
+    linear_conv_kernel_dim: int = 0
 
     @property
     def is_moe(self) -> bool:
         return "moe" in self.model_type
+
+    @property
+    def is_hybrid(self) -> bool:
+        """True only for models with real linear-attention layers (e.g. Qwen3.5).
+
+        Note: recent transformers adds an all-``full_attention`` ``layer_types`` to plain
+        Qwen2/Qwen3 configs, so presence of ``layer_types`` alone is not sufficient.
+        """
+        return self.layer_types is not None and "linear_attention" in self.layer_types
+
+    @property
+    def num_kv_layers(self) -> int:
+        """Number of layers that own a real KV cache (full-attention layers)."""
+        if self.layer_types is None:
+            return self.num_layers
+        return sum(t == "full_attention" for t in self.layer_types)
+
+    @property
+    def num_linear_layers(self) -> int:
+        if self.layer_types is None:
+            return 0
+        return sum(t == "linear_attention" for t in self.layer_types)
+
+    @property
+    def linear_key_dim(self) -> int:
+        return self.linear_num_key_heads * self.linear_key_head_dim
+
+    @property
+    def linear_value_dim(self) -> int:
+        return self.linear_num_value_heads * self.linear_value_head_dim
+
+    @property
+    def linear_conv_dim(self) -> int:
+        return 2 * self.linear_key_dim + self.linear_value_dim
 
     @classmethod
     def from_hf(cls, config: PretrainedConfig) -> ModelConfig:
@@ -56,9 +99,21 @@ class ModelConfig:
         norm_topk_prob = getattr(config, "norm_topk_prob", False)
         architectures = getattr(config, "architectures", ["LlamaForCausalLM"])
 
-        # Llama/Qwen: rope_theta is a direct attr; Mistral: it's inside rope_scaling dict
-        rope_scaling = getattr(config, "rope_scaling", None)
-        rope_theta = getattr(config, "rope_theta", None) or rope_scaling["rope_theta"]
+        # Rope: Qwen3.5 nests it under `rope_parameters`; Llama/Qwen use a direct
+        # `rope_theta`; Mistral keeps it inside the `rope_scaling` dict.
+        rope_params = getattr(config, "rope_parameters", None)
+        partial_rotary_factor = getattr(config, "partial_rotary_factor", 1.0)
+        if rope_params is not None:
+            rope_scaling = None
+            rope_theta = getattr(rope_params, "rope_theta")
+            partial_rotary_factor = getattr(rope_params, "partial_rotary_factor", partial_rotary_factor)
+        else:
+            rope_scaling = getattr(config, "rope_scaling", None)
+            rope_theta = getattr(config, "rope_theta", None) or rope_scaling["rope_theta"]
+
+        # Hybrid linear-attention (Gated DeltaNet) layout, present only on Qwen3.5.
+        layer_types = getattr(config, "layer_types", None)
+        layer_types = tuple(layer_types) if layer_types is not None else None
 
         return cls(
             num_layers=config.num_hidden_layers,
@@ -84,4 +139,12 @@ class ModelConfig:
             norm_topk_prob=norm_topk_prob,
             model_type=model_type,
             architectures=architectures,
+            partial_rotary_factor=partial_rotary_factor,
+            attn_output_gate=getattr(config, "attn_output_gate", False),
+            layer_types=layer_types,
+            linear_num_key_heads=getattr(config, "linear_num_key_heads", 0),
+            linear_num_value_heads=getattr(config, "linear_num_value_heads", 0),
+            linear_key_head_dim=getattr(config, "linear_key_head_dim", 0),
+            linear_value_head_dim=getattr(config, "linear_value_head_dim", 0),
+            linear_conv_kernel_dim=getattr(config, "linear_conv_kernel_dim", 0),
         )
