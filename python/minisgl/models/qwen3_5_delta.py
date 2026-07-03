@@ -23,9 +23,13 @@ def _chunk_gated_delta_rule(
     g: torch.Tensor,
     beta: torch.Tensor,
     chunk_size: int = 64,
+    initial_state: torch.Tensor | None = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Chunked delta-rule for prefill. Inputs are (B, T, H, D); returns
-    (core_attn_out (B, T, H, Dv), final_recurrent_state (B, H, Dk, Dv))."""
+    (core_attn_out (B, T, H, Dv), final_recurrent_state (B, H, Dk, Dv)).
+
+    ``initial_state`` (B, H, Dk, Dv), HF convention, seeds the recurrence — used by
+    async-reasoning to thread a prior block's composed state into this prefill."""
     initial_dtype = query.dtype
     query = _l2norm(query, eps=1e-6)
     key = _l2norm(key, eps=1e-6)
@@ -66,7 +70,10 @@ def _chunk_gated_delta_rule(
     attn = attn + torch.eye(chunk_size, dtype=attn.dtype, device=attn.device)
     value = attn @ v_beta
     k_cumdecay = attn @ (k_beta * g.exp().unsqueeze(-1))
-    last_recurrent_state = torch.zeros(batch_size, num_heads, k_head_dim, v_head_dim).to(value)
+    if initial_state is None:
+        last_recurrent_state = torch.zeros(batch_size, num_heads, k_head_dim, v_head_dim).to(value)
+    else:
+        last_recurrent_state = initial_state.to(value)
     core_attn_out = torch.zeros_like(value)
     mask = torch.triu(
         torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=1
@@ -215,11 +222,108 @@ class Qwen3_5GatedDeltaNet(BaseOP):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         ctx = get_global_ctx()
         batch = ctx.batch
+        # Async-reasoning shared-cache path: compose the initial recurrent state
+        # from the worker's block chain and capture per-token affine updates.
+        if ctx.gdn_ar is not None:
+            if batch.is_prefill:
+                return self._forward_ar_prefill(x, ctx.gdn_ar)
+            return self._forward_ar_decode(x, ctx.gdn_ar)
+        # Normal serving path: per-request state pool indexed by table_idx.
         gdn = ctx.gdn_state
         assert gdn is not None, "GDNStatePool not initialized for hybrid model"
         if batch.is_prefill:
             return self._forward_prefill(x, batch, gdn)
         return self._forward_decode(x, batch, gdn)
+
+    # --- async-reasoning prefill: single-worker block, compose prior + capture ---
+    def _forward_ar_prefill(self, x, ar) -> torch.Tensor:
+        lin = self._lin_idx
+        k = self.conv_kernel
+        length = x.shape[0]
+
+        qkv = self.in_proj_qkv.forward(x)  # (L, conv_dim)
+        z = self.in_proj_z.forward(x)
+        a = self.in_proj_a.forward(x)
+        b = self.in_proj_b.forward(x)
+
+        conv_in = qkv.transpose(0, 1).unsqueeze(0)  # (1, conv_dim, L)
+        prior_conv = ar.prior_conv_states(lin)  # (1, conv_dim, k) or None
+        if prior_conv is not None:
+            ctx_tail = prior_conv[..., -(k - 1):]  # (1, conv_dim, k-1)
+            full_input = torch.cat([ctx_tail, conv_in], dim=-1)  # (1, conv_dim, k-1+L)
+            conv_out = F.silu(
+                F.conv1d(full_input, self.conv1d.weight, groups=self.conv_dim, padding=k - 1)
+            )
+            qkv2 = conv_out[..., k - 1 : k - 1 + length]
+            new_conv_state = full_input[..., -k:]
+        else:
+            conv_out = F.conv1d(
+                conv_in, self.conv1d.weight, groups=self.conv_dim, padding=k - 1
+            )[..., :length]
+            qkv2 = F.silu(conv_out)
+            pad = k - length
+            new_conv_state = F.pad(conv_in, (pad, 0)) if pad >= 0 else conv_in[..., -k:]
+        qkv2 = qkv2.squeeze(0).transpose(0, 1)  # (L, conv_dim)
+
+        q, kk, v = self._split_heads(qkv2)  # each (L, num_v_heads, d)
+        beta, g = self._gates(a, b)
+        # fp32 initial state: the delta-rule kernels upcast to fp32 anyway, and
+        # fp32 composition avoids bf16 error compounding across long chains.
+        initial_state = ar.compose_initial_recurrent_state(lin, dtype=torch.float32)  # (1,H,dk,dv)|None
+        core, _ = _chunk_gated_delta_rule(
+            q.unsqueeze(0), kk.unsqueeze(0), v.unsqueeze(0), g.unsqueeze(0), beta.unsqueeze(0),
+            initial_state=initial_state,
+        )
+
+        ar.capture_token_affines(
+            lin, kk.unsqueeze(0), v.unsqueeze(0), g.exp().unsqueeze(0), beta.unsqueeze(0)
+        )
+        ar.set_conv_states(lin, new_conv_state)
+
+        core = core.reshape(length, self.num_v_heads, self.head_v_dim)
+        core = self.norm.forward(core, z.reshape(length, self.num_v_heads, self.head_v_dim))
+        return self.out_proj.forward(core.reshape(length, self.value_dim))
+
+    # --- async-reasoning decode: W workers, one token each, batched ---
+    def _forward_ar_decode(self, x, ar) -> torch.Tensor:
+        lin = self._lin_idx
+        k = self.conv_kernel
+        n = x.shape[0]  # num workers
+
+        qkv = self.in_proj_qkv.forward(x)  # (W, conv_dim)
+        z = self.in_proj_z.forward(x)
+        a = self.in_proj_a.forward(x)
+        b = self.in_proj_b.forward(x)
+
+        prior_conv = ar.prior_conv_states(lin)
+        if prior_conv is None:
+            prior_conv = torch.zeros(n, self.conv_dim, k, device=x.device, dtype=qkv.dtype)
+        conv_in = torch.cat([prior_conv, qkv.unsqueeze(-1)], dim=-1)  # (W, conv_dim, k+1)
+        new_conv_state = conv_in[..., -k:]
+        conv_out = F.conv1d(conv_in, self.conv1d.weight, groups=self.conv_dim, padding=0)
+        qkv2 = F.silu(conv_out[..., -1:]).squeeze(-1)  # (W, conv_dim)
+
+        q, kk, v = self._split_heads(qkv2)  # (W, num_v_heads, d)
+        beta, g = self._gates(a, b)
+        initial_state = ar.compose_initial_recurrent_state(lin, dtype=torch.float32)  # (W,H,dk,dv)|None
+        if initial_state is None:
+            initial_state = torch.zeros(
+                n, self.num_v_heads, self.head_k_dim, self.head_v_dim,
+                device=x.device, dtype=torch.float32,
+            )
+        core, _ = _recurrent_gated_delta_rule(
+            q.unsqueeze(1), kk.unsqueeze(1), v.unsqueeze(1),
+            g.unsqueeze(1), beta.unsqueeze(1), initial_state,
+        )
+
+        ar.capture_token_affines(
+            lin, kk.unsqueeze(1), v.unsqueeze(1), g.exp().unsqueeze(1), beta.unsqueeze(1)
+        )
+        ar.set_conv_states(lin, new_conv_state)
+
+        core = core.reshape(n, self.num_v_heads, self.head_v_dim)
+        core = self.norm.forward(core, z.reshape(n, self.num_v_heads, self.head_v_dim))
+        return self.out_proj.forward(core.reshape(n, self.value_dim))
 
     # --- prefill: one chunked pass per request, write final state to pool ---
     def _forward_prefill(self, x, batch, gdn) -> torch.Tensor:

@@ -98,6 +98,7 @@ class SharedCacheAttention:
         page_size: int,
         dtype: torch.dtype,
         device: torch.device,
+        rotary_dim: int | None = None,
     ) -> None:
         from flashinfer import BatchDecodeWithPagedKVCacheWrapper, BatchPrefillWithPagedKVCacheWrapper
 
@@ -106,6 +107,9 @@ class SharedCacheAttention:
         self.num_qo_heads = num_qo_heads
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
+        # Partial RoPE (Qwen3.5): rotate only the first `rotary_dim` head dims,
+        # pass the rest through.  Defaults to full-head RoPE (standard models).
+        self.rotary_dim = rotary_dim if rotary_dim is not None else head_dim
         self.page_size = page_size
         self.dtype = dtype
         self.device = device
@@ -141,6 +145,20 @@ class SharedCacheAttention:
 
         self._plan_event = torch.cuda.Event()
         self._plan_event.record()
+
+    def _rope(self, x: torch.Tensor, corrections: torch.Tensor) -> torch.Tensor:
+        """Block-relative RoPE correction on ``x [N, heads, head_dim]``.
+
+        For partial RoPE only the first ``rotary_dim`` dims are rotated; the tail
+        is passed through unchanged (Qwen3.5).  ``cos_sin_cache`` is sized
+        ``[max_pos, rotary_dim]`` in the partial case.
+        """
+        if self.rotary_dim == self.head_dim:
+            return apply_rope_correction(x, corrections, self.cos_sin_cache)
+        x_rot = apply_rope_correction(
+            x[..., : self.rotary_dim].contiguous(), corrections, self.cos_sin_cache
+        )
+        return torch.cat([x_rot, x[..., self.rotary_dim :]], dim=-1)
 
     def prepare(
         self,
@@ -414,16 +432,14 @@ class SharedCacheAttention:
         W, Hq, D = meta.num_workers, self.num_qo_heads, self.head_dim
 
         # Store the new token's KV with block-relative key rotation.
-        k_rot = apply_rope_correction(
-            k.reshape(W, self.num_kv_heads, D), batch.positions, self.cos_sin_cache
-        )
+        k_rot = self._rope(k.reshape(W, self.num_kv_heads, D), batch.positions)
         # k_rot is freshly materialized (contiguous); the store kernel needs
         # v in the same layout, so detach v from its strided qkv slice too.
-        self.kv_cache.store_kv(k_rot.view(W, -1), v.contiguous(), batch.out_loc, layer_id)
+        self.kv_cache.store_kv(k_rot.reshape(W, -1), v.contiguous(), batch.out_loc, layer_id)
 
         # One query copy per (row, segment), rotated to its segment-relative position.
         q_sub = q.reshape(W, Hq, D)[meta.sub_worker]
-        q_sub = apply_rope_correction(q_sub, meta.sub_loc, self.cos_sin_cache)
+        q_sub = self._rope(q_sub, meta.sub_loc)
 
         if meta.phase == "context_prefill":
             return self._forward_context_prefill(q_sub, meta, layer_id)

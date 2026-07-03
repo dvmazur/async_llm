@@ -62,7 +62,6 @@ class Qwen3_5Attention(BaseOP):
     @nvtx_annotate("FullAttn")
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         ctx = get_global_ctx()
-        positions = ctx.batch.positions
         qkv = self.qkv_proj.forward(x)
         del x
         q_gate, k, v = qkv.split([2 * self.qo_dim, self.kv_dim, self.kv_dim], dim=-1)
@@ -75,12 +74,20 @@ class Qwen3_5Attention(BaseOP):
 
         q = self.q_norm.forward(q)
         k = self.k_norm.forward(k)
-        q = self._apply_rope(q, positions)
-        k = self._apply_rope(k, positions)
 
-        o = ctx.attn_backend.forward(
-            q, k.reshape(-1, self.kv_dim), v, self._kv_idx, ctx.batch
-        )  # (T, qo_dim)
+        # Async-reasoning shared-cache path: the op stores block-relative KV and
+        # applies partial RoPE itself, so pass q/k through un-rotated (mirrors
+        # layers.attention.AttentionLayer).  Otherwise use the normal backend.
+        sc_op = getattr(ctx.batch.attn_metadata, "shared_cache_op", None)
+        if sc_op is not None:
+            o = sc_op.forward(
+                q.reshape(-1, self.qo_dim), k.reshape(-1, self.kv_dim), v, self._kv_idx, ctx.batch
+            )
+        else:
+            q = self._apply_rope(q, ctx.batch.positions)
+            k = self._apply_rope(k, ctx.batch.positions)
+            o = ctx.attn_backend.forward(q, k.reshape(-1, self.kv_dim), v, self._kv_idx, ctx.batch)
+
         o = o.view(-1, self.num_qo_heads, self.head_dim) * torch.sigmoid(gate)
         return self.o_proj.forward(o.reshape(-1, self.qo_dim))
 

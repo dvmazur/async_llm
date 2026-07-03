@@ -37,6 +37,7 @@ from minisgl.core import Batch, Req, SamplingParams
 from minisgl.utils import div_ceil
 
 from .attention import SharedCacheAttention
+from .gdn import SharedCacheGDN
 from .shared_block import NULL_CACHE_HANDLE, SharedBlock
 from .worker_group import WorkerGroup
 
@@ -54,6 +55,40 @@ def extract_cos_sin_cache(engine: Engine) -> torch.Tensor:
     """
     layers = engine.model.model.layers.op_list
     return layers[0].self_attn.attn.rotary._cos_sin_cache
+
+
+def _is_hybrid_model(engine: Engine) -> bool:
+    layers = engine.model.model.layers.op_list
+    return any(getattr(layer, "_is_linear", False) for layer in layers)
+
+
+def _first_full_attn(engine: Engine):
+    """The first full-attention module (``Qwen3_5Attention``) of a hybrid model."""
+    for layer in engine.model.model.layers.op_list:
+        if not getattr(layer, "_is_linear", True):
+            return layer.self_attn
+    raise RuntimeError("hybrid model has no full-attention layer")
+
+
+def _first_gdn(engine: Engine):
+    """The first Gated-DeltaNet module (``Qwen3_5GatedDeltaNet``) of a hybrid model."""
+    for layer in engine.model.model.layers.op_list:
+        if getattr(layer, "_is_linear", False):
+            return layer.linear_attn
+    raise RuntimeError("hybrid model has no linear-attention layer")
+
+
+def _build_partial_cos_sin_cache(
+    base: float, rotary_dim: int, max_pos: int, device: torch.device
+) -> torch.Tensor:
+    """``[max_pos, rotary_dim]`` cos|sin cache for partial-RoPE (Qwen3.5), in the
+    ``minisgl.layers.rotary`` format (first half cos, second half sin)."""
+    inv_freq = 1.0 / (
+        base ** (torch.arange(0, rotary_dim, 2, dtype=torch.float32, device=device) / rotary_dim)
+    )
+    t = torch.arange(max_pos, dtype=torch.float32, device=device)
+    freqs = torch.einsum("i,j->ij", t, inv_freq)
+    return torch.cat((freqs.cos(), freqs.sin()), dim=-1)
 
 
 class SharedCacheSession:
@@ -92,22 +127,57 @@ class SharedCacheSession:
             device=self.device,
         )
 
-        if cos_sin_cache is not None:
-            self._cos_sin_cache = cos_sin_cache.to(self.device)
-        else:
-            self._cos_sin_cache = extract_cos_sin_cache(engine).to(self.device)
+        self._is_hybrid = _is_hybrid_model(engine)
 
-        # Query-rotation attention op for decode (arXiv:2512.10931).
-        attn0 = engine.model.model.layers.op_list[0].self_attn.attn
+        # Query-rotation attention op for decode (arXiv:2512.10931).  Hybrid
+        # (Qwen3.5) models use partial RoPE and a custom full-attention module;
+        # standard models keep the AttentionLayer with a full-head cos/sin cache.
+        if self._is_hybrid:
+            attn0 = _first_full_attn(engine)  # Qwen3_5Attention
+            rotary_dim = attn0.rotary_dim
+            if cos_sin_cache is not None:
+                self._cos_sin_cache = cos_sin_cache.to(self.device)
+            else:
+                self._cos_sin_cache = _build_partial_cos_sin_cache(
+                    base=attn0._rope_base,
+                    rotary_dim=rotary_dim,
+                    max_pos=engine.max_seq_len,
+                    device=self.device,
+                )
+            num_qo_heads = attn0.num_qo_heads
+            num_kv_heads = attn0.num_kv_heads
+            head_dim = attn0.head_dim
+            gdn0 = _first_gdn(engine)  # Qwen3_5GatedDeltaNet
+            self.sc_gdn: SharedCacheGDN | None = SharedCacheGDN(
+                num_heads=gdn0.num_v_heads,
+                head_k_dim=gdn0.head_k_dim,
+                head_v_dim=gdn0.head_v_dim,
+                conv_dim=gdn0.conv_dim,
+                conv_kernel=gdn0.conv_kernel,
+                device=self.device,
+            )
+        else:
+            attn0 = engine.model.model.layers.op_list[0].self_attn.attn
+            if cos_sin_cache is not None:
+                self._cos_sin_cache = cos_sin_cache.to(self.device)
+            else:
+                self._cos_sin_cache = extract_cos_sin_cache(engine).to(self.device)
+            rotary_dim = attn0.head_dim
+            num_qo_heads = attn0.num_qo_heads
+            num_kv_heads = attn0.num_kv_heads
+            head_dim = attn0.head_dim
+            self.sc_gdn = None
+
         self.sc_attn = SharedCacheAttention(
             kv_cache=self.kv_cache,
             cos_sin_cache=self._cos_sin_cache,
-            num_qo_heads=attn0.num_qo_heads,
-            num_kv_heads=attn0.num_kv_heads,
-            head_dim=attn0.head_dim,
+            num_qo_heads=num_qo_heads,
+            num_kv_heads=num_kv_heads,
+            head_dim=head_dim,
             page_size=self.page_size,
             dtype=self.kv_cache.dtype,
             device=self.device,
+            rotary_dim=rotary_dim,
         )
 
     # ------------------------------------------------------------------
@@ -167,7 +237,7 @@ class SharedCacheSession:
                 cache_handle=NULL_CACHE_HANDLE,
             )
             batch = self._build_batch([req], phase="prefill")
-            logits = self._forward(batch)
+            logits = self._forward(batch, cache_structure=[[block]], write_to=[block])
 
             block.grow_pages(page_starts, seq_len)
 
@@ -205,7 +275,7 @@ class SharedCacheSession:
         batch.out_loc = out_loc
         batch.attn_metadata = self.sc_attn.prepare_context_prefill(context, page_starts, seq_len)
 
-        logits = self._forward(batch)
+        logits = self._forward(batch, cache_structure=[[*context, block]], write_to=[block])
 
         block.grow_pages(page_starts, seq_len)
         return logits[:1]
@@ -268,7 +338,9 @@ class SharedCacheSession:
         batch.out_loc = new_token_slots
         batch.attn_metadata = self.sc_attn.prepare(group, new_page_for_block, new_token_slots)
 
-        logits = self._forward(batch)
+        logits = self._forward(
+            batch, cache_structure=group.cache_structure, write_to=group.write_to
+        )
 
         # Commit growth now that the forward (which read post-append lengths) is done.
         for wt in group.write_to:
@@ -368,6 +440,21 @@ class SharedCacheSession:
             )
         return torch.cat(parts).to(self.device)
 
-    def _forward(self, batch: Batch) -> torch.Tensor:
-        with self.engine.ctx.forward_batch(batch):
-            return self.engine.model.forward()
+    def _forward(
+        self,
+        batch: Batch,
+        cache_structure: "List[List[SharedBlock]] | None" = None,
+        write_to: "List[SharedBlock] | None" = None,
+    ) -> torch.Tensor:
+        ctx = self.engine.ctx
+        # For hybrid (Qwen3.5) models, hand the GDN layers the worker chains so
+        # they can compose the initial recurrent state and capture per-token
+        # affine updates.  No-op for standard models (sc_gdn is None).
+        if self.sc_gdn is not None and cache_structure is not None:
+            self.sc_gdn.set_context(cache_structure, write_to or [c[-1] for c in cache_structure])
+            ctx.gdn_ar = self.sc_gdn
+        try:
+            with ctx.forward_batch(batch):
+                return self.engine.model.forward()
+        finally:
+            ctx.gdn_ar = None

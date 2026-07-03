@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from minisgl.kvcache import BaseCacheHandle
@@ -44,6 +44,16 @@ class SharedBlock:
         # Page-start token slots (multiples of page_size), one per owned page.
         self.page_starts: List[int] = []
         self.num_tokens: int = 0
+
+        # --- Gated DeltaNet (Qwen3.5) per-linear-layer state ---
+        # Block-level affine summary (A_hat, B_hat) of this block's GDN token
+        # trajectory, keyed by linear-layer index; fp32, block convention
+        # (A_hat [1,H,d_k,d_k], B_hat [1,H,d_v,d_k]).  Composing a worker's chain
+        # of these folds into an initial recurrent state (see shared_cache.gdn).
+        self.linear_affine: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
+        # Rolling causal-conv window (last conv_kernel columns) per linear layer,
+        # [conv_dim, conv_kernel].  Standard full-attention blocks leave these empty.
+        self.linear_conv_state: Dict[int, torch.Tensor] = {}
 
     @property
     def num_pages(self) -> int:
@@ -101,6 +111,8 @@ class SharedBlock:
         pages = list(self.page_starts)
         self.page_starts.clear()
         self.num_tokens = 0
+        self.linear_affine.clear()
+        self.linear_conv_state.clear()
         return pages
 
     def __repr__(self) -> str:
