@@ -201,6 +201,7 @@ class SharedCacheSession:
         block: SharedBlock,
         input_ids: torch.Tensor,
         context: Optional[List[SharedBlock]] = None,
+        capture_affine: bool = True,
     ) -> torch.Tensor:
         """
         Prefill a single ``SharedBlock`` with *input_ids* and return logits.
@@ -211,6 +212,12 @@ class SharedCacheSession:
         the blocks were concatenated ``[ctx_0, ..., block]`` (mirrors the
         reference's ``prefill_cache_block(text, [ctx..., new])``); the stored
         KV stays block-relative either way.  Empty context blocks are skipped.
+
+        ``capture_affine`` only applies to hybrid (Qwen3.5) models with no
+        context.  Set it ``False`` for throwaway prefills whose block is read
+        once and freed (e.g. the mode-switching probe): the GDN layers then skip
+        the O(seq) affine capture (a large, otherwise-wasted cost) and take the
+        numerically-identical from-zero path.  Ignored for standard models.
         """
         input_ids = input_ids.to(dtype=torch.int32).flatten().cpu()
         seq_len = len(input_ids)
@@ -237,7 +244,11 @@ class SharedCacheSession:
                 cache_handle=NULL_CACHE_HANDLE,
             )
             batch = self._build_batch([req], phase="prefill")
-            logits = self._forward(batch, cache_structure=[[block]], write_to=[block])
+            # Throwaway prefills (capture_affine=False) skip the AR path so the
+            # GDN layers don't pay the O(seq) affine capture; a from-zero
+            # standalone prefill is identical to composing an empty chain.
+            cs = [[block]] if capture_affine else None
+            logits = self._forward(batch, cache_structure=cs, write_to=[block])
 
             block.grow_pages(page_starts, seq_len)
 

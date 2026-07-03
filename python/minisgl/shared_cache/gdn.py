@@ -81,28 +81,41 @@ class SharedCacheGDN:
         """
         if not self.has_previous_affine(lin_idx):
             return None
-        per_worker: List[torch.Tensor] = []
-        for chain in self.cache_structure:
-            A, B = init_gdn_affine(
-                batch_size=1,
-                num_heads=self.num_heads,
-                d_k=self.head_k_dim,
-                d_v=self.head_v_dim,
-                dtype=torch.float32,
-                device=self.device,
-            )
+
+        # Worker chains typically share leading blocks (e.g. [prompt, thinker] is a
+        # prefix of [prompt, thinker, writer]).  Memoize each composed prefix by its
+        # block-id tuple so a shared prefix is composed once per call, not per worker.
+        # Bit-identical to composing each chain independently (compose is deterministic).
+        prefix_memo: dict = {}
+
+        def compose_chain(chain):
+            acc = None  # (A, B) once we hit the first block with an affine
+            key: tuple = ()
             for block in chain:
+                key = key + (id(block),)
                 pair = block.linear_affine.get(lin_idx)
                 if pair is None:
+                    continue  # block has no affine for this layer -> acc unchanged
+                if key in prefix_memo:
+                    acc = prefix_memo[key]
                     continue
-                A_b, B_b = pair
-                A, B = compose_gdn_affines(
-                    A_first=A,
-                    B_first=B,
-                    A_second=A_b.to(dtype=torch.float32, device=self.device),
-                    B_second=B_b.to(dtype=torch.float32, device=self.device),
+                A_b = pair[0].to(dtype=torch.float32, device=self.device)
+                B_b = pair[1].to(dtype=torch.float32, device=self.device)
+                if acc is None:
+                    acc = (A_b, B_b)  # first real block: no identity compose needed
+                else:
+                    acc = compose_gdn_affines(
+                        A_first=acc[0], B_first=acc[1], A_second=A_b, B_second=B_b
+                    )
+                prefix_memo[key] = acc
+            if acc is None:
+                acc = init_gdn_affine(
+                    batch_size=1, num_heads=self.num_heads, d_k=self.head_k_dim,
+                    d_v=self.head_v_dim, dtype=torch.float32, device=self.device,
                 )
-            per_worker.append(B)  # S0 = 0 -> B_chain, block convention [1,H,d_v,d_k]
+            return acc
+
+        per_worker = [compose_chain(chain)[1] for chain in self.cache_structure]
         S_block = torch.cat(per_worker, dim=0)  # [W, H, d_v, d_k]
         S_hf = S_block.transpose(-1, -2).contiguous()  # [W, H, d_k, d_v]
         return S_hf.to(dtype=dtype)
@@ -147,37 +160,35 @@ class SharedCacheGDN:
 
         ``key/value`` are ``[W, seq, H, d]``; ``alpha/beta`` are ``[W, seq, H]``.
         The key is L2-normed to match the kernel's ``use_qk_l2norm_in_kernel=True``.
+
+        The rank-1 update is batched over workers (one call per token, not per
+        worker), so the only Python loop is the inherently-sequential token scan
+        (length 1 for decode; the block length for a prefill).
         """
-        W, seq, H, _ = key.shape
+        W, seq, H, dk = key.shape
+        dv = value.shape[-1]
         key_f = key.float()
         key_f = key_f * torch.rsqrt((key_f * key_f).sum(dim=-1, keepdim=True) + l2norm_eps)
         value_f, alpha_f, beta_f = value.float(), alpha.float(), beta.float()
-        for w in range(W):
-            target = self.write_to[w]
+
+        # Gather each worker's prior affine into one batched [W, H, ...] pair.
+        A, B = init_gdn_affine(
+            batch_size=W, num_heads=H, d_k=dk, d_v=dv, dtype=torch.float32, device=key.device
+        )
+        for w, target in enumerate(self.write_to):
             pair = target.linear_affine.get(lin_idx)
-            if pair is None:
-                A, B = init_gdn_affine(
-                    batch_size=1,
-                    num_heads=H,
-                    d_k=key.shape[-1],
-                    d_v=value.shape[-1],
-                    dtype=torch.float32,
-                    device=key.device,
-                )
-            else:
-                A, B = pair
-                A = A.to(dtype=torch.float32, device=key.device)
-                B = B.to(dtype=torch.float32, device=key.device)
-            for t in range(seq):
-                A, B = update_affine_summary(
-                    A_hat=A,
-                    B_hat=B,
-                    k=key_f[w : w + 1, t],
-                    v=value_f[w : w + 1, t],
-                    alpha=alpha_f[w : w + 1, t],
-                    beta=beta_f[w : w + 1, t],
-                )
-            target.linear_affine[lin_idx] = (A, B)  # fresh fp32 tensors
+            if pair is not None:
+                A[w] = pair[0][0].to(dtype=torch.float32, device=key.device)
+                B[w] = pair[1][0].to(dtype=torch.float32, device=key.device)
+
+        for t in range(seq):
+            A, B = update_affine_summary(
+                A_hat=A, B_hat=B, k=key_f[:, t], v=value_f[:, t],
+                alpha=alpha_f[:, t], beta=beta_f[:, t],
+            )
+
+        for w, target in enumerate(self.write_to):
+            target.linear_affine[lin_idx] = (A[w : w + 1], B[w : w + 1])
 
     def set_conv_states(self, lin_idx: int, conv: torch.Tensor) -> None:
         """Store per-worker conv windows ``[W, conv_dim, k]`` into write blocks."""

@@ -11,6 +11,18 @@ from minisgl.utils import nvtx_annotate
 if TYPE_CHECKING:
     from .config import ModelConfig
 
+# Optional fast Gated DeltaNet kernels (flash-linear-attention, Triton).  When
+# present they replace the pure-torch chunk/recurrent scans below — a large speedup
+# for GDN prefill (and a modest one for decode).  Absent -> pure-torch fallback.
+try:
+    from fla.ops.gated_delta_rule import (
+        chunk_gated_delta_rule as _fla_chunk,
+        fused_recurrent_gated_delta_rule as _fla_recurrent,
+    )
+except Exception:  # pragma: no cover - fla is optional
+    _fla_chunk = None
+    _fla_recurrent = None
+
 
 def _l2norm(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     return x * torch.rsqrt((x * x).sum(dim=-1, keepdim=True) + eps)
@@ -139,6 +151,29 @@ def _recurrent_gated_delta_rule(
 
     core_attn_out = core_attn_out.transpose(1, 2).contiguous().to(initial_dtype)
     return core_attn_out, last_recurrent_state
+
+
+# ---- dispatchers: fast fla kernels when available, else pure-torch ----
+# Both take (B, T, H, D) inputs and l2-norm q/k internally; return
+# (core (B, T, H, Dv), final_state (B, H, Dk, Dv)).
+
+
+def _chunk_delta(query, key, value, g, beta, initial_state=None):
+    if _fla_chunk is not None:
+        return _fla_chunk(
+            query, key, value, g=g, beta=beta, initial_state=initial_state,
+            output_final_state=True, use_qk_l2norm_in_kernel=True,
+        )
+    return _chunk_gated_delta_rule(query, key, value, g, beta, initial_state=initial_state)
+
+
+def _recurrent_delta(query, key, value, g, beta, initial_state):
+    if _fla_recurrent is not None:
+        return _fla_recurrent(
+            query, key, value, g=g, beta=beta, initial_state=initial_state,
+            output_final_state=True, use_qk_l2norm_in_kernel=True,
+        )
+    return _recurrent_gated_delta_rule(query, key, value, g, beta, initial_state)
 
 
 # ============================================================================
@@ -270,7 +305,7 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         # fp32 initial state: the delta-rule kernels upcast to fp32 anyway, and
         # fp32 composition avoids bf16 error compounding across long chains.
         initial_state = ar.compose_initial_recurrent_state(lin, dtype=torch.float32)  # (1,H,dk,dv)|None
-        core, _ = _chunk_gated_delta_rule(
+        core, _ = _chunk_delta(
             q.unsqueeze(0), kk.unsqueeze(0), v.unsqueeze(0), g.unsqueeze(0), beta.unsqueeze(0),
             initial_state=initial_state,
         )
@@ -311,7 +346,7 @@ class Qwen3_5GatedDeltaNet(BaseOP):
                 n, self.num_v_heads, self.head_k_dim, self.head_v_dim,
                 device=x.device, dtype=torch.float32,
             )
-        core, _ = _recurrent_gated_delta_rule(
+        core, _ = _recurrent_delta(
             q.unsqueeze(1), kk.unsqueeze(1), v.unsqueeze(1),
             g.unsqueeze(1), beta.unsqueeze(1), initial_state,
         )
@@ -357,10 +392,10 @@ class Qwen3_5GatedDeltaNet(BaseOP):
 
             q, kk, v = self._split_heads(qkv)
             beta, g = self._gates(a, b)
-            core, rec_state = _chunk_gated_delta_rule(
+            core, rec_state = _chunk_delta(
                 q.unsqueeze(0), kk.unsqueeze(0), v.unsqueeze(0), g.unsqueeze(0), beta.unsqueeze(0)
             )
-            gdn.recurrent_state[self._lin_idx, req.table_idx] = rec_state.squeeze(0)
+            gdn.recurrent_state[self._lin_idx, req.table_idx] = rec_state.squeeze(0).float()
 
             core = core.reshape(length, self.num_v_heads, self.head_v_dim)
             core = self.norm.forward(core, z.reshape(length, self.num_v_heads, self.head_v_dim))
@@ -388,11 +423,11 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         q, kk, v = self._split_heads(qkv)
         beta, g = self._gates(a, b)
         rec_state = gdn.recurrent_state[self._lin_idx, table_idx]  # (N, num_v_heads, Dk, Dv)
-        core, new_state = _recurrent_gated_delta_rule(
+        core, new_state = _recurrent_delta(
             q.unsqueeze(1), kk.unsqueeze(1), v.unsqueeze(1),
             g.unsqueeze(1), beta.unsqueeze(1), rec_state,
         )
-        gdn.recurrent_state[self._lin_idx, table_idx] = new_state
+        gdn.recurrent_state[self._lin_idx, table_idx] = new_state.float()
 
         core = core.reshape(n, self.num_v_heads, self.head_v_dim)
         core = self.norm.forward(core, z.reshape(n, self.num_v_heads, self.head_v_dim))
