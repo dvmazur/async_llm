@@ -110,8 +110,12 @@ class SharedCacheGDN:
                 prefix_memo[key] = acc
             if acc is None:
                 acc = init_gdn_affine(
-                    batch_size=1, num_heads=self.num_heads, d_k=self.head_k_dim,
-                    d_v=self.head_v_dim, dtype=torch.float32, device=self.device,
+                    batch_size=1,
+                    num_heads=self.num_heads,
+                    d_k=self.head_k_dim,
+                    d_v=self.head_v_dim,
+                    dtype=torch.float32,
+                    device=self.device,
                 )
             return acc
 
@@ -138,9 +142,7 @@ class SharedCacheGDN:
         if not any_present:
             return None
         zeros = torch.zeros(self.conv_dim, self.conv_kernel, device=self.device)
-        filled = [
-            (c if c is not None else zeros).to(device=self.device) for c in per_worker
-        ]
+        filled = [(c if c is not None else zeros).to(device=self.device) for c in per_worker]
         return torch.stack(filled, dim=0)  # [W, conv_dim, k]
 
     # ------------------------------------------------------------------
@@ -183,8 +185,12 @@ class SharedCacheGDN:
 
         for t in range(seq):
             A, B = update_affine_summary(
-                A_hat=A, B_hat=B, k=key_f[:, t], v=value_f[:, t],
-                alpha=alpha_f[:, t], beta=beta_f[:, t],
+                A_hat=A,
+                B_hat=B,
+                k=key_f[:, t],
+                v=value_f[:, t],
+                alpha=alpha_f[:, t],
+                beta=beta_f[:, t],
             )
 
         for w, target in enumerate(self.write_to):

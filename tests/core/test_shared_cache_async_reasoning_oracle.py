@@ -114,8 +114,7 @@ class _LegacyLayerListProxy:
         return sum(
             1
             for l in self._cache.layers
-            if getattr(l, self._attr, None) is not None
-            and getattr(l, self._attr).numel() > 0
+            if getattr(l, self._attr, None) is not None and getattr(l, self._attr).numel() > 0
         )
 
     def __getitem__(self, i):
@@ -139,9 +138,7 @@ def _make_legacy_prop(attr_name: str):
     def _getter(self):
         proxy_attr = "_legacy_proxy_" + attr_name
         if not hasattr(self, proxy_attr):
-            object.__setattr__(
-                self, proxy_attr, _LegacyLayerListProxy(self, attr_name)
-            )
+            object.__setattr__(self, proxy_attr, _LegacyLayerListProxy(self, attr_name))
         return getattr(self, proxy_attr)
 
     return property(_getter)
@@ -151,7 +148,6 @@ DynamicCache.key_cache = _make_legacy_prop("keys")
 DynamicCache.value_cache = _make_legacy_prop("values")
 
 import shared_cache as ar_sc  # type: ignore  # noqa: E402  (must come after patches)
-
 from minisgl.shared_cache import (
     SharedCacheSession,
     WorkerGroup,
@@ -187,8 +183,7 @@ def _hf_config(model_path: str) -> transformers.PretrainedConfig:
 def _head_dim(config: transformers.PretrainedConfig) -> int:
     """Resolve head_dim the way both implementations do."""
     return int(
-        getattr(config, "head_dim", None)
-        or config.hidden_size // config.num_attention_heads
+        getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
     )
 
 
@@ -203,9 +198,7 @@ def _build_minisgl_cos_sin_cache(
     head_dim = _head_dim(config)
     base = float(config.rope_theta)
     max_pos = int(config.max_position_embeddings)
-    inv_freq = 1.0 / (
-        base ** (torch.arange(0, head_dim, 2, dtype=torch.float) / head_dim)
-    )
+    inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, dtype=torch.float) / head_dim))
     t = torch.arange(max_pos, dtype=torch.float)
     freqs = torch.einsum("i,j -> ij", t, inv_freq)
     return torch.cat((freqs.cos(), freqs.sin()), dim=-1).to(dtype)
@@ -262,9 +255,7 @@ def test_rope_kernel_matches_async_reasoning(kernel_config, dtype, atol, offset)
     out_minisgl = apply_rope_correction(keys_3d, corrections, cs_cache)
 
     # AsyncReasoning side
-    out_async_4d = ar_sc.rotate_by_offset(
-        keys=keys_4d, offset=offset, config=config
-    )
+    out_async_4d = ar_sc.rotate_by_offset(keys=keys_4d, offset=offset, config=config)
     out_async = _async_reasoning_to_minisgl_shape(out_async_4d)
 
     assert out_minisgl.shape == out_async.shape
@@ -304,9 +295,7 @@ def test_rope_kernel_uniform_offset_matches_per_token_correction(kernel_config):
     )
 
     max_diff = (out_per_token - out_uniform).abs().max().item()
-    assert max_diff <= 1e-5, (
-        f"uniform-offset disagreement: max |diff| = {max_diff:.3e}"
-    )
+    assert max_diff <= 1e-5, f"uniform-offset disagreement: max |diff| = {max_diff:.3e}"
 
 
 def test_rope_kernel_zero_offset_is_identity_both(kernel_config):
@@ -317,9 +306,7 @@ def test_rope_kernel_zero_offset_is_identity_both(kernel_config):
     keys_3d = torch.randn(4, config.num_key_value_heads, head_dim, dtype=torch.float32)
 
     cs_cache = _build_minisgl_cos_sin_cache(config)
-    out_m = apply_rope_correction(
-        keys_3d, torch.zeros(4, dtype=torch.int64), cs_cache
-    )
+    out_m = apply_rope_correction(keys_3d, torch.zeros(4, dtype=torch.int64), cs_cache)
     out_a = _async_reasoning_to_minisgl_shape(
         ar_sc.rotate_by_offset(
             keys=_minisgl_to_async_reasoning_shape(keys_3d), offset=0, config=config
@@ -341,12 +328,8 @@ def test_rope_kernel_inverse_offset_undoes_rotation(kernel_config):
     cs_cache = _build_minisgl_cos_sin_cache(config)
 
     # minisgl round-trip
-    fwd_m = apply_rope_correction(
-        keys_3d, torch.full((5,), delta, dtype=torch.int64), cs_cache
-    )
-    back_m = apply_rope_correction(
-        fwd_m, torch.full((5,), -delta, dtype=torch.int64), cs_cache
-    )
+    fwd_m = apply_rope_correction(keys_3d, torch.full((5,), delta, dtype=torch.int64), cs_cache)
+    back_m = apply_rope_correction(fwd_m, torch.full((5,), -delta, dtype=torch.int64), cs_cache)
     assert torch.allclose(back_m, keys_3d, atol=1e-5)
 
     # AsyncReasoning round-trip
@@ -425,9 +408,7 @@ def _encode(text: str, tokenizer) -> torch.Tensor:
     return tokenizer.encode(text, return_tensors="pt").view(-1).to(torch.int32)
 
 
-def _seed_minisgl_block(
-    session, prompt_block, seed_token: int, num_tokens: int
-) -> tuple:
+def _seed_minisgl_block(session, prompt_block, seed_token: int, num_tokens: int) -> tuple:
     """Build a minisgl SharedBlock containing ``num_tokens`` tokens, starting
     with ``seed_token`` and greedy-decoding ``num_tokens - 1`` more.
 
@@ -440,24 +421,18 @@ def _seed_minisgl_block(
     cur_int = int(seed_token)
     for _ in range(num_tokens):
         tokens.append(cur_int)
-        logits = session.decode_step(
-            group, torch.tensor([cur_int], dtype=torch.int32)
-        )
+        logits = session.decode_step(group, torch.tensor([cur_int], dtype=torch.int32))
         cur_int = int(logits.argmax(dim=-1).item())
     return blk, tokens
 
 
-def _seed_async_block(
-    model, prompt_block, tokens: List[int]
-) -> "ar_sc.CacheBlock":
+def _seed_async_block(model, prompt_block, tokens: List[int]) -> "ar_sc.CacheBlock":
     """Build an AsyncReasoning CacheBlock containing exactly the given token
     sequence's KV, by appending tokens one-at-a-time while it sees
     ``[prompt_block, blk]`` -- mirroring the minisgl decode pattern."""
     blk = ar_sc.CacheBlock(config=model.config)
     for tok_int in tokens:
-        cm = ar_sc.SharedCacheManager(
-            cache_structure=[[prompt_block, blk]], write_to=[blk]
-        )
+        cm = ar_sc.SharedCacheManager(cache_structure=[[prompt_block, blk]], write_to=[blk])
         ids = torch.tensor([[tok_int]], dtype=torch.long, device=model.device)
         with torch.inference_mode():
             model(**cm.get_input_kwargs(input_ids=ids))
@@ -465,23 +440,17 @@ def _seed_async_block(
 
 
 @torch.inference_mode()
-def _async_reasoning_prefill(
-    model, cache_block, input_ids: torch.Tensor
-) -> torch.Tensor:
+def _async_reasoning_prefill(model, cache_block, input_ids: torch.Tensor) -> torch.Tensor:
     """Prefill an AsyncReasoning CacheBlock with input_ids; return last-token
     logits on CPU (fp32)."""
-    cm = ar_sc.SharedCacheManager(
-        cache_structure=[[cache_block]], write_to=[cache_block]
-    )
+    cm = ar_sc.SharedCacheManager(cache_structure=[[cache_block]], write_to=[cache_block])
     ids = input_ids.long().view(1, -1).to(model.device)
     out = model(**cm.get_input_kwargs(input_ids=ids))
     return out.logits[0, -1].float().cpu()
 
 
 @torch.inference_mode()
-def _async_reasoning_decode_step(
-    model, cache_structure, write_to, probe_id: int
-) -> torch.Tensor:
+def _async_reasoning_decode_step(model, cache_structure, write_to, probe_id: int) -> torch.Tensor:
     """One decode step in AsyncReasoning's idiom; return last-token logits
     (fp32, CPU)."""
     cm = ar_sc.SharedCacheManager(cache_structure=cache_structure, write_to=write_to)
@@ -537,12 +506,9 @@ def _assert_logits_close(
             f"expected_top5={e.topk(5).indices.tolist()}"
         )
         print(
-            f"{prefix}argmax differs but near-tie: gap={gap:.4f} < "
-            f"{near_tie_threshold}; accepting"
+            f"{prefix}argmax differs but near-tie: gap={gap:.4f} < {near_tie_threshold}; accepting"
         )
-    assert sm_diff <= softmax_atol, (
-        f"{prefix}softmax max-diff {sm_diff:.4g} > {softmax_atol}"
-    )
+    assert sm_diff <= softmax_atol, f"{prefix}softmax max-diff {sm_diff:.4g} > {softmax_atol}"
     assert raw_diff <= atol, f"{prefix}logit max-diff {raw_diff:.4g} > {atol}"
 
 
@@ -582,9 +548,7 @@ def test_decode_step_single_block_matches_async_reasoning(
     probe_id = 42
     ms_group = WorkerGroup(cache_structure=[[ms_prompt, ms_w]], write_to=[ms_w])
     ms_logits = (
-        session.decode_step(ms_group, torch.tensor([probe_id], dtype=torch.int32))[0]
-        .float()
-        .cpu()
+        session.decode_step(ms_group, torch.tensor([probe_id], dtype=torch.int32))[0].float().cpu()
     )
 
     # AsyncReasoning side: prefill the prompt into ar_prompt, then do one
@@ -675,9 +639,7 @@ def test_decode_step_block_reorder_matches_async_reasoning(
 
 
 @requires_e2e
-def test_prefill_kv_layer0_matches_async_reasoning(
-    engine_and_session, hf_model, hf_tokenizer
-):
+def test_prefill_kv_layer0_matches_async_reasoning(engine_and_session, hf_model, hf_tokenizer):
     """Direct KV-tensor parity at layer 0 after prefilling the same prompt
     in both implementations.
 
@@ -736,9 +698,7 @@ def test_prefill_kv_layer0_matches_async_reasoning(
 
 
 @requires_e2e
-def test_multi_step_decode_matches_async_reasoning(
-    engine_and_session, hf_model, hf_tokenizer
-):
+def test_multi_step_decode_matches_async_reasoning(engine_and_session, hf_model, hf_tokenizer):
     """K=5 consecutive greedy decode steps.  Per step, minisgl's argmax must
     match AsyncReasoning's argmax.  AsyncReasoning stays the absolute
     reference: its argmax token is fed to both sides for the next step.
@@ -767,17 +727,13 @@ def test_multi_step_decode_matches_async_reasoning(
     # next token).  AsyncReasoning's argmax becomes the ground-truth seed.
     ms_arg0 = int(ms_first_logits[0].argmax().item())
     ar_arg0 = int(ar_first_logits.argmax().item())
-    assert ms_arg0 == ar_arg0, (
-        f"prefill argmax mismatch: minisgl={ms_arg0} async={ar_arg0}"
-    )
+    assert ms_arg0 == ar_arg0, f"prefill argmax mismatch: minisgl={ms_arg0} async={ar_arg0}"
 
     # Decode K steps, feeding AsyncReasoning's argmax to both sides each step.
     cur_token = ar_arg0
     for k in range(K):
         ms_logits = (
-            session.decode_step(
-                ms_group, torch.tensor([cur_token], dtype=torch.int32)
-            )[0]
+            session.decode_step(ms_group, torch.tensor([cur_token], dtype=torch.int32))[0]
             .float()
             .cpu()
         )
@@ -789,9 +745,7 @@ def test_multi_step_decode_matches_async_reasoning(
         )
         ms_arg = int(ms_logits.argmax())
         ar_arg = int(ar_logits.argmax())
-        sm_diff = (
-            torch.softmax(ms_logits, -1) - torch.softmax(ar_logits, -1)
-        ).abs().max().item()
+        sm_diff = (torch.softmax(ms_logits, -1) - torch.softmax(ar_logits, -1)).abs().max().item()
         logit_diff = (ms_logits - ar_logits).abs().max().item()
         print(
             f"[rollout k={k}] minisgl_arg={ms_arg} async_arg={ar_arg} "
@@ -922,15 +876,11 @@ def test_block_reuse_across_groups_matches_async_reasoning(
     # And the two minisgl trials must agree closely with each other (same
     # backend; bf16 cuda-graph noise only).
     trial_diff = (ms_logits_1 - ms_logits_2).abs().max().item()
-    assert trial_diff < 1e-2, (
-        f"block-reuse trials diverged: max |diff| = {trial_diff:.3e}"
-    )
+    assert trial_diff < 1e-2, f"block-reuse trials diverged: max |diff| = {trial_diff:.3e}"
 
 
 @requires_e2e
-def test_context_prefill_matches_async_reasoning(
-    engine_and_session, hf_model, hf_tokenizer
-):
+def test_context_prefill_matches_async_reasoning(engine_and_session, hf_model, hf_tokenizer):
     """Prefill a block IN CONTEXT of another block (the reference's
     ``prefill_cache_block(text, [ctx, new])`` pattern): the new tokens attend
     causally to themselves and fully to the context, but their KV is stored
@@ -945,9 +895,7 @@ def test_context_prefill_matches_async_reasoning(
     ms_prompt = session.create_block()
     session.prefill_block(ms_prompt, prompt_ids)
     ms_close = session.create_block()
-    ms_logits = (
-        session.prefill_block(ms_close, suffix_ids, context=[ms_prompt])[0].float().cpu()
-    )
+    ms_logits = session.prefill_block(ms_close, suffix_ids, context=[ms_prompt])[0].float().cpu()
 
     # AsyncReasoning: same pattern.  NOTE: the reference's batched multi-token
     # update onto an existing cache breaks under transformers>=4.56 (mask
@@ -979,9 +927,7 @@ def test_context_prefill_matches_async_reasoning(
     ms_w = session.create_block()
     ms_dec = (
         session.decode_step(
-            WorkerGroup(
-                cache_structure=[[ms_prompt, ms_close, ms_w]], write_to=[ms_w]
-            ),
+            WorkerGroup(cache_structure=[[ms_prompt, ms_close, ms_w]], write_to=[ms_w]),
             torch.tensor([probe_id], dtype=torch.int32),
         )[0]
         .float()
@@ -997,9 +943,7 @@ def test_context_prefill_matches_async_reasoning(
 
 
 @requires_e2e
-def test_interleaved_growth_matches_async_reasoning(
-    engine_and_session, hf_model, hf_tokenizer
-):
+def test_interleaved_growth_matches_async_reasoning(engine_and_session, hf_model, hf_tokenizer):
     """Hogwild-style pattern: two workers decode in the SAME group every step,
     each seeing the other's growing block:
 
@@ -1045,9 +989,7 @@ def test_interleaved_growth_matches_async_reasoning(
     w_tok = 42
 
     for k in range(K):
-        ms_logits = session.decode_step(
-            ms_group, torch.tensor([t_tok, w_tok], dtype=torch.int32)
-        )
+        ms_logits = session.decode_step(ms_group, torch.tensor([t_tok, w_tok], dtype=torch.int32))
         ms_logits_t = ms_logits[0].float().cpu()
         ms_logits_w = ms_logits[1].float().cpu()
 
@@ -1077,9 +1019,7 @@ def test_interleaved_growth_matches_async_reasoning(
 
 
 @requires_e2e
-def test_empty_block_in_group_matches_async_reasoning(
-    engine_and_session, hf_model, hf_tokenizer
-):
+def test_empty_block_in_group_matches_async_reasoning(engine_and_session, hf_model, hf_tokenizer):
     """A degenerate empty block in the cache_structure is a no-op in both
     implementations.  Verify that minisgl's logits with the empty block
     inserted match AsyncReasoning's logits WITHOUT the empty block."""

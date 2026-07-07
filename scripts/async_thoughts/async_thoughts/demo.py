@@ -34,7 +34,6 @@ from .engine import (
     vocab_id_or_none,
 )
 
-
 # Default math problem from the original AsyncReasoning notebook.
 DEFAULT_PROBLEM = "Calculate x - x^2 + x^3 for x = 5, 6, 7, 8. Return all 4 answers in \\boxed{ }."
 
@@ -186,7 +185,7 @@ def _run_loop(
         write_to=[thinker_blk],
     )
 
-    thinker_and_writer_group =  WorkerGroup(
+    thinker_and_writer_group = WorkerGroup(
         cache_structure=[
             [prompt_blk, thinker_blk],
             [prompt_blk, thinker_blk, writer_blk],
@@ -287,7 +286,9 @@ def run(config: DemoConfig) -> None:
 
     print("\nLoading tokenizer & engine...")
     tokenizer = AutoTokenizer.from_pretrained(config.model, trust_remote_code=True)
-    engine = build_engine(config.model, memory_ratio=config.memory_ratio, page_size=config.page_size)
+    engine = build_engine(
+        config.model, memory_ratio=config.memory_ratio, page_size=config.page_size
+    )
     session = SharedCacheSession(engine)
     prompting = Prompting(config.problem)
 

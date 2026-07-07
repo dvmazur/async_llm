@@ -49,7 +49,10 @@ class Qwen3_5Attention(BaseOP):
         if self._inv_freq is None:
             self._inv_freq = 1.0 / (
                 self._rope_base
-                ** (torch.arange(0, self.rotary_dim, 2, dtype=torch.float32, device=x.device) / self.rotary_dim)
+                ** (
+                    torch.arange(0, self.rotary_dim, 2, dtype=torch.float32, device=x.device)
+                    / self.rotary_dim
+                )
             )
         freqs = positions.float()[:, None] * self._inv_freq[None, :]  # (T, rotary_dim/2)
         emb = torch.cat((freqs, freqs), dim=-1)  # (T, rotary_dim)

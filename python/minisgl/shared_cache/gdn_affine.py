@@ -58,7 +58,11 @@ def _as_head_scalar(x: Tensor, *, reference: Tensor) -> Tensor:
     if x.ndim == 2:
         return x.reshape(b, h).unsqueeze(-1)
     if x.ndim == 1:
-        return x.reshape(1, h).expand(b, h).unsqueeze(-1) if x.shape[0] == h else x.reshape(b, 1).expand(b, h).unsqueeze(-1)
+        return (
+            x.reshape(1, h).expand(b, h).unsqueeze(-1)
+            if x.shape[0] == h
+            else x.reshape(b, 1).expand(b, h).unsqueeze(-1)
+        )
     return x.reshape(b, h).unsqueeze(-1)
 
 

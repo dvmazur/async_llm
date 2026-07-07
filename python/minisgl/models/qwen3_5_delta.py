@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 try:
     from fla.ops.gated_delta_rule import (
         chunk_gated_delta_rule as _fla_chunk,
+    )
+    from fla.ops.gated_delta_rule import (
         fused_recurrent_gated_delta_rule as _fla_recurrent,
     )
 except Exception:  # pragma: no cover - fla is optional
@@ -161,8 +163,14 @@ def _recurrent_gated_delta_rule(
 def _chunk_delta(query, key, value, g, beta, initial_state=None):
     if _fla_chunk is not None:
         return _fla_chunk(
-            query, key, value, g=g, beta=beta, initial_state=initial_state,
-            output_final_state=True, use_qk_l2norm_in_kernel=True,
+            query,
+            key,
+            value,
+            g=g,
+            beta=beta,
+            initial_state=initial_state,
+            output_final_state=True,
+            use_qk_l2norm_in_kernel=True,
         )
     return _chunk_gated_delta_rule(query, key, value, g, beta, initial_state=initial_state)
 
@@ -170,8 +178,14 @@ def _chunk_delta(query, key, value, g, beta, initial_state=None):
 def _recurrent_delta(query, key, value, g, beta, initial_state):
     if _fla_recurrent is not None:
         return _fla_recurrent(
-            query, key, value, g=g, beta=beta, initial_state=initial_state,
-            output_final_state=True, use_qk_l2norm_in_kernel=True,
+            query,
+            key,
+            value,
+            g=g,
+            beta=beta,
+            initial_state=initial_state,
+            output_final_state=True,
+            use_qk_l2norm_in_kernel=True,
         )
     return _recurrent_gated_delta_rule(query, key, value, g, beta, initial_state)
 
@@ -240,9 +254,7 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias.float())
         return beta, g
 
-    def _split_heads(
-        self, qkv: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _split_heads(self, qkv: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # qkv: (T, conv_dim) -> q/k (T, num_k_heads, head_k_dim), v (T, num_v_heads, head_v_dim)
         q, k, v = torch.split(qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
         q = q.reshape(q.shape[0], self.num_k_heads, self.head_k_dim)
@@ -284,7 +296,7 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         conv_in = qkv.transpose(0, 1).unsqueeze(0)  # (1, conv_dim, L)
         prior_conv = ar.prior_conv_states(lin)  # (1, conv_dim, k) or None
         if prior_conv is not None:
-            ctx_tail = prior_conv[..., -(k - 1):]  # (1, conv_dim, k-1)
+            ctx_tail = prior_conv[..., -(k - 1) :]  # (1, conv_dim, k-1)
             full_input = torch.cat([ctx_tail, conv_in], dim=-1)  # (1, conv_dim, k-1+L)
             conv_out = F.silu(
                 F.conv1d(full_input, self.conv1d.weight, groups=self.conv_dim, padding=k - 1)
@@ -292,9 +304,9 @@ class Qwen3_5GatedDeltaNet(BaseOP):
             qkv2 = conv_out[..., k - 1 : k - 1 + length]
             new_conv_state = full_input[..., -k:]
         else:
-            conv_out = F.conv1d(
-                conv_in, self.conv1d.weight, groups=self.conv_dim, padding=k - 1
-            )[..., :length]
+            conv_out = F.conv1d(conv_in, self.conv1d.weight, groups=self.conv_dim, padding=k - 1)[
+                ..., :length
+            ]
             qkv2 = F.silu(conv_out)
             pad = k - length
             new_conv_state = F.pad(conv_in, (pad, 0)) if pad >= 0 else conv_in[..., -k:]
@@ -304,9 +316,15 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         beta, g = self._gates(a, b)
         # fp32 initial state: the delta-rule kernels upcast to fp32 anyway, and
         # fp32 composition avoids bf16 error compounding across long chains.
-        initial_state = ar.compose_initial_recurrent_state(lin, dtype=torch.float32)  # (1,H,dk,dv)|None
+        initial_state = ar.compose_initial_recurrent_state(
+            lin, dtype=torch.float32
+        )  # (1,H,dk,dv)|None
         core, _ = _chunk_delta(
-            q.unsqueeze(0), kk.unsqueeze(0), v.unsqueeze(0), g.unsqueeze(0), beta.unsqueeze(0),
+            q.unsqueeze(0),
+            kk.unsqueeze(0),
+            v.unsqueeze(0),
+            g.unsqueeze(0),
+            beta.unsqueeze(0),
             initial_state=initial_state,
         )
 
@@ -340,15 +358,25 @@ class Qwen3_5GatedDeltaNet(BaseOP):
 
         q, kk, v = self._split_heads(qkv2)  # (W, num_v_heads, d)
         beta, g = self._gates(a, b)
-        initial_state = ar.compose_initial_recurrent_state(lin, dtype=torch.float32)  # (W,H,dk,dv)|None
+        initial_state = ar.compose_initial_recurrent_state(
+            lin, dtype=torch.float32
+        )  # (W,H,dk,dv)|None
         if initial_state is None:
             initial_state = torch.zeros(
-                n, self.num_v_heads, self.head_k_dim, self.head_v_dim,
-                device=x.device, dtype=torch.float32,
+                n,
+                self.num_v_heads,
+                self.head_k_dim,
+                self.head_v_dim,
+                device=x.device,
+                dtype=torch.float32,
             )
         core, _ = _recurrent_delta(
-            q.unsqueeze(1), kk.unsqueeze(1), v.unsqueeze(1),
-            g.unsqueeze(1), beta.unsqueeze(1), initial_state,
+            q.unsqueeze(1),
+            kk.unsqueeze(1),
+            v.unsqueeze(1),
+            g.unsqueeze(1),
+            beta.unsqueeze(1),
+            initial_state,
         )
 
         ar.capture_token_affines(
@@ -362,7 +390,9 @@ class Qwen3_5GatedDeltaNet(BaseOP):
 
     # --- prefill: one chunked pass per request, write final state to pool ---
     def _forward_prefill(self, x, batch, gdn) -> torch.Tensor:
-        out = torch.empty(x.shape[0], self.out_proj.full_output_size, dtype=x.dtype, device=x.device)
+        out = torch.empty(
+            x.shape[0], self.out_proj.full_output_size, dtype=x.dtype, device=x.device
+        )
         k = self.conv_kernel
         offset = 0
         for req in batch.reqs:
@@ -380,9 +410,9 @@ class Qwen3_5GatedDeltaNet(BaseOP):
             b = self.in_proj_b.forward(seg)
 
             conv_in = qkv.transpose(0, 1).unsqueeze(0)  # (1, conv_dim, L)
-            conv_out = F.conv1d(
-                conv_in, self.conv1d.weight, groups=self.conv_dim, padding=k - 1
-            )[..., :length]
+            conv_out = F.conv1d(conv_in, self.conv1d.weight, groups=self.conv_dim, padding=k - 1)[
+                ..., :length
+            ]
             qkv = F.silu(conv_out).squeeze(0).transpose(0, 1)  # (L, conv_dim)
 
             # conv state: last `k` input columns, left-padded if the sequence is shorter
@@ -399,7 +429,9 @@ class Qwen3_5GatedDeltaNet(BaseOP):
 
             core = core.reshape(length, self.num_v_heads, self.head_v_dim)
             core = self.norm.forward(core, z.reshape(length, self.num_v_heads, self.head_v_dim))
-            out[offset - length : offset] = self.out_proj.forward(core.reshape(length, self.value_dim))
+            out[offset - length : offset] = self.out_proj.forward(
+                core.reshape(length, self.value_dim)
+            )
         return out
 
     # --- decode: single recurrent step, batched across requests ---
@@ -424,8 +456,12 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         beta, g = self._gates(a, b)
         rec_state = gdn.recurrent_state[self._lin_idx, table_idx]  # (N, num_v_heads, Dk, Dv)
         core, new_state = _recurrent_delta(
-            q.unsqueeze(1), kk.unsqueeze(1), v.unsqueeze(1),
-            g.unsqueeze(1), beta.unsqueeze(1), rec_state,
+            q.unsqueeze(1),
+            kk.unsqueeze(1),
+            v.unsqueeze(1),
+            g.unsqueeze(1),
+            beta.unsqueeze(1),
+            rec_state,
         )
         gdn.recurrent_state[self._lin_idx, table_idx] = new_state.float()
 

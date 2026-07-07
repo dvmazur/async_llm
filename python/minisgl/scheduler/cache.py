@@ -123,9 +123,9 @@ class CacheManager:
         if needed_pages > (free_pages := self.page_allocator.num_free_pages):
             evicted = self.prefix_cache.evict((needed_pages - free_pages) * self.page_size)
             self.page_allocator.free_pages(evicted[:: self.page_size])
-            assert (
-                self.page_allocator.num_free_pages >= needed_pages
-            ), "Eviction did not free enough space."
+            assert self.page_allocator.num_free_pages >= needed_pages, (
+                "Eviction did not free enough space."
+            )
         return self.page_allocator.alloc_pages(needed_pages)
 
     def _free(self, indices: torch.Tensor) -> None:

@@ -30,7 +30,7 @@ def build_engine(
         cuda_graph_bs=[1, 2],  # we only ever run 1- or 2-worker decode
         cuda_graph_max_bs=2,
         memory_ratio=memory_ratio,
-        max_seq_len_override=4096,
+        max_seq_len_override=8192 * 2,
         page_size=page_size,
     )
     return Engine(config)

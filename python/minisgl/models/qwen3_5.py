@@ -27,7 +27,9 @@ class Qwen3_5DecoderLayer(BaseOP):
             self._is_linear = False
         self.mlp = GatedMLP(config)
         self.input_layernorm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = RMSNormFused(
+            size=config.hidden_size, eps=config.rms_norm_eps
+        )
         self._layer_id = layer_id
 
     @nvtx_annotate("Layer_{}", layer_id_field="_layer_id")

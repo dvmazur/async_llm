@@ -72,8 +72,8 @@ def print_len_stats(name: str, lengths: list[int]) -> None:
     arr = sorted(lengths)
     n = len(arr)
     print(
-        f"{name}: count={n}, min={arr[0]}, p50={arr[int(0.50*n)]}, "
-        f"p90={arr[int(0.90*n)]}, p99={arr[int(0.99*n)]}, max={arr[-1]}"
+        f"{name}: count={n}, min={arr[0]}, p50={arr[int(0.50 * n)]}, "
+        f"p90={arr[int(0.90 * n)]}, p99={arr[int(0.99 * n)]}, max={arr[-1]}"
     )
 
 
@@ -135,8 +135,8 @@ def main() -> None:
     print_len_stats("Output length", output_lens)
     throughput = total_output_tokens / t if t > 0 else 0.0
     print(f"Bench requests: {len(prompt_token_ids)}")
-    print(f"Output budget: {total_output_budget}tok, " f"Actual output: {total_output_tokens}tok")
-    print(f"Total: {total_output_tokens}tok, Time: {t:.2f}s, " f"Throughput: {throughput:.2f}tok/s")
+    print(f"Output budget: {total_output_budget}tok, Actual output: {total_output_tokens}tok")
+    print(f"Total: {total_output_tokens}tok, Time: {t:.2f}s, Throughput: {throughput:.2f}tok/s")
 
 
 if __name__ == "__main__":

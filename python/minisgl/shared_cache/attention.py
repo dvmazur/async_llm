@@ -100,7 +100,10 @@ class SharedCacheAttention:
         device: torch.device,
         rotary_dim: int | None = None,
     ) -> None:
-        from flashinfer import BatchDecodeWithPagedKVCacheWrapper, BatchPrefillWithPagedKVCacheWrapper
+        from flashinfer import (
+            BatchDecodeWithPagedKVCacheWrapper,
+            BatchPrefillWithPagedKVCacheWrapper,
+        )
 
         self.kv_cache = kv_cache
         self.cos_sin_cache = cos_sin_cache
@@ -252,8 +255,8 @@ class SharedCacheAttention:
         self._plan_event.synchronize()
         if n_main > 0:
             kv_indices = torch.cat(main_kv_parts).to(dtype=torch.int32)
-            kv_indptr_cpu = torch.tensor([0] + main_page_counts, **CPU_KWARGS).cumsum_(0).to(
-                torch.int32
+            kv_indptr_cpu = (
+                torch.tensor([0] + main_page_counts, **CPU_KWARGS).cumsum_(0).to(torch.int32)
             )
             seq_lens_cpu = torch.tensor(main_seq_lens, **CPU_KWARGS)
             last_page_cpu = torch.tensor(main_last_page, **CPU_KWARGS)
@@ -352,9 +355,11 @@ class SharedCacheAttention:
 
         # Context segments (non-causal): paged page-number indices + last_page_len.
         ctx_kv_indices = torch.cat([b.page_numbers_tensor() for b in context]).to(torch.int32)
-        ctx_kv_indptr = torch.tensor(
-            [0] + [b.num_pages for b in context], **CPU_KWARGS
-        ).cumsum_(0).to(torch.int32)
+        ctx_kv_indptr = (
+            torch.tensor([0] + [b.num_pages for b in context], **CPU_KWARGS)
+            .cumsum_(0)
+            .to(torch.int32)
+        )
         ctx_qo_indptr = torch.arange(0, (n_ctx + 1) * S, S, **CPU_KWARGS)
         ctx_seq_lens = torch.tensor(ctx_lens, **CPU_KWARGS)
         ctx_last_page = torch.tensor([b.last_page_len for b in context], **CPU_KWARGS)
@@ -410,8 +415,16 @@ class SharedCacheAttention:
             phase="context_prefill",
         )
         meta._plan_refs = (
-            ctx_kv_indptr, ctx_qo_indptr, ctx_seq_lens, ctx_last_page, ctx_kv_indices,
-            self_indptr, self_qo_indptr, self_seq_lens, self_last_page, self_kv_indices,
+            ctx_kv_indptr,
+            ctx_qo_indptr,
+            ctx_seq_lens,
+            ctx_last_page,
+            ctx_kv_indices,
+            self_indptr,
+            self_qo_indptr,
+            self_seq_lens,
+            self_last_page,
+            self_kv_indices,
         )
         return meta
 
@@ -499,12 +512,8 @@ class SharedCacheAttention:
         n_ctx = meta.max_segments - 1
 
         kv = (self.kv_cache.k_cache(layer_id), self.kv_cache.v_cache(layer_id))
-        out_ctx, lse_ctx = self.prefill_ctx_wrapper.run(
-            q_sub[: n_ctx * S], kv, return_lse=True
-        )
-        out_self, lse_self = self.prefill_self_wrapper.run(
-            q_sub[n_ctx * S :], kv, return_lse=True
-        )
+        out_ctx, lse_ctx = self.prefill_ctx_wrapper.run(q_sub[: n_ctx * S], kv, return_lse=True)
+        out_self, lse_self = self.prefill_self_wrapper.run(q_sub[n_ctx * S :], kv, return_lse=True)
 
         v_states = torch.cat([out_ctx.view(n_ctx, S, Hq, D), out_self.view(1, S, Hq, D)])
         s_states = torch.cat([lse_ctx.view(n_ctx, S, Hq), lse_self.view(1, S, Hq)])

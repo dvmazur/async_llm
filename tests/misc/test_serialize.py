@@ -1,11 +1,12 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import List
 
-from minisgl.core import SamplingParams
 import torch
+from minisgl.core import SamplingParams
 from minisgl.message import BatchBackendMsg, UserMsg
-from minisgl.message.utils import serialize_type, deserialize_type
+from minisgl.message.utils import deserialize_type, serialize_type
 from minisgl.utils import call_if_main, init_logger
 
 logger = init_logger(__name__)

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import torch
 from minisgl.kernel import test_tensor
 from minisgl.utils import call_if_main
-import torch
 
 
 @call_if_main()

@@ -386,9 +386,7 @@ class SharedCacheSession:
         blocks_needing_page: List[SharedBlock] = []
         for wt in group.write_to:
             if id(wt) in new_page_for_block:
-                raise ValueError(
-                    "WorkerGroup has two workers writing the same block in one step"
-                )
+                raise ValueError("WorkerGroup has two workers writing the same block in one step")
             if wt.has_capacity:
                 new_page_for_block[id(wt)] = None
             else:
@@ -431,9 +429,7 @@ class SharedCacheSession:
         table_idx_list: List[torch.Tensor] = []
         for req in reqs:
             length = req.extend_len
-            table_idx_list.append(
-                torch.full((length,), req.table_idx, dtype=torch.int64)
-            )
+            table_idx_list.append(torch.full((length,), req.table_idx, dtype=torch.int64))
         table_idxs = torch.cat(table_idx_list).to(self.device)
         position_idxs = batch.positions.to(torch.int64)
 
@@ -446,9 +442,7 @@ class SharedCacheSession:
     def _make_positions(self, batch: Batch) -> torch.Tensor:
         parts: List[torch.Tensor] = []
         for req in batch.padded_reqs:
-            parts.append(
-                torch.arange(req.cached_len, req.device_len, dtype=torch.int32)
-            )
+            parts.append(torch.arange(req.cached_len, req.device_len, dtype=torch.int32))
         return torch.cat(parts).to(self.device)
 
     def _forward(
