@@ -101,7 +101,9 @@ def test_apply_identity_and_zero_state():
 def test_single_token_update_matches_explicit_blocks():
     k, v, alpha, beta = _rand_tokens(2, 3, 8, 8, T=1, seed=1)
     A0, B0 = init_gdn_affine(batch_size=2, num_heads=3, d_k=8, d_v=8, dtype=F64, device=DEV)
-    A, B = update_affine_summary(A_hat=A0, B_hat=B0, k=k[:, 0], v=v[:, 0], alpha=alpha[:, 0], beta=beta[:, 0])
+    A, B = update_affine_summary(
+        A_hat=A0, B_hat=B0, k=k[:, 0], v=v[:, 0], alpha=alpha[:, 0], beta=beta[:, 0]
+    )
     A_t, B_t = _explicit_At_Bt(k[:, 0], v[:, 0], alpha[:, 0], beta[:, 0])
     # from identity: A == A_t, B == B_t
     assert _rel(A, A_t) < 1e-11
@@ -113,9 +115,13 @@ def test_running_update_matches_compose_with_token_block():
     k, v, alpha, beta = _rand_tokens(2, 3, 8, 8, T=2, seed=2)
     A, B = init_gdn_affine(batch_size=2, num_heads=3, d_k=8, d_v=8, dtype=F64, device=DEV)
     # seed a non-trivial running (A, B) with the first token
-    A, B = update_affine_summary(A_hat=A, B_hat=B, k=k[:, 0], v=v[:, 0], alpha=alpha[:, 0], beta=beta[:, 0])
+    A, B = update_affine_summary(
+        A_hat=A, B_hat=B, k=k[:, 0], v=v[:, 0], alpha=alpha[:, 0], beta=beta[:, 0]
+    )
     # second token via update ...
-    A_upd, B_upd = update_affine_summary(A_hat=A, B_hat=B, k=k[:, 1], v=v[:, 1], alpha=alpha[:, 1], beta=beta[:, 1])
+    A_upd, B_upd = update_affine_summary(
+        A_hat=A, B_hat=B, k=k[:, 1], v=v[:, 1], alpha=alpha[:, 1], beta=beta[:, 1]
+    )
     # ... vs via compose with the explicit per-token block
     A_t, B_t = _explicit_At_Bt(k[:, 1], v[:, 1], alpha[:, 1], beta[:, 1])
     A_cmp, B_cmp = compose_gdn_affines(A_first=A, B_first=B, A_second=A_t, B_second=B_t)
@@ -124,8 +130,10 @@ def test_running_update_matches_compose_with_token_block():
 
 
 def test_compose_equals_sequential_apply():
-    A1 = torch.randn(2, 3, 8, 8, dtype=F64); B1 = torch.randn(2, 3, 8, 8, dtype=F64)
-    A2 = torch.randn(2, 3, 8, 8, dtype=F64); B2 = torch.randn(2, 3, 8, 8, dtype=F64)
+    A1 = torch.randn(2, 3, 8, 8, dtype=F64)
+    B1 = torch.randn(2, 3, 8, 8, dtype=F64)
+    A2 = torch.randn(2, 3, 8, 8, dtype=F64)
+    B2 = torch.randn(2, 3, 8, 8, dtype=F64)
     S = torch.randn(2, 3, 8, 8, dtype=F64)
     seq = apply_gdn_affine(apply_gdn_affine(S, A1, B1), A2, B2)
     Ac, Bc = compose_gdn_affines(A_first=A1, B_first=B1, A_second=A2, B_second=B2)
@@ -133,7 +141,9 @@ def test_compose_equals_sequential_apply():
 
 
 def test_compose_associativity():
-    mats = [(torch.randn(1, 2, 6, 6, dtype=F64), torch.randn(1, 2, 6, 6, dtype=F64)) for _ in range(3)]
+    mats = [
+        (torch.randn(1, 2, 6, 6, dtype=F64), torch.randn(1, 2, 6, 6, dtype=F64)) for _ in range(3)
+    ]
     (A1, B1), (A2, B2), (A3, B3) = mats
     left = compose_gdn_affines(A_first=A1, B_first=B1, A_second=A2, B_second=B2)
     left = compose_gdn_affines(A_first=left[0], B_first=left[1], A_second=A3, B_second=B3)
@@ -151,7 +161,9 @@ def test_fold_matches_dense_recurrence():
 
     A, B = init_gdn_affine(batch_size=Bs, num_heads=H, d_k=dk, d_v=dv, dtype=F64, device=DEV)
     for t in range(T):
-        A, B = update_affine_summary(A_hat=A, B_hat=B, k=k[:, t], v=v[:, t], alpha=alpha[:, t], beta=beta[:, t])
+        A, B = update_affine_summary(
+            A_hat=A, B_hat=B, k=k[:, t], v=v[:, t], alpha=alpha[:, t], beta=beta[:, t]
+        )
     S_affine = apply_gdn_affine(S0, A, B)
 
     S = S0.clone()
@@ -169,7 +181,9 @@ def test_split_compose_equals_full_fold():
     def fold(lo, hi):
         A, B = init_gdn_affine(batch_size=Bs, num_heads=H, d_k=dk, d_v=dv, dtype=F64, device=DEV)
         for t in range(lo, hi):
-            A, B = update_affine_summary(A_hat=A, B_hat=B, k=k[:, t], v=v[:, t], alpha=alpha[:, t], beta=beta[:, t])
+            A, B = update_affine_summary(
+                A_hat=A, B_hat=B, k=k[:, t], v=v[:, t], alpha=alpha[:, t], beta=beta[:, t]
+            )
         return A, B
 
     Af, Bf = fold(0, T)

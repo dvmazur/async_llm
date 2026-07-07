@@ -79,10 +79,17 @@ def test_recurrent_state_matches_affine_fold():
     S0_block = torch.randn(Bs, H, dv, dk)  # block convention [.,dv,dk]
 
     normed_k = _l2norm(k.float())
-    A, B = init_gdn_affine(batch_size=Bs, num_heads=H, d_k=dk, d_v=dv, dtype=torch.float32, device="cpu")
+    A, B = init_gdn_affine(
+        batch_size=Bs, num_heads=H, d_k=dk, d_v=dv, dtype=torch.float32, device="cpu"
+    )
     for t in range(T):
         A, B = update_affine_summary(
-            A_hat=A, B_hat=B, k=normed_k[:, t], v=v[:, t].float(), alpha=alpha[:, t], beta=beta[:, t]
+            A_hat=A,
+            B_hat=B,
+            k=normed_k[:, t],
+            v=v[:, t].float(),
+            alpha=alpha[:, t],
+            beta=beta[:, t],
         )
     S_affine = apply_gdn_affine(S0_block, A, B)  # [.,dv,dk]
 
@@ -97,7 +104,7 @@ def test_recurrent_output_is_query_readout():
     q, k, v, g, beta = _inputs(Bs, H, dk, dv, T=1, seed=2)
     S0_hf = torch.randn(Bs, H, dk, dv)
     out, S_after = _recurrent_gated_delta_rule(q, k, v, g, beta, S0_hf)  # out [.,1,H,dv]
-    scale = dk ** -0.5
+    scale = dk**-0.5
     nq = _l2norm(q[:, 0].float()) * scale  # [.,H,dk]
     expected = (nq.unsqueeze(-1) * S_after).sum(-2)  # sum over dk -> [.,H,dv]
     assert _rel(out[:, 0], expected) < 1e-5
@@ -107,9 +114,7 @@ def test_chunk_matches_recurrent_no_initial_state():
     for T in (16, 20):  # multiple of chunk_size and not
         q, k, v, g, beta = _inputs(T=T, seed=10 + T)
         out_c, S_c = _chunk_gated_delta_rule(q, k, v, g, beta, chunk_size=8, initial_state=None)
-        out_r, S_r = _recurrent_gated_delta_rule(
-            q, k, v, g, beta, torch.zeros(1, 3, 8, 8)
-        )
+        out_r, S_r = _recurrent_gated_delta_rule(q, k, v, g, beta, torch.zeros(1, 3, 8, 8))
         assert _rel(S_c, S_r) < 1e-4, f"state mismatch T={T}"
         assert _rel(out_c, out_r) < 1e-4, f"output mismatch T={T}"
 
@@ -148,7 +153,14 @@ def test_fla_matches_puretorch_gpu():
 
     c_pt, s_pt = _chunk_gated_delta_rule(q, k, v, g, beta, initial_state=S0)
     c_fla, s_fla = _fla_chunk(
-        q, k, v, g=g, beta=beta, initial_state=S0, output_final_state=True, use_qk_l2norm_in_kernel=True
+        q,
+        k,
+        v,
+        g=g,
+        beta=beta,
+        initial_state=S0,
+        output_final_state=True,
+        use_qk_l2norm_in_kernel=True,
     )
     assert _rel(c_fla, c_pt) < 2e-2
     assert _rel(s_fla, s_pt) < 2e-2
@@ -156,7 +168,14 @@ def test_fla_matches_puretorch_gpu():
     q1, k1, v1, g1, b1 = (t[:, :1] for t in (q, k, v, g, beta))
     r_pt, sr_pt = _recurrent_gated_delta_rule(q1, k1, v1, g1, b1, S0)
     r_fla, sr_fla = _fla_recurrent(
-        q1, k1, v1, g=g1, beta=b1, initial_state=S0, output_final_state=True, use_qk_l2norm_in_kernel=True
+        q1,
+        k1,
+        v1,
+        g=g1,
+        beta=b1,
+        initial_state=S0,
+        output_final_state=True,
+        use_qk_l2norm_in_kernel=True,
     )
     assert _rel(r_fla, r_pt) < 2e-2
     assert _rel(sr_fla, sr_pt) < 2e-2
