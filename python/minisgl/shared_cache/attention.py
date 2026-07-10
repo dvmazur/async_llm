@@ -85,6 +85,11 @@ class SharedCacheAttnMetadata(BaseAttnMetadata):
         return torch.arange(bs, device=self.sub_worker.device)
 
 
+def _rotate_half_last(x: torch.Tensor) -> torch.Tensor:
+    x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+
 class SharedCacheAttention:
     """Owns the FlashInfer wrappers and runs shared-cache attention."""
 
@@ -99,6 +104,8 @@ class SharedCacheAttention:
         dtype: torch.dtype,
         device: torch.device,
         rotary_dim: int | None = None,
+        mrope_section: tuple | None = None,
+        rope_base: float | None = None,
     ) -> None:
         from flashinfer import (
             BatchDecodeWithPagedKVCacheWrapper,
@@ -113,6 +120,16 @@ class SharedCacheAttention:
         # Partial RoPE (Qwen3.5): rotate only the first `rotary_dim` head dims,
         # pass the rest through.  Defaults to full-head RoPE (standard models).
         self.rotary_dim = rotary_dim if rotary_dim is not None else head_dim
+        # Interleaved mRoPE (Qwen3.5 multimodal): when set, the query/key rotation
+        # uses 3-axis interleaved mRoPE (positions broadcast all-axes for text decode
+        # tokens, so scores against image keys stored 3D remain exact).  cos/sin are
+        # computed on the fly from a rope base rather than the 1D cos_sin_cache.
+        self.mrope_section = mrope_section
+        self._mrope_inv_freq = None
+        if mrope_section is not None:
+            self._mrope_inv_freq = 1.0 / (
+                rope_base ** (torch.arange(0, self.rotary_dim, 2, dtype=torch.float32, device=device) / self.rotary_dim)
+            )
         self.page_size = page_size
         self.dtype = dtype
         self.device = device
@@ -156,12 +173,37 @@ class SharedCacheAttention:
         is passed through unchanged (Qwen3.5).  ``cos_sin_cache`` is sized
         ``[max_pos, rotary_dim]`` in the partial case.
         """
+        if self.mrope_section is not None:
+            return self._rope_mrope(x, corrections)
         if self.rotary_dim == self.head_dim:
             return apply_rope_correction(x, corrections, self.cos_sin_cache)
         x_rot = apply_rope_correction(
             x[..., : self.rotary_dim].contiguous(), corrections, self.cos_sin_cache
         )
         return torch.cat([x_rot, x[..., self.rotary_dim :]], dim=-1)
+
+    def _rope_mrope(self, x: torch.Tensor, corrections: torch.Tensor) -> torch.Tensor:
+        """Interleaved-mRoPE partial rotation of ``x [N, heads, head_dim]``.
+
+        ``corrections [N]`` are the tokens' mRoPE positions (block-relative for keys,
+        segment-relative for query copies).  Decode tokens are text, so the position
+        is the same on all three axes; the interleaved freq-slot layout still matches
+        image keys stored 3-D during prefill, so cross scores are exact.
+        """
+        pos = corrections.to(self.device).float()  # [N]
+        pos3 = pos[None, :].expand(3, -1)  # (3, N) all-axes-equal
+        freqs3 = pos3[:, :, None] * self._mrope_inv_freq[None, None, :]  # (3, N, rd/2)
+        freqs = freqs3[0].clone()
+        for dim, offset in ((1, 1), (2, 2)):
+            length = self.mrope_section[dim] * 3
+            idx = slice(offset, length, 3)
+            freqs[..., idx] = freqs3[dim][..., idx]
+        emb = torch.cat((freqs, freqs), dim=-1)  # (N, rotary_dim)
+        cos = emb.cos().to(x.dtype)[:, None, :]
+        sin = emb.sin().to(x.dtype)[:, None, :]
+        x_rot, x_pass = x[..., : self.rotary_dim], x[..., self.rotary_dim :]
+        x_rot = x_rot * cos + _rotate_half_last(x_rot) * sin
+        return torch.cat([x_rot, x_pass], dim=-1)
 
     def prepare(
         self,
@@ -211,12 +253,17 @@ class SharedCacheAttention:
 
             # post-append segment lengths: every block written this step grows by 1
             lengths = [b.num_tokens + (1 if id(b) in write_set else 0) for b in view]
-            total = sum(lengths)
+            # RoPE positions use each block's mRoPE *span* (== num_tokens for text,
+            # but compressed for an image-bearing block), so the query rotates at
+            # its true mRoPE position.  Identical to `lengths` for text/standard models.
+            mspans = [b.mrope_span + (1 if id(b) in write_set else 0) for b in view]
+            mtotal = sum(mspans)
 
             n_seg = 0
-            prefix = 0
-            for b, length in zip(view, lengths):
+            mprefix = 0
+            for b, length, mspan in zip(view, lengths, mspans):
                 if length == 0:
+                    mprefix += mspan
                     continue
                 page_nums = b.page_numbers_tensor()
                 # If this block is written this step and the new token started a
@@ -227,20 +274,20 @@ class SharedCacheAttention:
                     page_nums = torch.cat([page_nums, extra])
                 n_pages_seg = int(page_nums.numel())
                 main_sub_worker.append(w)
-                main_sub_loc.append(total - prefix - 1)
+                main_sub_loc.append(mtotal - mprefix - 1)
                 main_sub_slot.append(n_seg)
                 main_kv_parts.append(page_nums)
                 main_page_counts.append(n_pages_seg)
                 main_seq_lens.append(length)
                 main_last_page.append(length - (n_pages_seg - 1) * P)
                 n_seg += 1
-                prefix += length
+                mprefix += mspan
 
             if not self_in_view:
                 # The query must still attend to itself: a single-token segment
                 # at distance 0 (query rotated to its own block-relative pos).
                 aux_sub_worker.append(w)
-                aux_sub_loc.append(wt.num_tokens)
+                aux_sub_loc.append(wt.mrope_span)
                 aux_sub_slot.append(n_seg)
                 aux_kv_slots.append(int(new_token_slots[w].item()))
                 n_seg += 1

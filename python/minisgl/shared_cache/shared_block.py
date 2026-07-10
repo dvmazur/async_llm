@@ -45,6 +45,12 @@ class SharedBlock:
         self.page_starts: List[int] = []
         self.num_tokens: int = 0
 
+        # mRoPE span (Qwen3.5 multimodal): how much the running mRoPE position
+        # advances over this block.  For text blocks it equals num_tokens (default,
+        # via ``mrope_span``); an image compresses positions, so an image-bearing
+        # prefill sets ``mrope_span_override`` to its ``get_rope_index`` span.
+        self.mrope_span_override: Optional[int] = None
+
         # --- Gated DeltaNet (Qwen3.5) per-linear-layer state ---
         # Block-level affine summary (A_hat, B_hat) of this block's GDN token
         # trajectory, keyed by linear-layer index; fp32, block convention
@@ -54,6 +60,11 @@ class SharedBlock:
         # Rolling causal-conv window (last conv_kernel columns) per linear layer,
         # [conv_dim, conv_kernel].  Standard full-attention blocks leave these empty.
         self.linear_conv_state: Dict[int, torch.Tensor] = {}
+
+    @property
+    def mrope_span(self) -> int:
+        """Running-mRoPE advance over this block (== num_tokens unless overridden)."""
+        return self.num_tokens if self.mrope_span_override is None else self.mrope_span_override
 
     @property
     def num_pages(self) -> int:
@@ -111,6 +122,7 @@ class SharedBlock:
         pages = list(self.page_starts)
         self.page_starts.clear()
         self.num_tokens = 0
+        self.mrope_span_override = None
         self.linear_affine.clear()
         self.linear_conv_state.clear()
         return pages

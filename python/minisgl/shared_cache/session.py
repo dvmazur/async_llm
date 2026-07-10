@@ -147,6 +147,10 @@ class SharedCacheSession:
             num_qo_heads = attn0.num_qo_heads
             num_kv_heads = attn0.num_kv_heads
             head_dim = attn0.head_dim
+            # Interleaved mRoPE in the shared-cache op for Qwen3.5 (needed so AR decode
+            # attends correctly to image keys in the prompt; reduces to 1D for text).
+            sc_mrope = attn0._mrope_section
+            sc_rope_base = attn0._rope_base
             gdn0 = _first_gdn(engine)  # Qwen3_5GatedDeltaNet
             self.sc_gdn: SharedCacheGDN | None = SharedCacheGDN(
                 num_heads=gdn0.num_v_heads,
@@ -166,6 +170,8 @@ class SharedCacheSession:
             num_qo_heads = attn0.num_qo_heads
             num_kv_heads = attn0.num_kv_heads
             head_dim = attn0.head_dim
+            sc_mrope = None
+            sc_rope_base = None
             self.sc_gdn = None
 
         self.sc_attn = SharedCacheAttention(
@@ -178,6 +184,8 @@ class SharedCacheSession:
             dtype=self.kv_cache.dtype,
             device=self.device,
             rotary_dim=rotary_dim,
+            mrope_section=sc_mrope,
+            rope_base=sc_rope_base,
         )
 
     # ------------------------------------------------------------------
@@ -261,6 +269,10 @@ class SharedCacheSession:
             logits = self._forward(batch, cache_structure=cs, write_to=[block])
 
             block.grow_pages(page_starts, seq_len)
+            if mrope_positions is not None:
+                # image tokens compress positions: record the block's mRoPE span so
+                # later decode queries rotate at their true (continued) mRoPE position.
+                block.mrope_span_override = int(mrope_positions.max().item()) + 1
 
             # NOTE: ParallelLMHead.forward already extracts last-token logits
             # for prefill batches, so logits has shape [bs, vocab].
