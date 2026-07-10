@@ -1,7 +1,7 @@
-"""Async Thoughts demo on minisgl's shared-cache."""
+"""Async Thoughts demo on minisgl's scheduler-owned shared cache."""
 
 from __future__ import annotations
 
-from .demo import DemoConfig, run
+from .driver import Prompting, ReasoningConfig, ReasoningDriver
 
-__all__ = ["DemoConfig", "run"]
+__all__ = ["Prompting", "ReasoningConfig", "ReasoningDriver"]

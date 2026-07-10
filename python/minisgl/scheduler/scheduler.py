@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import cached_property
 from typing import TYPE_CHECKING, List, NamedTuple, NoReturn, Set, Tuple, TypeAlias
 
 import torch
@@ -20,6 +21,7 @@ from .config import SchedulerConfig
 from .decode import DecodeManager
 from .io import SchedulerIOMixin
 from .prefill import ChunkedReq, PrefillManager
+from .shared_cache_service import SharedCacheService
 from .table import TableManager
 
 if TYPE_CHECKING:
@@ -57,7 +59,7 @@ class Scheduler(SchedulerIOMixin):
         # initialize other managers
         self.table_manager = TableManager(config.max_running_req, self.engine.page_table)
         # Share the engine's page allocator so the scheduler and any in-process
-        # consumer (e.g. SharedCacheSession) draw from one pool.
+        # consumer (e.g. SharedCacheService) draw from one pool.
         self.cache_manager = CacheManager(
             self.engine.page_allocator, self.engine.page_table, config.cache_type
         )
@@ -76,6 +78,13 @@ class Scheduler(SchedulerIOMixin):
 
         # Initialize the I/O mixin
         super().__init__(config, self.engine.tp_cpu_group)
+
+    @cached_property
+    def shared_cache_service(self) -> SharedCacheService:
+        """Shared-cache (async-reasoning) mechanism. Built lazily: the
+        attention op allocates a sizable FlashInfer workspace that normal
+        traffic must not pay for."""
+        return SharedCacheService(self.engine, self.cache_manager, self.table_manager)
 
     def run_when_idle(self) -> None:
         """Called when the scheduler is idle to perform background tasks."""

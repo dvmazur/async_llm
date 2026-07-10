@@ -11,11 +11,10 @@ class PageAllocator:
     layout the scheduler's ``CacheManager`` uses (``arange(num_pages) *
     page_size``).
 
-    This is the engine's "main page cache": the single pool that standalone
-    consumers such as ``SharedCacheSession`` borrow pages from (and return them
-    to) instead of fabricating their own private token pool.  Unlike
-    ``CacheManager`` it carries no prefix cache / eviction -- borrowers manage
-    their own blocks explicitly and hand pages back on teardown.
+    This is the engine's "main page cache": the single pool every consumer
+    draws from.  The scheduler's ``CacheManager`` layers the prefix cache,
+    eviction, and the shared-cache borrowed-page accounting on top; this
+    allocator itself only hands out and reclaims page-aligned slots.
     """
 
     def __init__(self, num_pages: int, page_size: int, device: torch.device) -> None:

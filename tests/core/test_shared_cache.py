@@ -7,8 +7,9 @@ This file contains two groups of tests:
   ``SharedBlock``, ``WorkerGroup`` and the ``apply_rope_correction`` math.
 
 * **End-to-end tests** (require ``MINISGL_E2E_MODEL`` env var pointing to an
-  HF model path and a working CUDA device) that spin up a real ``Engine`` and
-  drive it through ``SharedCacheSession`` to verify the full pipeline works.
+  HF model path and a working CUDA device) that spin up an offline scheduler
+  (``minisgl.llm.LLM``) and drive it through its scheduler-owned
+  ``SharedCacheService`` to verify the full pipeline works.
 
 Run unit tests only::
 
@@ -19,11 +20,8 @@ Run everything (needs GPU + model weights)::
     MINISGL_E2E_MODEL=meta-llama/Llama-3.2-1B \
         pytest tests/core/test_shared_cache.py -v -s
 
-Run only the standalone demo (no pytest) — preferred wrapper::
-
-    MINISGL_E2E_MODEL=Qwen/Qwen2.5-0.5B python scripts/run_shared_cache_demo.py
-
-Or run the test module directly (``__name__ == "__main__"`` runs pytest then the demo)::
+Or run the test module directly (``__name__ == "__main__"`` runs the unit
+tests then a small standalone demo)::
 
     MINISGL_E2E_MODEL=Qwen/Qwen2.5-0.5B python tests/core/test_shared_cache.py
 """
@@ -38,7 +36,6 @@ import torch
 
 from minisgl.shared_cache import (
     SharedBlock,
-    SharedCacheSession,
     WorkerGroup,
     apply_rope_correction,
 )
@@ -241,20 +238,12 @@ requires_e2e = pytest.mark.skipif(
 )
 
 
-def _build_engine(model_path: str):
-    """Lazy import — importing Engine eagerly pulls in CUDA-only deps."""
-    from minisgl.distributed import DistributedInfo
-    from minisgl.engine import Engine, EngineConfig
+def _build_llm(model_path: str):
+    """Lazy import — importing the engine stack eagerly pulls in CUDA-only deps."""
+    from minisgl.llm import LLM
 
-    # Init torch.distributed with a TCP store if not already initialised
-    if not torch.distributed.is_initialized():
-        # Engine.__init__ will call init_process_group itself; nothing to do
-        pass
-
-    config = EngineConfig(
-        model_path=model_path,
-        tp_info=DistributedInfo(rank=0, size=1),
-        dtype=torch.bfloat16,
+    return LLM(
+        model_path,
         max_running_req=8,
         cuda_graph_bs=[2, 4],
         cuda_graph_max_bs=4,
@@ -262,7 +251,6 @@ def _build_engine(model_path: str):
         memory_ratio=0.7,
         max_seq_len_override=2048,
     )
-    return Engine(config)
 
 
 def _encode(text: str, model_path: str) -> torch.Tensor:
@@ -274,39 +262,45 @@ def _encode(text: str, model_path: str) -> torch.Tensor:
 
 
 @pytest.fixture(scope="module")
-def engine_and_session():
-    """Shared fixture for all e2e tests."""
+def shared_llm():
+    """One offline LLM (scheduler + engine) shared by all e2e tests."""
     if not E2E_MODEL_PATH or not torch.cuda.is_available():
         pytest.skip("e2e tests disabled")
-    engine = _build_engine(E2E_MODEL_PATH)
-    session = SharedCacheSession(engine)
-    yield engine, session
-    engine.shutdown()
+    llm = _build_llm(E2E_MODEL_PATH)
+    yield llm
+    llm.engine.shutdown()
+
+
+@pytest.fixture(scope="module")
+def backend_ctx(shared_llm):
+    """(llm, backend) where backend is the scheduler-owned shared-cache service."""
+    return shared_llm, shared_llm.shared_cache_service
 
 
 @requires_e2e
 class TestSharedCacheE2E:
-    def test_prefill_then_decode_shape(self, engine_and_session):
-        engine, session = engine_and_session
+    def test_prefill_then_decode_shape(self, backend_ctx):
+        llm, backend = backend_ctx
         prompt_ids = _encode("The capital of France is", E2E_MODEL_PATH)
 
-        prompt = session.create_block()
-        logits = session.prefill_block(prompt, prompt_ids)
+        prompt = backend.create_block()
+        logits = backend.prefill_block(prompt, prompt_ids)
 
-        vocab_size = engine.model.lm_head.num_embeddings
+        vocab_size = llm.engine.model.lm_head.num_embeddings
         assert logits.shape == (1, vocab_size)
         assert prompt.num_tokens == len(prompt_ids)
+        backend.free_block(prompt)
 
-    def test_identical_workers_give_identical_logits(self, engine_and_session):
+    def test_identical_workers_give_identical_logits(self, backend_ctx):
         """Two workers with identical cache structures must produce identical logits."""
-        engine, session = engine_and_session
+        _, backend = backend_ctx
         prompt_ids = _encode("Once upon a time", E2E_MODEL_PATH)
 
-        prompt = session.create_block()
-        session.prefill_block(prompt, prompt_ids)
+        prompt = backend.create_block()
+        backend.prefill_block(prompt, prompt_ids)
 
-        w1 = session.create_block()
-        w2 = session.create_block()
+        w1 = backend.create_block()
+        w2 = backend.create_block()
 
         # Both workers see only the shared prompt → identical attention results
         group = WorkerGroup(
@@ -316,23 +310,25 @@ class TestSharedCacheE2E:
 
         # Feed the same token to both workers
         next_tok = torch.tensor([42, 42], dtype=torch.int32)
-        logits = session.decode_step(group, next_tok)
+        logits = backend.decode_group(group, next_tok)
 
         max_diff = (logits[0] - logits[1]).abs().max().item()
         assert max_diff < 1e-2, (
             f"Identical workers diverged: max |logit diff| = {max_diff}"
         )
+        for blk in (w1, w2, prompt):
+            backend.free_block(blk)
 
-    def test_multi_step_decode_generates_tokens(self, engine_and_session):
+    def test_multi_step_decode_generates_tokens(self, backend_ctx):
         """Run a greedy decode loop and verify we generate a plausible continuation."""
-        engine, session = engine_and_session
+        _, backend = backend_ctx
         prompt_ids = _encode("The largest planet in our solar system is", E2E_MODEL_PATH)
 
-        prompt = session.create_block()
-        prompt_logits = session.prefill_block(prompt, prompt_ids)
+        prompt = backend.create_block()
+        prompt_logits = backend.prefill_block(prompt, prompt_ids)
         first_token = prompt_logits[0].argmax(dim=-1)
 
-        w1 = session.create_block()
+        w1 = backend.create_block()
         group = WorkerGroup(
             cache_structure=[[prompt, w1]],
             write_to=[w1],
@@ -342,7 +338,7 @@ class TestSharedCacheE2E:
         current = first_token.view(1).to(torch.int32)
 
         for _ in range(20):
-            logits = session.decode_step(group, current)
+            logits = backend.decode_group(group, current)
             nxt = logits[0].argmax(dim=-1)
             generated.append(int(nxt.item()))
             current = nxt.view(1).to(torch.int32)
@@ -356,20 +352,22 @@ class TestSharedCacheE2E:
         tok = AutoTokenizer.from_pretrained(E2E_MODEL_PATH)
         text = tok.decode(generated)
         print(f"\n[multi-step decode] Prompt continuation: ...{text!r}")
+        for blk in (w1, prompt):
+            backend.free_block(blk)
 
-    def test_two_workers_share_prompt(self, engine_and_session):
+    def test_two_workers_share_prompt(self, backend_ctx):
         """Two workers, different first tokens, shared prompt — both should decode."""
-        engine, session = engine_and_session
+        _, backend = backend_ctx
         prompt_ids = _encode("The weather today is", E2E_MODEL_PATH)
 
-        prompt = session.create_block()
-        prompt_logits = session.prefill_block(prompt, prompt_ids)
+        prompt = backend.create_block()
+        prompt_logits = backend.prefill_block(prompt, prompt_ids)
         # Pick top-2 tokens as different seeds for the two workers
         top2 = torch.topk(prompt_logits[0], k=2).indices
         seeds = top2.to(torch.int32)
 
-        w1 = session.create_block()
-        w2 = session.create_block()
+        w1 = backend.create_block()
+        w2 = backend.create_block()
         group = WorkerGroup(
             cache_structure=[[prompt, w1], [prompt, w2]],
             write_to=[w1, w2],
@@ -377,28 +375,30 @@ class TestSharedCacheE2E:
 
         current = seeds.clone()
         for _ in range(10):
-            logits = session.decode_step(group, current)
+            logits = backend.decode_group(group, current)
             current = logits.argmax(dim=-1).to(torch.int32)
 
         # After 10 decode steps, each worker should have 10 tokens
         assert w1.num_tokens == 10
         assert w2.num_tokens == 10
+        for blk in (w1, w2, prompt):
+            backend.free_block(blk)
 
-    def test_reordered_structure_changes_logits(self, engine_and_session):
+    def test_reordered_structure_changes_logits(self, backend_ctx):
         """Worker with [prompt, A, B] vs [prompt, B, A] must produce different logits
         (unless A or B is empty), confirming that ordering actually matters
         and the RoPE correction path is active."""
-        engine, session = engine_and_session
+        _, backend = backend_ctx
         prompt_ids = _encode("Colors of the rainbow include", E2E_MODEL_PATH)
 
-        prompt = session.create_block()
-        prompt_logits = session.prefill_block(prompt, prompt_ids)
+        prompt = backend.create_block()
+        prompt_logits = backend.prefill_block(prompt, prompt_ids)
         # Use top-2 different tokens so the two workers diverge and write
         # distinct KV into blocks a and b.
         top2 = torch.topk(prompt_logits[0], k=2).indices.to(torch.int32)
 
-        a = session.create_block()
-        b = session.create_block()
+        a = backend.create_block()
+        b = backend.create_block()
 
         # Seed a and b with three decode steps each, via a group where they share
         # the prompt.  Workers start with different seed tokens, so blocks a and b
@@ -409,7 +409,7 @@ class TestSharedCacheE2E:
         )
         current = top2.clone()
         for _ in range(3):
-            logits = session.decode_step(seed_group, current)
+            logits = backend.decode_group(seed_group, current)
             current = logits.argmax(dim=-1).to(torch.int32)
 
         assert a.num_tokens == 3 and b.num_tokens == 3
@@ -420,7 +420,7 @@ class TestSharedCacheE2E:
             cache_structure=[[prompt, a, b], [prompt, b, a]],
             write_to=[a, b],  # writes go somewhere we'll discard
         )
-        logits_cmp = session.decode_step(compare_group, probe)
+        logits_cmp = backend.decode_group(compare_group, probe)
 
         diff = (logits_cmp[0] - logits_cmp[1]).abs().max().item()
         print(f"\n[reorder test] max |logit diff| between [p,a,b] and [p,b,a] = {diff}")
@@ -429,6 +429,41 @@ class TestSharedCacheE2E:
             f"Reordering had no effect on logits (max diff = {diff}). "
             "This suggests RoPE correction is not being applied."
         )
+        for blk in (a, b, prompt):
+            backend.free_block(blk)
+
+    def test_service_integrity_and_logprobs(self, shared_llm):
+        """Service-only: borrowed-page accounting holds mid-chain and after frees,
+        and return_logprobs preserves the argmax."""
+        llm = shared_llm
+        service = llm.shared_cache_service
+        cache_manager = llm.cache_manager
+        prompt_ids = _encode("Deep in the forest there lived", E2E_MODEL_PATH)
+
+        prompt = service.create_block()
+        logits = service.prefill_block(prompt, prompt_ids)
+        probe_blk = service.create_block()
+        logprobs = service.prefill_block(probe_blk, prompt_ids, return_logprobs=True)
+        assert torch.equal(logits[0].float().argmax(), logprobs[0].argmax())
+        assert logprobs.exp().sum(dim=-1).allclose(torch.ones(1, device=logprobs.device), atol=1e-3)
+        service.free_block(probe_blk)
+
+        assert cache_manager.borrowed_block_pages > 0
+        cache_manager.check_integrity()
+
+        w1 = service.create_block()
+        group = WorkerGroup(cache_structure=[[prompt, w1]], write_to=[w1])
+        current = logits[0].argmax(dim=-1).view(1).to(torch.int32)
+        for _ in range(5):
+            step_logprobs = service.decode_group(group, current, return_logprobs=True)
+            current = step_logprobs.argmax(dim=-1).to(torch.int32)
+        assert w1.num_tokens == 5
+        cache_manager.check_integrity()
+
+        service.free_block(w1)
+        service.free_block(prompt)
+        assert cache_manager.borrowed_block_pages == 0
+        cache_manager.check_integrity()
 
 
 # =============================================================================
@@ -448,8 +483,8 @@ def _run_standalone_demo():
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(E2E_MODEL_PATH)
-    engine = _build_engine(E2E_MODEL_PATH)
-    session = SharedCacheSession(engine)
+    llm = _build_llm(E2E_MODEL_PATH)
+    session = llm.shared_cache_service
 
     prompt_text = "The three largest planets in our solar system are"
     prompt_ids = _encode(prompt_text, E2E_MODEL_PATH)
@@ -474,7 +509,7 @@ def _run_standalone_demo():
     current = top2.clone()
 
     for _ in range(30):
-        logits = session.decode_step(group, current)
+        logits = session.decode_group(group, current)
         nxt = logits.argmax(dim=-1).to(torch.int32)
         seq1.append(int(nxt[0].item()))
         seq2.append(int(nxt[1].item()))
@@ -485,7 +520,7 @@ def _run_standalone_demo():
     print("\n--- Worker 2 ---")
     print(prompt_text + tok.decode(seq2))
 
-    engine.shutdown()
+    llm.engine.shutdown()
 
 
 if __name__ == "__main__":

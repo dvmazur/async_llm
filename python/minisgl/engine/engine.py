@@ -63,8 +63,8 @@ class Engine:
         )
 
         # Main page cache: the page-aligned pool over the real KV pages.  The
-        # live scheduler manages its own CacheManager; standalone in-process
-        # consumers (e.g. SharedCacheSession) borrow pages from here instead.
+        # scheduler's CacheManager layers the prefix cache, eviction, and the
+        # shared-cache borrowed-page accounting on top of this single pool.
         self.page_allocator = PageAllocator(self.num_pages, config.page_size, self.device)
 
         # ======================= Page table initialization ========================

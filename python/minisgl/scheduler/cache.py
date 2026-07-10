@@ -20,7 +20,7 @@ class CacheManager:
     The page-aligned free pool lives in a ``PageAllocator`` (the engine's main
     page cache); this manager borrows/returns pages from it and adds the radix
     prefix cache and eviction policy on top.  Sharing one allocator means the
-    scheduler and any in-process consumer (e.g. ``SharedCacheSession``) draw
+    scheduler and any in-process consumer (e.g. ``SharedCacheService``) draw
     from the same physical pages.
     """
 
@@ -32,6 +32,9 @@ class CacheManager:
         self.num_pages = page_allocator.num_pages
         self.page_table = page_table
         self.page_size = page_allocator.page_size
+        # Pages lent to shared-cache blocks (async reasoning). These live outside
+        # both the free list and the prefix cache until returned.
+        self.borrowed_block_pages: int = 0
 
     @property
     def free_slots(self) -> torch.Tensor:
@@ -93,14 +96,33 @@ class CacheManager:
             req.cache_handle = new_handle
             self.lock(new_handle)
 
+    def borrow_pages(self, num_pages: int) -> torch.Tensor:
+        """Lend pages to a shared-cache block, evicting prefix-cache entries if
+        needed. Returns page-start slots (int32, device)."""
+        pages = self._allocate(num_pages)
+        self.borrowed_block_pages += num_pages
+        return pages
+
+    def return_pages(self, page_starts: torch.Tensor) -> None:
+        """Return pages previously lent via ``borrow_pages``."""
+        num_pages = len(page_starts)
+        assert num_pages <= self.borrowed_block_pages, "returning more pages than borrowed"
+        if num_pages > 0:
+            # NOTE: not self._free — page_starts are already page-start slots
+            # (no [::page_size] stride) and returns must bypass lazy_free_region.
+            self.page_allocator.free_pages(page_starts)
+        self.borrowed_block_pages -= num_pages
+
     def check_integrity(self) -> None:
         self.prefix_cache.check_integrity()
         cache_pages = self.prefix_cache.size_info.total_size // self.page_size
-        if len(self.free_slots) + cache_pages != self.num_pages:
+        if len(self.free_slots) + cache_pages + self.borrowed_block_pages != self.num_pages:
             raise RuntimeError(
                 "CacheManager integrity check failed:"
                 f" free_pages({len(self.free_slots)}) +"
-                f" cache_pages({cache_pages}) != num_pages({self.num_pages})"
+                f" cache_pages({cache_pages}) +"
+                f" borrowed_block_pages({self.borrowed_block_pages})"
+                f" != num_pages({self.num_pages})"
             )
         if self.page_size > 1:
             assert torch.all(self.free_slots % self.page_size == 0)

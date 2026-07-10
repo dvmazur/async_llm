@@ -201,5 +201,82 @@ class TestAllocateEvictPageAlignment:
         _assert_all_page_aligned(cm.free_slots, page_size, "_free_slots after evict")
 
 
+class TestBorrowedPages:
+    """Tests for borrow_pages/return_pages accounting (shared-cache blocks)."""
+
+    def test_borrow_and_return_update_free_list_and_counter(self):
+        cm = _make_cache_manager(num_pages=8, page_size=1)
+
+        pages = cm.borrow_pages(3)
+        assert len(pages) == 3
+        assert cm.borrowed_block_pages == 3
+        assert len(cm.free_slots) == 5
+
+        cm.return_pages(pages)
+        assert cm.borrowed_block_pages == 0
+        assert len(cm.free_slots) == 8
+
+    def test_check_integrity_with_live_borrows(self):
+        cm = _make_cache_manager(num_pages=8, page_size=1)
+
+        pages = cm.borrow_pages(3)
+        cm.check_integrity()  # free(5) + cache(0) + borrowed(3) == 8
+
+        cm.return_pages(pages)
+        cm.check_integrity()  # free(8) + cache(0) + borrowed(0) == 8
+
+    def test_check_integrity_with_borrows_and_cache(self):
+        cm = _make_cache_manager(num_pages=8, page_size=1)
+
+        # 2 pages in the radix cache, 3 borrowed, 3 free
+        cached = cm._allocate(2)
+        token_indices = cm._page_to_token(cached)
+        input_ids = torch.arange(len(token_indices), dtype=torch.int32)
+        _insert_evictable(cm, input_ids, token_indices)
+
+        borrowed = cm.borrow_pages(3)
+        cm.check_integrity()
+
+        cm.return_pages(borrowed)
+        cm.check_integrity()
+
+    def test_borrow_evicts_under_pressure(self):
+        page_size = 4
+        num_pages = 4
+        cm = _make_cache_manager(num_pages, page_size)
+
+        # Exhaust free pages, then make 2 pages evictable via the radix cache
+        held = cm._allocate(2)
+        cached = cm._allocate(2)
+        token_indices = cm._page_to_token(cached)
+        input_ids = torch.arange(len(token_indices), dtype=torch.int32)
+        _insert_evictable(cm, input_ids, token_indices)
+        assert len(cm.free_slots) == 0
+
+        borrowed = cm.borrow_pages(2)
+        assert cm.borrowed_block_pages == 2
+        _assert_all_page_aligned(borrowed, page_size, "borrowed after evict")
+        _assert_no_overlap(torch.cat([held, borrowed]), page_size)
+
+        cm.return_pages(borrowed)
+        assert cm.borrowed_block_pages == 0
+
+    def test_borrowed_pages_page_aligned(self):
+        page_size = 4
+        cm = _make_cache_manager(num_pages=4, page_size=page_size)
+
+        borrowed = cm.borrow_pages(3)
+        _assert_all_page_aligned(borrowed, page_size, "borrowed")
+        _assert_no_overlap(borrowed, page_size)
+
+    def test_over_return_asserts(self):
+        cm = _make_cache_manager(num_pages=8, page_size=1)
+
+        pages = cm.borrow_pages(2)
+        cm.return_pages(pages)
+        with pytest.raises(AssertionError):
+            cm.return_pages(pages)
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

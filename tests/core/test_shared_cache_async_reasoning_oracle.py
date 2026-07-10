@@ -8,9 +8,9 @@ abstraction that minisgl implements:
   AsyncReasoning            <->  minisgl
   -------------------------------------------
   CacheBlock                <->  SharedBlock
-  SharedCacheManager        <->  WorkerGroup + SharedCacheSession
+  SharedCacheManager        <->  WorkerGroup + SharedCacheService
   rotate_by_offset          <->  apply_rope_correction
-  combine_cache_from_struct <->  decode_step page-table fill + _apply_corrections
+  combine_cache_from_struct <->  decode_group page-table fill + _apply_corrections
 
 This file compares the two implementations head-to-head.  It does NOT use
 HuggingFace transformers as the reference -- transformers has no shared-cache
@@ -28,7 +28,7 @@ Layers compared:
      Both should produce numerically identical rotated keys at fp32.
 
   2. End-to-end SharedCacheManager forward (GPU + model):
-     minisgl decode_step on [[prompt, w]]
+     minisgl decode_group on [[prompt, w]]
        vs
      HF model(input_ids, past_key_values=CombinedCacheView([[prompt, w]]))
 
@@ -150,10 +150,15 @@ def _make_legacy_prop(attr_name: str):
 DynamicCache.key_cache = _make_legacy_prop("keys")
 DynamicCache.value_cache = _make_legacy_prop("values")
 
-import shared_cache as ar_sc  # type: ignore  # noqa: E402  (must come after patches)
+try:
+    import shared_cache as ar_sc  # type: ignore  # noqa: E402  (must come after patches)
+except ModuleNotFoundError:
+    pytest.skip(
+        f"AsyncReasoning reference clone not found at {_ASYNC_REASONING_ROOT}",
+        allow_module_level=True,
+    )
 
 from minisgl.shared_cache import (
-    SharedCacheSession,
     WorkerGroup,
     apply_rope_correction,
 )
@@ -365,14 +370,12 @@ def test_rope_kernel_inverse_offset_undoes_rotation(kernel_config):
 # -----------------------------------------------------------------------------
 
 
-def _build_engine(model_path: str):
+def _build_llm(model_path: str):
     from minisgl.distributed import DistributedInfo
-    from minisgl.engine import Engine, EngineConfig
+    from minisgl.llm import LLM
 
-    config = EngineConfig(
-        model_path=model_path,
-        tp_info=DistributedInfo(rank=0, size=1),
-        dtype=torch.bfloat16,
+    return LLM(
+        model_path,
         max_running_req=8,
         cuda_graph_bs=[1, 2, 4],
         cuda_graph_max_bs=4,
@@ -380,17 +383,16 @@ def _build_engine(model_path: str):
         memory_ratio=float(os.environ.get("MINISGL_TEST_MEMORY_RATIO", "0.35")),
         max_seq_len_override=2048,
     )
-    return Engine(config)
 
 
 @pytest.fixture(scope="module")
 def engine_and_session():
+    """(engine, service): the scheduler-owned shared-cache service on one LLM."""
     if not E2E_MODEL_PATH or not torch.cuda.is_available():
         pytest.skip("e2e tests disabled")
-    engine = _build_engine(E2E_MODEL_PATH)
-    session = SharedCacheSession(engine)
-    yield engine, session
-    engine.shutdown()
+    llm = _build_llm(E2E_MODEL_PATH)
+    yield llm.engine, llm.shared_cache_service
+    llm.engine.shutdown()
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -440,7 +442,7 @@ def _seed_minisgl_block(
     cur_int = int(seed_token)
     for _ in range(num_tokens):
         tokens.append(cur_int)
-        logits = session.decode_step(
+        logits = session.decode_group(
             group, torch.tensor([cur_int], dtype=torch.int32)
         )
         cur_int = int(logits.argmax(dim=-1).item())
@@ -582,7 +584,7 @@ def test_decode_step_single_block_matches_async_reasoning(
     probe_id = 42
     ms_group = WorkerGroup(cache_structure=[[ms_prompt, ms_w]], write_to=[ms_w])
     ms_logits = (
-        session.decode_step(ms_group, torch.tensor([probe_id], dtype=torch.int32))[0]
+        session.decode_group(ms_group, torch.tensor([probe_id], dtype=torch.int32))[0]
         .float()
         .cpu()
     )
@@ -624,7 +626,7 @@ def test_decode_step_block_reorder_matches_async_reasoning(
     probe = torch.tensor([probe_id], dtype=torch.int32)
 
     ms_logits_ab = (
-        session.decode_step(
+        session.decode_group(
             WorkerGroup(cache_structure=[[ms_prompt, ms_a, ms_b]], write_to=[ms_b]),
             probe,
         )[0]
@@ -632,7 +634,7 @@ def test_decode_step_block_reorder_matches_async_reasoning(
         .cpu()
     )
     ms_logits_ba = (
-        session.decode_step(
+        session.decode_group(
             WorkerGroup(cache_structure=[[ms_prompt, ms_b, ms_a]], write_to=[ms_a]),
             probe,
         )[0]
@@ -775,7 +777,7 @@ def test_multi_step_decode_matches_async_reasoning(
     cur_token = ar_arg0
     for k in range(K):
         ms_logits = (
-            session.decode_step(
+            session.decode_group(
                 ms_group, torch.tensor([cur_token], dtype=torch.int32)
             )[0]
             .float()
@@ -842,7 +844,7 @@ def test_multi_worker_two_workers_matches_async_reasoning(
         cache_structure=[[ms_prompt, ms_a, ms_w_a], [ms_prompt, ms_b, ms_w_b]],
         write_to=[ms_w_a, ms_w_b],
     )
-    ms_out = session.decode_step(ms_group, probes)
+    ms_out = session.decode_group(ms_group, probes)
     ms_logits_a = ms_out[0].float().cpu()
     ms_logits_b = ms_out[1].float().cpu()
 
@@ -905,7 +907,7 @@ def test_block_reuse_across_groups_matches_async_reasoning(
         cache_structure=[[ms_prompt, ms_suffix, ms_w_1]],
         write_to=[ms_w_1],
     )
-    ms_logits_1 = session.decode_step(g1, probe)[0].float().cpu()
+    ms_logits_1 = session.decode_group(g1, probe)[0].float().cpu()
 
     # Trial 2: another fresh WorkerGroup reusing the same ms_suffix block.
     ms_w_2 = session.create_block()
@@ -913,7 +915,7 @@ def test_block_reuse_across_groups_matches_async_reasoning(
         cache_structure=[[ms_prompt, ms_suffix, ms_w_2]],
         write_to=[ms_w_2],
     )
-    ms_logits_2 = session.decode_step(g2, probe)[0].float().cpu()
+    ms_logits_2 = session.decode_group(g2, probe)[0].float().cpu()
 
     # Both must match the AsyncReasoning reference.
     _assert_logits_close(ms_logits_1, ar_logits, label="reuse_trial1")
@@ -978,7 +980,7 @@ def test_context_prefill_matches_async_reasoning(
     probe_id = 11
     ms_w = session.create_block()
     ms_dec = (
-        session.decode_step(
+        session.decode_group(
             WorkerGroup(
                 cache_structure=[[ms_prompt, ms_close, ms_w]], write_to=[ms_w]
             ),
@@ -1045,7 +1047,7 @@ def test_interleaved_growth_matches_async_reasoning(
     w_tok = 42
 
     for k in range(K):
-        ms_logits = session.decode_step(
+        ms_logits = session.decode_group(
             ms_group, torch.tensor([t_tok, w_tok], dtype=torch.int32)
         )
         ms_logits_t = ms_logits[0].float().cpu()
@@ -1101,7 +1103,7 @@ def test_empty_block_in_group_matches_async_reasoning(
         cache_structure=[[ms_prompt, ms_empty, session.create_block()]],
         write_to=None,
     )
-    ms_logits = session.decode_step(ms_group_with, probe)[0].float().cpu()
+    ms_logits = session.decode_group(ms_group_with, probe)[0].float().cpu()
 
     # AsyncReasoning WITHOUT empty block
     ar_logits = _async_reasoning_decode_step(
