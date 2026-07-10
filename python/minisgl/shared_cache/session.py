@@ -202,6 +202,9 @@ class SharedCacheSession:
         input_ids: torch.Tensor,
         context: Optional[List[SharedBlock]] = None,
         capture_affine: bool = True,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.Tensor] = None,
+        mrope_positions: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Prefill a single ``SharedBlock`` with *input_ids* and return logits.
@@ -244,6 +247,13 @@ class SharedCacheSession:
                 cache_handle=NULL_CACHE_HANDLE,
             )
             batch = self._build_batch([req], phase="prefill")
+            # Multimodal (Qwen3.5 vision): attach pixel_values/grid + 3D mRoPE positions
+            # so the vision tower + interleaved mRoPE run in the model forward.
+            if pixel_values is not None:
+                batch.pixel_values = pixel_values.to(self.device)
+                batch.image_grid_thw = image_grid_thw.to(self.device)
+            if mrope_positions is not None:
+                batch.mrope_positions = mrope_positions.to(self.device)
             # Throwaway prefills (capture_affine=False) skip the AR path so the
             # GDN layers don't pay the O(seq) affine capture; a from-zero
             # standalone prefill is identical to composing an empty chain.

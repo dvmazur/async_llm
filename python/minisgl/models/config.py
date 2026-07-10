@@ -16,6 +16,23 @@ class RotaryConfig:
 
 
 @dataclass(frozen=True)
+class VisionConfig:
+    """Qwen3.5 vision-tower config (ViT). Present only for the multimodal path."""
+
+    depth: int
+    hidden_size: int
+    num_heads: int
+    intermediate_size: int
+    in_channels: int
+    patch_size: int
+    temporal_patch_size: int
+    spatial_merge_size: int
+    out_hidden_size: int
+    num_position_embeddings: int
+    hidden_act: str
+
+
+@dataclass(frozen=True)
 class ModelConfig:
     num_layers: int
     num_qo_heads: int
@@ -43,6 +60,17 @@ class ModelConfig:
     linear_key_head_dim: int = 0
     linear_value_head_dim: int = 0
     linear_conv_kernel_dim: int = 0
+    # Multimodal (Qwen3.5 vision) extensions; None/absent for text-only models.
+    mrope_section: tuple[int, ...] | None = None
+    vision_config: VisionConfig | None = None
+    image_token_id: int = -1
+    video_token_id: int = -1
+    vision_start_token_id: int = -1
+    vision_end_token_id: int = -1
+
+    @property
+    def is_multimodal(self) -> bool:
+        return self.vision_config is not None
 
     @property
     def is_moe(self) -> bool:
@@ -84,8 +112,8 @@ class ModelConfig:
 
     @classmethod
     def from_hf(cls, config: PretrainedConfig) -> ModelConfig:
+        top = config  # original (multimodal) config, before swapping to text_config
         if hasattr(config, "text_config") and config.text_config is not None:
-            top = config
             config = config.text_config
             for attr in ("architectures", "rope_theta", "rope_scaling"):
                 if not getattr(config, attr, None) and getattr(top, attr, None):
@@ -121,6 +149,30 @@ class ModelConfig:
         layer_types = getattr(config, "layer_types", None)
         layer_types = tuple(layer_types) if layer_types is not None else None
 
+        # Interleaved mRoPE section (Qwen3.5), inside rope_parameters.
+        mrope_section = None
+        if rope_params is not None:
+            ms = getattr(rope_params, "mrope_section", None)
+            mrope_section = tuple(ms) if ms is not None else None
+
+        # Vision tower + multimodal token ids (from the top-level multimodal config).
+        vc = getattr(top, "vision_config", None)
+        vision_config = None
+        if vc is not None:
+            vision_config = VisionConfig(
+                depth=vc.depth,
+                hidden_size=vc.hidden_size,
+                num_heads=vc.num_heads,
+                intermediate_size=vc.intermediate_size,
+                in_channels=getattr(vc, "in_channels", 3),
+                patch_size=vc.patch_size,
+                temporal_patch_size=vc.temporal_patch_size,
+                spatial_merge_size=vc.spatial_merge_size,
+                out_hidden_size=vc.out_hidden_size,
+                num_position_embeddings=vc.num_position_embeddings,
+                hidden_act=getattr(vc, "hidden_act", "gelu_pytorch_tanh"),
+            )
+
         return cls(
             num_layers=config.num_hidden_layers,
             num_qo_heads=config.num_attention_heads,
@@ -153,4 +205,10 @@ class ModelConfig:
             linear_key_head_dim=getattr(config, "linear_key_head_dim", 0),
             linear_value_head_dim=getattr(config, "linear_value_head_dim", 0),
             linear_conv_kernel_dim=getattr(config, "linear_conv_kernel_dim", 0),
+            mrope_section=mrope_section,
+            vision_config=vision_config,
+            image_token_id=getattr(top, "image_token_id", -1),
+            video_token_id=getattr(top, "video_token_id", -1),
+            vision_start_token_id=getattr(top, "vision_start_token_id", -1),
+            vision_end_token_id=getattr(top, "vision_end_token_id", -1),
         )

@@ -105,12 +105,14 @@ def load_weight(model_path: str, device: torch.device) -> Iterator[Tuple[str, to
                 # Strip multimodal wrapper prefix, skip vision/projector weights
                 if name.startswith(("vision_tower.", "multi_modal_projector.")):
                     continue
-                # Qwen3.5 nests the LM under `model.language_model.` next to `model.visual.`
-                # and a multi-token-prediction head `mtp.`; drop those, flatten the LM prefix.
-                if config.is_hybrid and (
-                    name.startswith("model.visual.") or name.startswith("mtp.")
-                ):
-                    continue
+                # Qwen3.5 nests the LM under `model.language_model.` (flatten to `model.`),
+                # keeps the vision tower under `model.visual.` (loaded into the vision tower
+                # for multimodal builds, else skipped), and an MTP head `mtp.` (always skipped).
+                if config.is_hybrid:
+                    if name.startswith("mtp."):
+                        continue
+                    if name.startswith("model.visual.") and not config.is_multimodal:
+                        continue
                 raw = f.get_tensor(name)
                 if config.is_hybrid:
                     name = name.replace("model.language_model.", "model.", 1)
