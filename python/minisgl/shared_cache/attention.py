@@ -382,19 +382,27 @@ class SharedCacheAttention:
         P = self.page_size
         S = int(num_new)
         n_ctx = len(context)
-        ctx_lens = [b.num_tokens for b in context]
-        self_offset = sum(ctx_lens)
+        ctx_lens = [b.num_tokens for b in context]  # physical token counts (paging)
+        ctx_spans = [b.mrope_span for b in context]  # running-mRoPE advance (rotation)
+        self_offset = sum(ctx_spans)
 
-        # q-row gather + per-row rotation positions: for context segment j at
-        # view offset O_j, token i is rotated to (O_self + i) - O_j; for the
-        # self segment, to its block-relative position i.
+        # q-row gather + per-row rotation positions: for context block j whose
+        # cumulative mRoPE prefix span is P_j, new token i (at mRoPE position
+        # ``self_offset + i``) is rotated to ``(self_offset + i) - P_j``; the self
+        # segment rotates to its block-relative position i.  Spans equal token
+        # counts for text/standard models, but an image context block compresses
+        # positions -- rotation must use the span, not num_tokens, so the new
+        # (text) tokens sit at their true mRoPE offset past the image.  The self
+        # segment assumes the new block is text (block-relative pos == index),
+        # which holds: images live in the re-prefilled root, never a context
+        # prefill.
         sub_gather: List[int] = []
         sub_loc: List[int] = []
         prefix = 0
-        for length in ctx_lens:
+        for span in ctx_spans:
             sub_gather.extend(range(S))
             sub_loc.extend(self_offset + i - prefix for i in range(S))
-            prefix += length
+            prefix += span
         sub_gather.extend(range(S))
         sub_loc.extend(range(S))
 
