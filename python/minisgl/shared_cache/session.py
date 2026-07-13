@@ -30,15 +30,30 @@ Usage::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 import torch
 from minisgl.core import Batch, Req, SamplingParams
 from minisgl.utils import div_ceil
 
-from .attention import SharedCacheAttention
+from .attention import SharedCacheAttention, _PrefillSpec
 from .shared_block import NULL_CACHE_HANDLE, SharedBlock
 from .worker_group import WorkerGroup
+
+
+@dataclass
+class PrefillRequest:
+    """One in-context prefill to run inside a :meth:`SharedCacheSession.mixed_step`.
+
+    ``block`` must be a fresh (empty) :class:`SharedBlock`; ``input_ids`` is a
+    1-D int tensor; ``context`` are the (stable, non-empty) blocks the new
+    tokens attend to, ordered as if concatenated ``[ctx_0, ..., block]``.
+    """
+
+    block: SharedBlock
+    input_ids: torch.Tensor
+    context: List[SharedBlock] = field(default_factory=list)
 
 if TYPE_CHECKING:
     from minisgl.engine import Engine
@@ -274,6 +289,140 @@ class SharedCacheSession:
         for wt in group.write_to:
             wt.append_token(new_page_for_block[id(wt)])
         return logits[:num_workers]
+
+    @torch.inference_mode()
+    def mixed_step(
+        self,
+        decode_group: Optional[WorkerGroup],
+        decode_input_ids: Optional[torch.Tensor],
+        prefill_requests: Sequence[PrefillRequest],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Run one forward that decodes every worker in *decode_group* **and**
+        prefills each of *prefill_requests* together, in a single batch.
+
+        Output rows are laid out decode-first, so the returned logits split as
+        ``(decode_logits [W, vocab], prefill_logits [n_prefill, vocab])`` where
+        each prefill row is that request's last-token distribution (its first
+        generated token), exactly like :meth:`prefill_block`.
+
+        Pass ``decode_group=None`` (and ``decode_input_ids=None``) for a
+        prefill-only batch of several requests.
+
+        v1 constraints (asserted): every prefill block is fresh/empty and not
+        referenced by any decode worker's view; every prefill context block is
+        non-empty and not written this step.  These make the mixed result
+        identical to running the decode and prefill phases as separate forwards.
+        """
+        prefill_requests = list(prefill_requests)
+        W = decode_group.num_workers if decode_group is not None else 0
+        assert W > 0 or prefill_requests, "mixed_step needs decode workers or prefills"
+        assert (decode_group is None) == (decode_input_ids is None)
+
+        # ---- validate v1 block-independence constraints ----
+        decode_view_ids = (
+            {id(b) for view in decode_group.cache_structure for b in view}
+            if decode_group is not None
+            else set()
+        )
+        decode_write_ids = (
+            {id(wt) for wt in decode_group.write_to} if decode_group is not None else set()
+        )
+        prefill_self_ids = {id(r.block) for r in prefill_requests}
+        assert len(prefill_self_ids) == len(prefill_requests), "duplicate prefill block"
+
+        # ---- allocate + describe each prefill (decode-first row ordering) ----
+        specs: List[_PrefillSpec] = []
+        pf_ids: List[torch.Tensor] = []
+        pf_out_locs: List[torch.Tensor] = []
+        pf_positions: List[torch.Tensor] = []
+        pf_page_starts: List[torch.Tensor] = []
+        for r in prefill_requests:
+            assert r.block.num_tokens == 0, "prefill block must be fresh (empty)"
+            assert (
+                id(r.block) not in decode_view_ids
+            ), "prefill self block is referenced by a decode worker this step"
+            ctx = [b for b in r.context if b.num_tokens > 0]
+            assert ctx, "mixed prefill requires at least one non-empty context block"
+            for b in ctx:
+                assert (
+                    id(b) not in decode_write_ids
+                ), "prefill context block is written by a decode worker this step"
+                assert id(b) not in prefill_self_ids, "prefill context block is a fresh block"
+            ids = r.input_ids.to(dtype=torch.int32).flatten().cpu()
+            S = int(ids.numel())
+            assert S > 0
+            page_starts, token_slots = self._alloc_token_storage(S)
+            specs.append(_PrefillSpec(ctx, page_starts, S))
+            pf_ids.append(ids)
+            pf_out_locs.append(token_slots[:S])
+            pf_positions.append(torch.arange(S, dtype=torch.int64, device=self.device))
+            pf_page_starts.append(page_starts)
+
+        # ---- plan decode writes ----
+        if W > 0:
+            dec_ids = decode_input_ids.to(dtype=torch.int32).reshape(W).cpu()
+            new_page_for_block, new_token_slots, write_pos = self._plan_decode_writes(decode_group)
+        else:
+            new_page_for_block, new_token_slots, write_pos = {}, None, []
+
+        # ---- assemble the combined batch: decode tokens first, then prefills ----
+        dummy_table_idx = self.page_table.shape[0] - 1
+        reqs: List[Req] = []
+        input_id_parts: List[torch.Tensor] = []
+        position_parts: List[torch.Tensor] = []
+        out_loc_parts: List[torch.Tensor] = []
+
+        if W > 0:
+            input_id_parts.append(dec_ids.to(self.device))
+            position_parts.append(torch.tensor(write_pos, dtype=torch.int64, device=self.device))
+            out_loc_parts.append(new_token_slots)
+            for wi in range(W):
+                cached_len = decode_group.worker_cache_length(wi)
+                full_ids = torch.zeros(cached_len + 1, dtype=torch.int32)
+                full_ids[cached_len] = dec_ids[wi]
+                reqs.append(self._bookkeeping_req(full_ids, dummy_table_idx, cached_len))
+
+        for ids, out_loc, positions in zip(pf_ids, pf_out_locs, pf_positions):
+            input_id_parts.append(ids.to(self.device))
+            position_parts.append(positions)
+            out_loc_parts.append(out_loc)
+            reqs.append(self._bookkeeping_req(ids, dummy_table_idx, 0))
+
+        batch = Batch(reqs=reqs, phase="prefill")
+        batch.padded_reqs = reqs
+        batch.input_ids = torch.cat(input_id_parts)
+        batch.positions = torch.cat(position_parts)
+        batch.out_loc = torch.cat(out_loc_parts)
+        batch.attn_metadata = self.sc_attn.prepare_mixed(
+            decode_group, new_page_for_block, new_token_slots, specs
+        )
+
+        logits = self._forward(batch)
+
+        # ---- commit growth now that the forward read post-append lengths ----
+        if W > 0:
+            for wt in decode_group.write_to:
+                wt.append_token(new_page_for_block[id(wt)])
+        for r, page_starts, spec in zip(prefill_requests, pf_page_starts, specs):
+            r.block.grow_pages(page_starts, spec.num_new)
+
+        return logits[:W], logits[W:]
+
+    def _bookkeeping_req(
+        self, input_ids: torch.Tensor, table_idx: int, cached_len: int
+    ) -> Req:
+        """A minimal ``Req`` used only for batch size / phase; the page table is
+        bypassed (metadata drives attention), so it points at the dummy row."""
+        return Req(
+            input_ids=input_ids,
+            table_idx=table_idx,
+            cached_len=cached_len,
+            output_len=1,
+            uid=-1,
+            sampling_params=_DEFAULT_SAMPLING,
+            cache_handle=NULL_CACHE_HANDLE,
+        )
 
     # ------------------------------------------------------------------
     # Page / table-index management

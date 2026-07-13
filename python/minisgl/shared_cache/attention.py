@@ -51,7 +51,10 @@ from minisgl.attention import BaseAttnMetadata
 from .rope_correction import apply_rope_correction
 
 if TYPE_CHECKING:
-    from flashinfer import BatchDecodeWithPagedKVCacheWrapper
+    from flashinfer import (
+        BatchDecodeWithPagedKVCacheWrapper,
+        BatchPrefillWithPagedKVCacheWrapper,
+    )
     from minisgl.core import Batch
     from minisgl.kvcache import BaseKVCachePool
 
@@ -73,16 +76,86 @@ class SharedCacheAttnMetadata(BaseAttnMetadata):
     pad_slot: torch.Tensor  # [N_sub] int64 — scatter index into [W * max_segments]
     num_workers: int  # number of output rows (workers for decode, tokens for prefill)
     max_segments: int
-    n_main: int = 0  # sub-requests served by the paged wrapper
-    n_aux: int = 0  # sub-requests served by the page_size=1 (implicit-self) wrapper
-    phase: Literal["decode", "context_prefill"] = "decode"
+    # Per-group q-row-copy counts, in the fixed q_sub layout order
+    # ``[dec_main | pf_ctx | pf_self | dec_aux]``.  ``forward`` runs whichever
+    # wrappers have a non-zero count and merges their outputs by ``pad_slot``.
+    n_main: int = 0  # dec_main: decode segments served by the paged decode wrapper
+    n_pf_ctx: int = 0  # prefill context segments (non-causal paged prefill wrapper)
+    n_pf_self: int = 0  # prefill self segment (causal paged prefill wrapper)
+    n_aux: int = 0  # dec_aux: decode implicit-self served by the page_size=1 wrapper
+    phase: Literal["decode", "context_prefill", "mixed"] = "decode"
+    # Precomputed last-token row per logical request; set for ``phase="mixed"``.
+    last_indices: Optional[torch.Tensor] = None
     _plan_refs: tuple = field(default=(), repr=False)
 
     def get_last_indices(self, bs: int) -> torch.Tensor:
+        if self.last_indices is not None:
+            return self.last_indices
         if self.phase == "context_prefill":
             # one request of num_workers(=S) tokens; the LM head wants the last
             return torch.tensor([self.num_workers - 1], device=self.sub_worker.device)
         return torch.arange(bs, device=self.sub_worker.device)
+
+
+_CPU = {"device": "cpu", "dtype": torch.int32, "pin_memory": True}
+
+
+@dataclass
+class _PagedGroup:
+    """Paged sub-requests destined for one FlashInfer wrapper, in q_sub order.
+
+    Per q-row-copy: ``row`` (output row), ``loc`` (query RoPE rotation offset),
+    ``slot`` (segment index within that output row).  Per sub-request:
+    ``kv_parts`` (page-number tensor), ``page_count``, ``seq_len``,
+    ``last_page`` and ``qo_len`` (query rows -- 1 for decode, S for prefill).
+    """
+
+    row: List[int] = field(default_factory=list)
+    loc: List[int] = field(default_factory=list)
+    slot: List[int] = field(default_factory=list)
+    kv_parts: List[torch.Tensor] = field(default_factory=list)
+    page_count: List[int] = field(default_factory=list)
+    seq_len: List[int] = field(default_factory=list)
+    last_page: List[int] = field(default_factory=list)
+    qo_len: List[int] = field(default_factory=list)
+
+    @property
+    def n_copies(self) -> int:
+        return len(self.row)
+
+    def extend(self, other: "_PagedGroup") -> None:
+        self.row += other.row
+        self.loc += other.loc
+        self.slot += other.slot
+        self.kv_parts += other.kv_parts
+        self.page_count += other.page_count
+        self.seq_len += other.seq_len
+        self.last_page += other.last_page
+        self.qo_len += other.qo_len
+
+
+@dataclass
+class _AuxGroup:
+    """Single-token (page_size=1) implicit-self decode sub-requests."""
+
+    row: List[int] = field(default_factory=list)
+    loc: List[int] = field(default_factory=list)
+    slot: List[int] = field(default_factory=list)
+    kv_slot: List[int] = field(default_factory=list)
+
+    @property
+    def n_copies(self) -> int:
+        return len(self.row)
+
+
+@dataclass
+class _PrefillSpec:
+    """One in-context prefill: ``num_new`` fresh tokens stored block-relative in
+    ``new_page_starts``, attending fully to each (stable) ``context`` block."""
+
+    context: List[SharedBlock]
+    new_page_starts: torch.Tensor  # freshly-allocated page-start slots of the self block
+    num_new: int
 
 
 class SharedCacheAttention:
@@ -142,48 +215,31 @@ class SharedCacheAttention:
         self._plan_event = torch.cuda.Event()
         self._plan_event.record()
 
-    def prepare(
+    # ------------------------------------------------------------------
+    # Sub-request enumeration (shared by decode / context-prefill / mixed)
+    # ------------------------------------------------------------------
+
+    def _decode_subrequests(
         self,
         group: WorkerGroup,
         new_page_for_block: Dict[int, Optional[int]],
         new_token_slots: torch.Tensor,
-    ) -> SharedCacheAttnMetadata:
+        row_offset: int = 0,
+    ) -> tuple[_PagedGroup, _AuxGroup, int]:
+        """Enumerate one decode step's sub-requests: a paged ``dec_main`` group
+        (one segment per non-empty block in each worker's view) plus a page-1
+        ``dec_aux`` group (the implicit self token for workers whose write block
+        is not in their view).  Output rows are ``row_offset + worker_index``.
+        Returns ``(dec_main, dec_aux, max_segments)`` over the enumerated workers.
         """
-        Build per-(worker, segment) sub-requests for one decode step and plan
-        the FlashInfer wrappers.
-
-        Args:
-            group: the worker group being decoded.
-            new_page_for_block: maps ``id(write_block)`` -> the page-start slot
-                of a freshly-allocated page when this step's token starts a new
-                page in that block, else ``None``.  Its keys identify the blocks
-                written this step.
-            new_token_slots: ``[num_workers]`` physical slot of each worker's
-                new token (used for the implicit-self aux segment).
-        """
-        num_workers = group.num_workers
-        assert num_workers > 0
         P = self.page_size
         write_set = set(new_page_for_block.keys())
-
-        # Main (paged) sub-requests.
-        main_sub_worker: List[int] = []
-        main_sub_loc: List[int] = []
-        main_sub_slot: List[int] = []
-        main_kv_parts: List[torch.Tensor] = []  # page-number tensors
-        main_page_counts: List[int] = []
-        main_seq_lens: List[int] = []
-        main_last_page: List[int] = []
-
-        # Auxiliary (single-token, page_size=1) sub-requests.
-        aux_sub_worker: List[int] = []
-        aux_sub_loc: List[int] = []
-        aux_sub_slot: List[int] = []
-        aux_kv_slots: List[int] = []
-
+        main = _PagedGroup()
+        aux = _AuxGroup()
         max_segments = 0
 
-        for w in range(num_workers):
+        for w in range(group.num_workers):
+            row = row_offset + w
             view = group.cache_structure[w]
             wt = group.write_to[w]
             self_in_view = any(b is wt for b in view)
@@ -205,99 +261,230 @@ class SharedCacheAttention:
                     extra = torch.tensor([new_page // P], dtype=torch.int32, device=self.device)
                     page_nums = torch.cat([page_nums, extra])
                 n_pages_seg = int(page_nums.numel())
-                main_sub_worker.append(w)
-                main_sub_loc.append(total - prefix - 1)
-                main_sub_slot.append(n_seg)
-                main_kv_parts.append(page_nums)
-                main_page_counts.append(n_pages_seg)
-                main_seq_lens.append(length)
-                main_last_page.append(length - (n_pages_seg - 1) * P)
+                main.row.append(row)
+                main.loc.append(total - prefix - 1)
+                main.slot.append(n_seg)
+                main.kv_parts.append(page_nums)
+                main.page_count.append(n_pages_seg)
+                main.seq_len.append(length)
+                main.last_page.append(length - (n_pages_seg - 1) * P)
+                main.qo_len.append(1)
                 n_seg += 1
                 prefix += length
 
             if not self_in_view:
                 # The query must still attend to itself: a single-token segment
                 # at distance 0 (query rotated to its own block-relative pos).
-                aux_sub_worker.append(w)
-                aux_sub_loc.append(wt.num_tokens)
-                aux_sub_slot.append(n_seg)
-                aux_kv_slots.append(int(new_token_slots[w].item()))
+                aux.row.append(row)
+                aux.loc.append(wt.num_tokens)
+                aux.slot.append(n_seg)
+                aux.kv_slot.append(int(new_token_slots[w].item()))
                 n_seg += 1
 
             max_segments = max(max_segments, n_seg)
 
-        n_main = len(main_sub_worker)
-        n_aux = len(aux_sub_worker)
-        CPU_KWARGS = {"device": "cpu", "dtype": torch.int32, "pin_memory": True}
-        plan_refs: List[torch.Tensor] = []
+        return main, aux, max_segments
 
-        self._plan_event.synchronize()
-        if n_main > 0:
-            kv_indices = torch.cat(main_kv_parts).to(dtype=torch.int32)
-            kv_indptr_cpu = torch.tensor([0] + main_page_counts, **CPU_KWARGS).cumsum_(0).to(
-                torch.int32
-            )
-            seq_lens_cpu = torch.tensor(main_seq_lens, **CPU_KWARGS)
-            last_page_cpu = torch.tensor(main_last_page, **CPU_KWARGS)
-            self.wrapper.plan(
-                indptr=kv_indptr_cpu,
-                indices=kv_indices,
-                last_page_len=last_page_cpu,
-                num_qo_heads=self.num_qo_heads,
-                num_kv_heads=self.num_kv_heads,
-                head_dim=self.head_dim,
-                page_size=P,
-                pos_encoding_mode="NONE",
-                seq_lens=seq_lens_cpu,
-                data_type=self.dtype,
-                q_data_type=self.dtype,
-                kv_data_type=self.dtype,
-                non_blocking=True,
-            )
-            plan_refs += [kv_indices, kv_indptr_cpu, seq_lens_cpu, last_page_cpu]
+    def _prefill_subrequests(
+        self, spec: _PrefillSpec, row_offset: int
+    ) -> tuple[_PagedGroup, _PagedGroup, int, int]:
+        """Enumerate one in-context prefill's sub-requests: a non-causal
+        ``pf_ctx`` group (one segment per context block, ``S`` query rows each)
+        and a causal ``pf_self`` group (the fresh block).  Output rows are
+        ``row_offset + token_index``.  For context block ``j`` at view offset
+        ``O_j``, token ``i`` is rotated to ``(O_self + i) - O_j``; the self
+        segment rotates token ``i`` to its block-relative position ``i``.
+        Returns ``(pf_ctx, pf_self, max_segments=n_ctx+1, last_row)``.
+        """
+        P = self.page_size
+        S = int(spec.num_new)
+        context = spec.context
+        n_ctx = len(context)
+        M = n_ctx + 1
+        self_offset = sum(b.num_tokens for b in context)
 
-        if n_aux > 0:
-            aux_indices = torch.tensor(aux_kv_slots, dtype=torch.int32, device=self.device)
-            aux_indptr_cpu = torch.arange(0, n_aux + 1, **CPU_KWARGS)
-            aux_seq_lens_cpu = torch.ones(n_aux, **CPU_KWARGS)
-            aux_last_page_cpu = torch.ones(n_aux, **CPU_KWARGS)
-            self.aux_wrapper.plan(
-                indptr=aux_indptr_cpu,
-                indices=aux_indices,
-                last_page_len=aux_last_page_cpu,
-                num_qo_heads=self.num_qo_heads,
-                num_kv_heads=self.num_kv_heads,
-                head_dim=self.head_dim,
-                page_size=1,
-                pos_encoding_mode="NONE",
-                seq_lens=aux_seq_lens_cpu,
-                data_type=self.dtype,
-                q_data_type=self.dtype,
-                kv_data_type=self.dtype,
-                non_blocking=True,
-            )
-            plan_refs += [aux_indices, aux_indptr_cpu, aux_seq_lens_cpu, aux_last_page_cpu]
-        self._plan_event.record()
+        ctx = _PagedGroup()
+        prefix = 0
+        for j, b in enumerate(context):
+            for i in range(S):  # copies grouped block-major to match qo_indptr
+                ctx.row.append(row_offset + i)
+                ctx.loc.append(self_offset + i - prefix)
+                ctx.slot.append(j)
+            ctx.kv_parts.append(b.page_numbers_tensor())
+            ctx.page_count.append(b.num_pages)
+            ctx.seq_len.append(b.num_tokens)
+            ctx.last_page.append(b.last_page_len)
+            ctx.qo_len.append(S)
+            prefix += b.num_tokens
 
-        sub_worker = main_sub_worker + aux_sub_worker
-        sub_loc = main_sub_loc + aux_sub_loc
-        sub_slot = main_sub_slot + aux_sub_slot
-        pad_slot = [w * max_segments + s for w, s in zip(sub_worker, sub_slot)]
+        self_g = _PagedGroup()
+        self_pages = (spec.new_page_starts.to(self.device) // P).to(torch.int32)
+        n_self_pages = int(self_pages.numel())
+        for i in range(S):
+            self_g.row.append(row_offset + i)
+            self_g.loc.append(i)
+            self_g.slot.append(n_ctx)
+        self_g.kv_parts.append(self_pages)
+        self_g.page_count.append(n_self_pages)
+        self_g.seq_len.append(S)
+        self_g.last_page.append(S - (n_self_pages - 1) * P)
+        self_g.qo_len.append(S)
 
+        return ctx, self_g, M, row_offset + S - 1
+
+    # ------------------------------------------------------------------
+    # Wrapper planning (each returns the pinned/device tensors to keep alive)
+    # ------------------------------------------------------------------
+
+    def _plan_decode(self, group: _PagedGroup) -> List[torch.Tensor]:
+        """Plan the paged decode wrapper (implicit qo_len=1 per sub-request)."""
+        kv_indices = torch.cat(group.kv_parts).to(torch.int32)
+        kv_indptr = torch.tensor([0] + group.page_count, **_CPU).cumsum_(0).to(torch.int32)
+        seq_lens = torch.tensor(group.seq_len, **_CPU)
+        last_page = torch.tensor(group.last_page, **_CPU)
+        self.wrapper.plan(
+            indptr=kv_indptr,
+            indices=kv_indices,
+            last_page_len=last_page,
+            num_qo_heads=self.num_qo_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            page_size=self.page_size,
+            pos_encoding_mode="NONE",
+            seq_lens=seq_lens,
+            data_type=self.dtype,
+            q_data_type=self.dtype,
+            kv_data_type=self.dtype,
+            non_blocking=True,
+        )
+        return [kv_indices, kv_indptr, seq_lens, last_page]
+
+    def _plan_aux(self, group: _AuxGroup) -> List[torch.Tensor]:
+        """Plan the page_size=1 wrapper for single-token implicit-self segments."""
+        n = group.n_copies
+        indices = torch.tensor(group.kv_slot, dtype=torch.int32, device=self.device)
+        indptr = torch.arange(0, n + 1, **_CPU)
+        seq_lens = torch.ones(n, **_CPU)
+        last_page = torch.ones(n, **_CPU)
+        self.aux_wrapper.plan(
+            indptr=indptr,
+            indices=indices,
+            last_page_len=last_page,
+            num_qo_heads=self.num_qo_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            page_size=1,
+            pos_encoding_mode="NONE",
+            seq_lens=seq_lens,
+            data_type=self.dtype,
+            q_data_type=self.dtype,
+            kv_data_type=self.dtype,
+            non_blocking=True,
+        )
+        return [indices, indptr, seq_lens, last_page]
+
+    def _plan_prefill(
+        self, wrapper: BatchPrefillWithPagedKVCacheWrapper, group: _PagedGroup, causal: bool
+    ) -> List[torch.Tensor]:
+        """Plan a paged prefill wrapper (per-sub-request qo_len via qo_indptr)."""
+        kv_indices = torch.cat(group.kv_parts).to(torch.int32)
+        kv_indptr = torch.tensor([0] + group.page_count, **_CPU).cumsum_(0).to(torch.int32)
+        qo_indptr = torch.tensor([0] + group.qo_len, **_CPU).cumsum_(0).to(torch.int32)
+        seq_lens = torch.tensor(group.seq_len, **_CPU)
+        last_page = torch.tensor(group.last_page, **_CPU)
+        wrapper.plan(
+            qo_indptr=qo_indptr,
+            paged_kv_indptr=kv_indptr,
+            paged_kv_indices=kv_indices,
+            paged_kv_last_page_len=last_page,
+            seq_lens=seq_lens,
+            causal=causal,
+            num_qo_heads=self.num_qo_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim_qk=self.head_dim,
+            page_size=self.page_size,
+            pos_encoding_mode="NONE",
+            q_data_type=self.dtype,
+            kv_data_type=self.dtype,
+            non_blocking=True,
+        )
+        return [kv_indices, kv_indptr, qo_indptr, seq_lens, last_page]
+
+    def _assemble_metadata(
+        self,
+        dec_main: _PagedGroup,
+        pf_ctx: _PagedGroup,
+        pf_self: _PagedGroup,
+        dec_aux: _AuxGroup,
+        max_segments: int,
+        num_rows: int,
+        phase: Literal["decode", "context_prefill", "mixed"],
+        last_indices: Optional[torch.Tensor],
+        plan_refs: List[torch.Tensor],
+    ) -> SharedCacheAttnMetadata:
+        """Concatenate the four groups in q_sub layout order
+        ``[dec_main | pf_ctx | pf_self | dec_aux]`` and build the metadata."""
+        rows = dec_main.row + pf_ctx.row + pf_self.row + dec_aux.row
+        locs = dec_main.loc + pf_ctx.loc + pf_self.loc + dec_aux.loc
+        slots = dec_main.slot + pf_ctx.slot + pf_self.slot + dec_aux.slot
+        pad = [r * max_segments + s for r, s in zip(rows, slots)]
         meta = SharedCacheAttnMetadata(
             shared_cache_op=self,
-            sub_worker=torch.tensor(sub_worker, dtype=torch.int64, device=self.device),
-            sub_loc=torch.tensor(sub_loc, dtype=torch.int64, device=self.device),
-            pad_slot=torch.tensor(pad_slot, dtype=torch.int64, device=self.device),
-            num_workers=num_workers,
+            sub_worker=torch.tensor(rows, dtype=torch.int64, device=self.device),
+            sub_loc=torch.tensor(locs, dtype=torch.int64, device=self.device),
+            pad_slot=torch.tensor(pad, dtype=torch.int64, device=self.device),
+            num_workers=num_rows,
             max_segments=max_segments,
-            n_main=n_main,
-            n_aux=n_aux,
+            n_main=dec_main.n_copies,
+            n_pf_ctx=pf_ctx.n_copies,
+            n_pf_self=pf_self.n_copies,
+            n_aux=dec_aux.n_copies,
+            phase=phase,
+            last_indices=last_indices,
         )
         # Keep plan inputs alive through the forward: the async plan copy reads
         # the pinned tensors after prepare() returns.
         meta._plan_refs = tuple(plan_refs)
         return meta
+
+    # ------------------------------------------------------------------
+    # Public prepare entry points
+    # ------------------------------------------------------------------
+
+    def prepare(
+        self,
+        group: WorkerGroup,
+        new_page_for_block: Dict[int, Optional[int]],
+        new_token_slots: torch.Tensor,
+    ) -> SharedCacheAttnMetadata:
+        """
+        Build per-(worker, segment) sub-requests for one decode step and plan
+        the FlashInfer wrappers.
+
+        Args:
+            group: the worker group being decoded.
+            new_page_for_block: maps ``id(write_block)`` -> the page-start slot
+                of a freshly-allocated page when this step's token starts a new
+                page in that block, else ``None``.  Its keys identify the blocks
+                written this step.
+            new_token_slots: ``[num_workers]`` physical slot of each worker's
+                new token (used for the implicit-self aux segment).
+        """
+        assert group.num_workers > 0
+        main, aux, max_segments = self._decode_subrequests(
+            group, new_page_for_block, new_token_slots
+        )
+        plan_refs: List[torch.Tensor] = []
+        self._plan_event.synchronize()
+        if main.n_copies:
+            plan_refs += self._plan_decode(main)
+        if aux.n_copies:
+            plan_refs += self._plan_aux(aux)
+        self._plan_event.record()
+        return self._assemble_metadata(
+            main, _PagedGroup(), _PagedGroup(), aux,
+            max_segments, group.num_workers, "decode", None, plan_refs,
+        )
 
     def prepare_context_prefill(
         self, context: List[SharedBlock], new_page_starts: torch.Tensor, num_new: int
@@ -311,91 +498,84 @@ class SharedCacheAttention:
         Mirrors the reference's ``prefill_cache_block(text, [ctx..., new])``.
         """
         assert context and all(b.num_tokens > 0 for b in context)
-        P = self.page_size
-        S = int(num_new)
-        n_ctx = len(context)
-        ctx_lens = [b.num_tokens for b in context]
-        self_offset = sum(ctx_lens)
-
-        # q-row gather + per-row rotation positions: for context segment j at
-        # view offset O_j, token i is rotated to (O_self + i) - O_j; for the
-        # self segment, to its block-relative position i.
-        sub_gather: List[int] = []
-        sub_loc: List[int] = []
-        prefix = 0
-        for length in ctx_lens:
-            sub_gather.extend(range(S))
-            sub_loc.extend(self_offset + i - prefix for i in range(S))
-            prefix += length
-        sub_gather.extend(range(S))
-        sub_loc.extend(range(S))
-
-        CPU_KWARGS = {"device": "cpu", "dtype": torch.int32, "pin_memory": True}
-
-        # Context segments (non-causal): paged page-number indices + last_page_len.
-        ctx_kv_indices = torch.cat([b.page_numbers_tensor() for b in context]).to(torch.int32)
-        ctx_kv_indptr = torch.tensor(
-            [0] + [b.num_pages for b in context], **CPU_KWARGS
-        ).cumsum_(0).to(torch.int32)
-        ctx_qo_indptr = torch.arange(0, (n_ctx + 1) * S, S, **CPU_KWARGS)
-        ctx_seq_lens = torch.tensor(ctx_lens, **CPU_KWARGS)
-        ctx_last_page = torch.tensor([b.last_page_len for b in context], **CPU_KWARGS)
-
-        # Self segment (causal): the new block's freshly-allocated pages.
-        self_kv_indices = (new_page_starts.to(self.device) // P).to(torch.int32)
-        n_self_pages = int(self_kv_indices.numel())
-        self_indptr = torch.tensor([0, n_self_pages], **CPU_KWARGS)
-        self_qo_indptr = torch.tensor([0, S], **CPU_KWARGS)
-        self_seq_lens = torch.tensor([S], **CPU_KWARGS)
-        self_last_page = torch.tensor([S - (n_self_pages - 1) * P], **CPU_KWARGS)
-
-        plan_common = dict(
-            num_qo_heads=self.num_qo_heads,
-            num_kv_heads=self.num_kv_heads,
-            head_dim_qk=self.head_dim,
-            page_size=P,
-            pos_encoding_mode="NONE",
-            q_data_type=self.dtype,
-            kv_data_type=self.dtype,
-            non_blocking=True,
-        )
+        spec = _PrefillSpec(list(context), new_page_starts, int(num_new))
+        ctx, self_g, max_segments, _ = self._prefill_subrequests(spec, row_offset=0)
+        plan_refs: List[torch.Tensor] = []
         self._plan_event.synchronize()
-        # context segments are entirely in the new tokens' past -> no masking
-        self.prefill_ctx_wrapper.plan(
-            qo_indptr=ctx_qo_indptr,
-            paged_kv_indptr=ctx_kv_indptr,
-            paged_kv_indices=ctx_kv_indices,
-            paged_kv_last_page_len=ctx_last_page,
-            seq_lens=ctx_seq_lens,
-            causal=False,
-            **plan_common,
+        # context segments are entirely in the new tokens' past -> no masking;
+        # the new block attends to itself causally (standard prefill).
+        plan_refs += self._plan_prefill(self.prefill_ctx_wrapper, ctx, causal=False)
+        plan_refs += self._plan_prefill(self.prefill_self_wrapper, self_g, causal=True)
+        self._plan_event.record()
+        return self._assemble_metadata(
+            _PagedGroup(), ctx, self_g, _AuxGroup(),
+            max_segments, int(num_new), "context_prefill", None, plan_refs,
         )
-        # the new block attends to itself causally (standard prefill)
-        self.prefill_self_wrapper.plan(
-            qo_indptr=self_qo_indptr,
-            paged_kv_indptr=self_indptr,
-            paged_kv_indices=self_kv_indices,
-            paged_kv_last_page_len=self_last_page,
-            seq_lens=self_seq_lens,
-            causal=True,
-            **plan_common,
-        )
+
+    def prepare_mixed(
+        self,
+        group: Optional[WorkerGroup],
+        new_page_for_block: Dict[int, Optional[int]],
+        new_token_slots: torch.Tensor,
+        prefill_specs: List[_PrefillSpec],
+    ) -> SharedCacheAttnMetadata:
+        """
+        Plan one forward that decodes ``group``'s workers *and* prefills each of
+        ``prefill_specs`` together.  Output rows are laid out decode-first:
+        rows ``[0, W)`` are the decode workers, then each prefill request's
+        ``S`` tokens.  Decode segments run on the decode/aux wrappers and
+        prefill segments on the prefill wrappers; all partials share one LSE
+        merge (see :meth:`_run_and_merge`).
+
+        v1 constraints (caller-enforced): each prefill's self block is fresh and
+        not referenced by any decode worker's view or another prefill's context
+        this step, and prefill context blocks are not written this step -- so
+        segment lengths match running the phases separately.
+        """
+        W = group.num_workers if group is not None else 0
+        if W > 0:
+            dec_main, dec_aux, max_segments = self._decode_subrequests(
+                group, new_page_for_block, new_token_slots
+            )
+        else:
+            dec_main, dec_aux, max_segments = _PagedGroup(), _AuxGroup(), 0
+
+        pf_ctx = _PagedGroup()
+        pf_self = _PagedGroup()
+        last_pf_rows: List[int] = []
+        row = W
+        for spec in prefill_specs:
+            ctx, self_g, m_pf, last_row = self._prefill_subrequests(spec, row)
+            pf_ctx.extend(ctx)
+            pf_self.extend(self_g)
+            max_segments = max(max_segments, m_pf)
+            last_pf_rows.append(last_row)
+            row += int(spec.num_new)
+
+        num_rows = row
+        assert num_rows > 0, "mixed batch must contain at least one row"
+
+        plan_refs: List[torch.Tensor] = []
+        self._plan_event.synchronize()
+        if dec_main.n_copies:
+            plan_refs += self._plan_decode(dec_main)
+        if pf_ctx.n_copies:
+            plan_refs += self._plan_prefill(self.prefill_ctx_wrapper, pf_ctx, causal=False)
+        if pf_self.n_copies:
+            plan_refs += self._plan_prefill(self.prefill_self_wrapper, pf_self, causal=True)
+        if dec_aux.n_copies:
+            plan_refs += self._plan_aux(dec_aux)
         self._plan_event.record()
 
-        meta = SharedCacheAttnMetadata(
-            shared_cache_op=self,
-            sub_worker=torch.tensor(sub_gather, dtype=torch.int64, device=self.device),
-            sub_loc=torch.tensor(sub_loc, dtype=torch.int64, device=self.device),
-            pad_slot=torch.empty(0, dtype=torch.int64, device=self.device),  # unused
-            num_workers=S,
-            max_segments=n_ctx + 1,
-            phase="context_prefill",
+        # LM head extracts one row per logical request: decode workers (their own
+        # row) then each prefill request's last token.
+        last_indices = torch.tensor(
+            list(range(W)) + last_pf_rows, dtype=torch.int64, device=self.device
         )
-        meta._plan_refs = (
-            ctx_kv_indptr, ctx_qo_indptr, ctx_seq_lens, ctx_last_page, ctx_kv_indices,
-            self_indptr, self_qo_indptr, self_seq_lens, self_last_page, self_kv_indices,
+        return self._assemble_metadata(
+            dec_main, pf_ctx, pf_self, dec_aux,
+            max_segments, num_rows, "mixed", last_indices, plan_refs,
         )
-        return meta
 
     def forward(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
@@ -425,77 +605,66 @@ class SharedCacheAttention:
         q_sub = q.reshape(W, Hq, D)[meta.sub_worker]
         q_sub = apply_rope_correction(q_sub, meta.sub_loc, self.cos_sin_cache)
 
-        if meta.phase == "context_prefill":
-            return self._forward_context_prefill(q_sub, meta, layer_id)
+        return self._run_and_merge(q_sub, meta, layer_id)
 
-        # Paged views of the KV pool: [num_pages, page_size, n_kv_heads, head_dim].
+    def _run_and_merge(
+        self, q_sub: torch.Tensor, meta: SharedCacheAttnMetadata, layer_id: int
+    ) -> torch.Tensor:
+        """Run each non-empty wrapper on its slice of ``q_sub`` and LSE-merge the
+        per-segment partials into one output row per query row.
+
+        This is the shared attention core for decode, context-prefill and mixed
+        batches.  ``q_sub`` is laid out in the fixed group order
+        ``[dec_main | pf_ctx | pf_self | dec_aux]`` and each group's row count is
+        carried on ``meta``; the four groups map 1:1 to the four FlashInfer
+        wrappers.  Partial ``(out, lse)`` for group row ``r`` scatters to
+        ``meta.pad_slot[r] = output_row * max_segments + segment_slot``.
+        """
+        R, Hq, D = meta.num_workers, self.num_qo_heads, self.head_dim
         k_paged = self.kv_cache.k_cache(layer_id)
         v_paged = self.kv_cache.v_cache(layer_id)
+        paged = (k_paged, v_paged)
 
-        outs: List[torch.Tensor] = []
-        lses: List[torch.Tensor] = []
+        # (wrapper, num_q_rows, paged_kv_cache) in the fixed q_sub layout order.
+        runs: List[tuple] = []
         if meta.n_main > 0:
-            out_m, lse_m = self.wrapper.run(
-                q=q_sub[: meta.n_main], paged_kv_cache=(k_paged, v_paged), return_lse=True
-            )
-            outs.append(out_m)
-            lses.append(lse_m)
+            runs.append((self.wrapper, meta.n_main, paged))
+        if meta.n_pf_ctx > 0:
+            runs.append((self.prefill_ctx_wrapper, meta.n_pf_ctx, paged))
+        if meta.n_pf_self > 0:
+            runs.append((self.prefill_self_wrapper, meta.n_pf_self, paged))
         if meta.n_aux > 0:
             # The single new-token self-segment lives at an arbitrary page
             # offset -> read it through the flattened (page_size=1) pool.
-            kflat = k_paged.view(-1, 1, self.num_kv_heads, D)
-            vflat = v_paged.view(-1, 1, self.num_kv_heads, D)
-            out_a, lse_a = self.aux_wrapper.run(
-                q=q_sub[meta.n_main :], paged_kv_cache=(kflat, vflat), return_lse=True
+            flat = (
+                k_paged.view(-1, 1, self.num_kv_heads, D),
+                v_paged.view(-1, 1, self.num_kv_heads, D),
             )
-            outs.append(out_a)
-            lses.append(lse_a)
+            runs.append((self.aux_wrapper, meta.n_aux, flat))
+
+        outs: List[torch.Tensor] = []
+        lses: List[torch.Tensor] = []
+        off = 0
+        for wrapper, n, kv in runs:
+            out_r, lse_r = wrapper.run(q_sub[off : off + n], kv, return_lse=True)
+            outs.append(out_r)
+            lses.append(lse_r)
+            off += n
 
         out = outs[0] if len(outs) == 1 else torch.cat(outs, dim=0)
         lse = lses[0] if len(lses) == 1 else torch.cat(lses, dim=0)
 
-        if meta.max_segments == 1 and meta.n_aux == 0:
-            # Every worker has exactly one paged segment, emitted in worker order.
-            return out.view(W, -1)
+        M = meta.max_segments
+        if len(runs) == 1 and M == 1:
+            # Every output row has exactly one segment, emitted in row order.
+            return out.view(R, -1)
 
         from flashinfer import merge_states
 
-        M = meta.max_segments
-        v_pad = q.new_zeros(W * M, Hq, D)
+        v_pad = out.new_zeros(R * M, Hq, D)
         # finite "minus infinity": exp(pad - max) underflows to 0 for any real lse
-        s_pad = torch.full((W * M, Hq), -5.0e4, dtype=torch.float32, device=self.device)
+        s_pad = torch.full((R * M, Hq), -5.0e4, dtype=torch.float32, device=self.device)
         v_pad[meta.pad_slot] = out
         s_pad[meta.pad_slot] = lse
-        merged, _ = merge_states(v_pad.view(W, M, Hq, D), s_pad.view(W, M, Hq))
-        return merged.view(W, -1)
-
-    def _forward_context_prefill(
-        self, q_sub: torch.Tensor, meta: SharedCacheAttnMetadata, layer_id: int
-    ) -> torch.Tensor:
-        """Run the two planned prefill wrappers and merge per token.
-
-        *q_sub*: ``[(n_ctx + 1) * S, Hq, D]`` rotated queries, context segments
-        first, the causal self segment last.
-        """
-        from flashinfer import merge_states
-
-        S, Hq, D = meta.num_workers, self.num_qo_heads, self.head_dim
-        n_ctx = meta.max_segments - 1
-
-        kv = (self.kv_cache.k_cache(layer_id), self.kv_cache.v_cache(layer_id))
-        out_ctx, lse_ctx = self.prefill_ctx_wrapper.run(
-            q_sub[: n_ctx * S], kv, return_lse=True
-        )
-        out_self, lse_self = self.prefill_self_wrapper.run(
-            q_sub[n_ctx * S :], kv, return_lse=True
-        )
-
-        v_states = torch.cat([out_ctx.view(n_ctx, S, Hq, D), out_self.view(1, S, Hq, D)])
-        s_states = torch.cat([lse_ctx.view(n_ctx, S, Hq), lse_self.view(1, S, Hq)])
-        merged, _ = merge_states(
-            v_states.permute(1, 0, 2, 3).contiguous(),  # [S, n_ctx + 1, Hq, D]
-            s_states.permute(1, 0, 2).contiguous(),  # [S, n_ctx + 1, Hq]
-        )
-        result = merged.view(S, -1)
-
-        return result
+        merged, _ = merge_states(v_pad.view(R, M, Hq, D), s_pad.view(R, M, Hq))
+        return merged.view(R, -1)
