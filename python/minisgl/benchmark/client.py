@@ -377,8 +377,8 @@ def process_benchmark_results(
         f" p99: {_fmt(p99_tpot)} ms, max: {_fmt(max_tpot)} ms)"
     )
     logger.info(
-        f"E2E:  {_fmt(avg_e2e) }  s (p50: {_fmt(p50_e2e) }  s, p90: {_fmt(p90_e2e) }  s,"
-        f" p99: {_fmt(p99_e2e) }  s, max: {_fmt(max_e2e) }  s)"
+        f"E2E:  {_fmt(avg_e2e)}  s (p50: {_fmt(p50_e2e)}  s, p90: {_fmt(p90_e2e)}  s,"
+        f" p99: {_fmt(p99_e2e)}  s, max: {_fmt(max_e2e)}  s)"
     )
     logger.info(f"Duration: {_fmt(dur)} s")
     logger.info(f"Throughput: {_fmt(num_tokens / dur)} token/s, {_fmt(num_requests / dur)} req/s")

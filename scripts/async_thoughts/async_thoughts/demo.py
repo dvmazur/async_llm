@@ -34,12 +34,18 @@ from .engine import (
     vocab_id_or_none,
 )
 
-
 # Default math problem from the original AsyncReasoning notebook.
 DEFAULT_PROBLEM = "Calculate x - x^2 + x^3 for x = 5, 6, 7, 8. Return all 4 answers in \\boxed{ }."
 
 # Qwen3-32B at bf16 fits on a single 80 GiB GPU and keeps the writer alive;
-# smaller models starve the writer because the probe margin is too small.
+# smaller Qwen3 models starve the writer because the probe margin is too small.
+#
+# Qwen3.5 (hybrid Gated-DeltaNet) models are also supported and run through the
+# same shared-cache session — their linear-attention layers compose via the GDN
+# affine cache (see minisgl.shared_cache.gdn).  Hybrid models decode eagerly
+# (CUDA graph is auto-disabled for them).  Even small Qwen3.5 variants
+# (e.g. Qwen/Qwen3.5-0.8B) keep the writer active, so they make handy quick demos;
+# for Qwen/Qwen3.5-27B lower --memory-ratio (~0.4) so the forward has headroom.
 DEFAULT_MODEL = os.environ.get("MINISGL_DEMO_MODEL", "Qwen/Qwen3-32B")
 DEFAULT_MAX_STEPS = 800
 DEFAULT_PROBE_PERIOD = 30
@@ -179,7 +185,7 @@ def _run_loop(
         write_to=[thinker_blk],
     )
 
-    thinker_and_writer_group =  WorkerGroup(
+    thinker_and_writer_group = WorkerGroup(
         cache_structure=[
             [prompt_blk, thinker_blk],
             [prompt_blk, thinker_blk, writer_blk],
@@ -280,7 +286,9 @@ def run(config: DemoConfig) -> None:
 
     print("\nLoading tokenizer & engine...")
     tokenizer = AutoTokenizer.from_pretrained(config.model, trust_remote_code=True)
-    engine = build_engine(config.model, memory_ratio=config.memory_ratio, page_size=config.page_size)
+    engine = build_engine(
+        config.model, memory_ratio=config.memory_ratio, page_size=config.page_size
+    )
     session = SharedCacheSession(engine)
     prompting = Prompting(config.problem)
 

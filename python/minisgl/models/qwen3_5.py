@@ -8,54 +8,59 @@ from minisgl.layers import BaseOP, OPList, ParallelLMHead, RMSNormFused, VocabPa
 from minisgl.utils import nvtx_annotate
 
 from .base import BaseLLMModel
-from .utils import GatedMLP as MistralMLP
-from .utils import RopeAttn as MistralAttn
+from .qwen3_5_attn import Qwen3_5Attention
+from .qwen3_5_delta import Qwen3_5GatedDeltaNet
+from .utils import GatedMLP
 
 if TYPE_CHECKING:
     from .config import ModelConfig
 
 
-class MistralDecoderLayer(BaseOP):
-    def __init__(self, config: ModelConfig, layer_id: int):
-        self.self_attn = MistralAttn(config, layer_id)
-        self.mlp = MistralMLP(config)
-        self.input_layernorm = RMSNormFused(
-            size=config.hidden_size,
-            eps=config.rms_norm_eps,
-        )
+class Qwen3_5DecoderLayer(BaseOP):
+    def __init__(self, config: ModelConfig, layer_id: int, kv_idx: int, linear_idx: int):
+        assert config.layer_types is not None
+        if config.layer_types[layer_id] == "linear_attention":
+            self.linear_attn = Qwen3_5GatedDeltaNet(config, linear_idx)
+            self._is_linear = True
+        else:
+            self.self_attn = Qwen3_5Attention(config, kv_idx)
+            self._is_linear = False
+        self.mlp = GatedMLP(config)
+        self.input_layernorm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNormFused(
-            size=config.hidden_size,
-            eps=config.rms_norm_eps,
+            size=config.hidden_size, eps=config.rms_norm_eps
         )
-
         self._layer_id = layer_id
 
     @nvtx_annotate("Layer_{}", layer_id_field="_layer_id")
     def forward(
-        self,
-        x: torch.Tensor,
-        residual: torch.Tensor | None = None,
+        self, x: torch.Tensor, residual: torch.Tensor | None = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         x, residual = self.input_layernorm.forward(x, residual)
-        x = self.self_attn.forward(x)
+        mixer = self.linear_attn if self._is_linear else self.self_attn
+        x = mixer.forward(x)
         x, residual = self.post_attention_layernorm.forward(x, residual)
         x = self.mlp.forward(x)
         return x, residual
 
 
-class MistralModel(BaseOP):
+class Qwen3_5Model(BaseOP):
     def __init__(self, config: ModelConfig):
+        assert config.layer_types is not None
         self.embed_tokens = VocabParallelEmbedding(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
         )
-        self.layers = OPList(
-            [MistralDecoderLayer(config, layer_id) for layer_id in range(config.num_layers)]
-        )
-        self.norm = RMSNormFused(
-            size=config.hidden_size,
-            eps=config.rms_norm_eps,
-        )
+        layers = []
+        kv_idx = linear_idx = 0
+        for layer_id in range(config.num_layers):
+            layers.append(Qwen3_5DecoderLayer(config, layer_id, kv_idx, linear_idx))
+            if config.layer_types[layer_id] == "linear_attention":
+                linear_idx += 1
+            else:
+                kv_idx += 1
+        self.layers = OPList(layers)
+        self.norm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         x = self.embed_tokens.forward(input_ids)
@@ -65,9 +70,9 @@ class MistralModel(BaseOP):
         return self.norm.forward(x, residual)[0]
 
 
-class MistralForCausalLM(BaseLLMModel):
+class Qwen3_5ForCausalLM(BaseLLMModel):
     def __init__(self, config: ModelConfig):
-        self.model = MistralModel(config)
+        self.model = Qwen3_5Model(config)
         self.lm_head = ParallelLMHead(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
@@ -77,10 +82,9 @@ class MistralForCausalLM(BaseLLMModel):
         super().__init__()
 
     def forward(self) -> torch.Tensor:
-        ids = get_global_ctx().batch.input_ids
-        output = self.model.forward(ids)
+        output = self.model.forward(get_global_ctx().batch.input_ids)
         logits = self.lm_head.forward(output)
         return logits
 
 
-__all__ = ["MistralForCausalLM"]
+__all__ = ["Qwen3_5ForCausalLM"]

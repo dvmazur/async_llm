@@ -35,7 +35,7 @@ def apply_rope_correction(
 
     abs_corr = corrections.abs().clamp(max=cos_sin_cache.shape[0] - 1)
     cos = cos_sin_cache[abs_corr, :half_dim]  # [N, half_dim]
-    sin = cos_sin_cache[abs_corr, half_dim:]   # [N, half_dim]
+    sin = cos_sin_cache[abs_corr, half_dim:]  # [N, half_dim]
 
     # sin(−θ) = −sin(θ)
     neg_mask = (corrections < 0).unsqueeze(-1)

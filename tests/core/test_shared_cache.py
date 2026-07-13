@@ -35,14 +35,12 @@ from typing import List
 
 import pytest
 import torch
-
 from minisgl.shared_cache import (
     SharedBlock,
     SharedCacheSession,
     WorkerGroup,
     apply_rope_correction,
 )
-
 
 # =============================================================================
 # Unit tests — no model/GPU needed
@@ -319,9 +317,7 @@ class TestSharedCacheE2E:
         logits = session.decode_step(group, next_tok)
 
         max_diff = (logits[0] - logits[1]).abs().max().item()
-        assert max_diff < 1e-2, (
-            f"Identical workers diverged: max |logit diff| = {max_diff}"
-        )
+        assert max_diff < 1e-2, f"Identical workers diverged: max |logit diff| = {max_diff}"
 
     def test_multi_step_decode_generates_tokens(self, engine_and_session):
         """Run a greedy decode loop and verify we generate a plausible continuation."""

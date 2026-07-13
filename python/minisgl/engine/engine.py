@@ -7,7 +7,7 @@ import torch
 from minisgl.attention import create_attention_backend
 from minisgl.core import Batch, Context, Req, set_global_ctx
 from minisgl.distributed import destroy_distributed, enable_pynccl_distributed, set_tp_info
-from minisgl.kvcache import PageAllocator, create_kvcache_pool
+from minisgl.kvcache import GDNStatePool, PageAllocator, create_kvcache_pool
 from minisgl.layers import set_rope_device
 from minisgl.models import create_model, load_weight
 from minisgl.moe import create_moe_backend
@@ -61,6 +61,16 @@ class Engine:
             device=self.device,
             dtype=self.dtype,
         )
+
+        # Hybrid models (Qwen3.5) keep a per-request recurrent state for their
+        # linear-attention layers alongside the token KV cache.  +1 for the dummy slot.
+        if config.model_config.is_hybrid:
+            self.ctx.gdn_state = GDNStatePool(
+                model_config=config.model_config,
+                max_running_req=config.max_running_req + 1,
+                device=self.device,
+                dtype=self.dtype,
+            )
 
         # Main page cache: the page-aligned pool over the real KV pages.  The
         # live scheduler manages its own CacheManager; standalone in-process
@@ -158,7 +168,7 @@ class Engine:
             * div_even(config.model_config.num_kv_heads, config.tp_info.size, allow_replicate=True)
             * config.page_size
             * self.dtype.itemsize
-            * config.model_config.num_layers
+            * config.model_config.num_kv_layers
         )
         num_pages = config.num_page_override
         if num_pages is None:
@@ -228,6 +238,12 @@ def _adjust_config(config: EngineConfig):
         backend = "trtllm" if is_sm100_supported() else ("fa,fi" if is_sm90_supported() else "fi")
         override("attention_backend", backend)
         logger.info_rank0(f"Auto-selected attention backend: {config.attention_backend}")
+
+    if config.model_config.is_hybrid and config.cuda_graph_max_bs != 0:
+        # Recurrent-state capture is not wired up yet; run hybrid decode eagerly.
+        override("cuda_graph_max_bs", 0)
+        override("cuda_graph_bs", [])
+        logger.info_rank0("Hybrid model detected: CUDA graph disabled (eager decode).")
 
     if "trtllm" in config.attention_backend and config.page_size not in [16, 32, 64]:
         override("page_size", 64)

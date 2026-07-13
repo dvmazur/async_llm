@@ -59,5 +59,18 @@ the `MINISGL_DEMO_MODEL` environment variable. Pick the GPU with
 - `Qwen/Qwen3-32B` at bf16 fits on a single 80 GiB GPU (~64 GiB weights). Lower
   `--memory-ratio` to ~`0.3` for 8B-class models if you also keep another model
   resident.
-- Smaller models tend to starve the writer because the probe margin is too small
-  to keep `thinker_and_writer` active for more than one decode step at a time.
+- Smaller Qwen3 models tend to starve the writer because the probe margin is too
+  small to keep `thinker_and_writer` active for more than one decode step at a time.
+
+### Qwen3.5 (hybrid Gated-DeltaNet) models
+
+Qwen3.5 models are supported and run through the same `SharedCacheSession`: their
+3-in-4 linear-attention layers compose across shared-cache blocks via the GDN
+affine cache, while the 1-in-4 full-attention layers use the (partial-RoPE, gated)
+shared-cache attention. They decode eagerly — CUDA graph is auto-disabled for
+hybrid models. Even small variants keep the writer active, so they make quick demos:
+
+```bash
+async-thoughts --model /path/to/Qwen3.5-0.8B --max-steps 140 --probe-period 20
+async-thoughts --model /path/to/Qwen3.5-27B --memory-ratio 0.8
+```

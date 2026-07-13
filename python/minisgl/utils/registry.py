@@ -33,6 +33,5 @@ class Registry(Generic[T]):
                 from argparse import ArgumentTypeError
 
                 raise ArgumentTypeError(
-                    f"Unsupported {self._type}: {name}. "
-                    f"Supported items: {self.supported_names()}"
+                    f"Unsupported {self._type}: {name}. Supported items: {self.supported_names()}"
                 )

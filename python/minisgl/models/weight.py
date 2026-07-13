@@ -60,6 +60,19 @@ def _get_merge_info(key: str):
     return None
 
 
+def _is_plus_one_norm(name: str) -> bool:
+    """Qwen3.5 standard RMSNorms use the ``(1 + weight)`` convention (like Qwen3-Next),
+    so we fold the +1 into the weight to reuse the plain flashinfer rmsnorm kernels.
+    The gated ``linear_attn.norm`` keeps plain weights and is excluded."""
+    return (
+        name.endswith(".input_layernorm.weight")
+        or name.endswith(".post_attention_layernorm.weight")
+        or name.endswith(".q_norm.weight")
+        or name.endswith(".k_norm.weight")
+        or name == "model.norm.weight"
+    )
+
+
 def _get_expert_stack_info(key: str) -> tuple[str, int] | None:
     """Map an expert-scoped checkpoint key to the packed runtime key."""
     match = _EXPERT_PATTERN.match(key)
@@ -92,10 +105,20 @@ def load_weight(model_path: str, device: torch.device) -> Iterator[Tuple[str, to
                 # Strip multimodal wrapper prefix, skip vision/projector weights
                 if name.startswith(("vision_tower.", "multi_modal_projector.")):
                     continue
+                # Qwen3.5 nests the LM under `model.language_model.` next to `model.visual.`
+                # and a multi-token-prediction head `mtp.`; drop those, flatten the LM prefix.
+                if config.is_hybrid and (
+                    name.startswith("model.visual.") or name.startswith("mtp.")
+                ):
+                    continue
                 raw = f.get_tensor(name)
+                if config.is_hybrid:
+                    name = name.replace("model.language_model.", "model.", 1)
                 name = name.removeprefix("language_model.")
                 tensor = _shard_tensor(name, raw, tp_info.rank, tp_info.size, config.num_kv_heads)
                 del raw
+                if config.is_hybrid and _is_plus_one_norm(name):
+                    tensor = tensor + 1.0
 
                 if (info := _get_merge_info(name)) is None:
                     out = (name, tensor)

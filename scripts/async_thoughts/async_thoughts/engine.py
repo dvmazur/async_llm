@@ -30,7 +30,7 @@ def build_engine(
         cuda_graph_bs=[1, 2],  # we only ever run 1- or 2-worker decode
         cuda_graph_max_bs=2,
         memory_ratio=memory_ratio,
-        max_seq_len_override=4096,
+        max_seq_len_override=8192 * 2,
         page_size=page_size,
     )
     return Engine(config)
@@ -98,21 +98,30 @@ def check_continue_writing(
     logit values are useful for debug logging since they show how confident the
     probe was at any given step.
 
-    This re-encodes the whole probe context each call (no caching across
-    iterations).  That's a small fixed cost: the probe runs every ~20-30
-    main-loop steps, the probe text is ~100-300 tokens, so each call costs one
-    prefill of that length.
+    The probe still runs a fresh prefill of the whole context (correct: reusing
+    the *live* thinker/writer blocks as context under the new
+    ``mode_switching_prompt`` prefix would attend to stale KV/state).  But the
+    growing thinker/writer parts are already token-id lists, so we concatenate
+    them directly instead of decoding to text and re-encoding every call — that
+    avoids O(context) CPU re-encoding and any decode/encode token drift.  Only
+    the constant prompt/question fragments are encoded.
     """
-    probe_text = (
-        mode_switching_prompt
-        + tokenizer.decode(thinker_tokens, skip_special_tokens=False)
-        + tokenizer.decode(writer_tokens, skip_special_tokens=False)
-        + mode_switching_question
+    mode_ids = encode(mode_switching_prompt, tokenizer)
+    question_ids = encode(mode_switching_question, tokenizer)
+    ids = torch.cat(
+        [
+            mode_ids,
+            torch.tensor(thinker_tokens, dtype=torch.int32),
+            torch.tensor(writer_tokens, dtype=torch.int32),
+            question_ids,
+        ]
     )
-    ids = encode(probe_text, tokenizer)
     blk = session.create_block()
     try:
-        logits = session.prefill_block(blk, ids)[0].float().cpu()
+        # The probe block is read once (for yes/no logits) then freed, so skip
+        # the GDN affine capture — on hybrid (Qwen3.5) models that O(seq) capture
+        # over the growing probe context is the dominant per-probe cost.
+        logits = session.prefill_block(blk, ids, capture_affine=False)[0].float().cpu()
         yes_logit = float(logits[yes_id])
         no_logit = float(logits[no_id])
         return yes_logit > no_logit, yes_logit, no_logit

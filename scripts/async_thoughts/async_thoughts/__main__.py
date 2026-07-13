@@ -13,9 +13,9 @@ from .demo import (
     DEFAULT_MAX_STEPS,
     DEFAULT_MEMORY_RATIO,
     DEFAULT_MODEL,
+    DEFAULT_PAGE_SIZE,
     DEFAULT_PROBE_PERIOD,
     DEFAULT_PROBLEM,
-    DEFAULT_PAGE_SIZE,
     DemoConfig,
     run,
 )

@@ -8,8 +8,9 @@ import torch
 
 if TYPE_CHECKING:
     from minisgl.attention import BaseAttnBackend, BaseAttnMetadata
-    from minisgl.kvcache import BaseCacheHandle, BaseKVCachePool
+    from minisgl.kvcache import BaseCacheHandle, BaseKVCachePool, GDNStatePool
     from minisgl.moe import BaseMoeBackend
+    from minisgl.shared_cache.gdn import SharedCacheGDN
 
 
 @dataclass
@@ -105,6 +106,11 @@ class Context:
     attn_backend: BaseAttnBackend = field(init=False)
     moe_backend: BaseMoeBackend = field(init=False)
     kv_cache: BaseKVCachePool = field(init=False)
+    # Recurrent state for hybrid models (Qwen3.5 Gated DeltaNet); None otherwise.
+    gdn_state: GDNStatePool | None = field(default=None, init=False)
+    # Async-reasoning GDN composer; set by SharedCacheSession during a shared-cache
+    # forward, None on the normal serving path (GDN layers then use gdn_state).
+    gdn_ar: "SharedCacheGDN | None" = field(default=None, init=False)
     _batch: Batch | None = field(default=None, init=False)
 
     @property
