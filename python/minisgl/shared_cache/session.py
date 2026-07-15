@@ -356,8 +356,9 @@ class SharedCacheSession:
         )
 
         # Commit growth now that the forward (which read post-append lengths) is done.
-        for wt in group.write_to:
+        for wi, wt in enumerate(group.write_to):
             wt.append_token(new_page_for_block[id(wt)])
+            wt.token_ids.append(int(input_ids[wi]))
         return logits[:num_workers]
 
     # ------------------------------------------------------------------
