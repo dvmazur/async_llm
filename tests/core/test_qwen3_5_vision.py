@@ -75,6 +75,20 @@ def test_get_rope_index_matches_hf_dump():
     assert torch.equal(got, torch.tensor(ref["rope_positions"], dtype=torch.long))
 
 
+def test_get_rope_index_two_images_matches_hf_dump():
+    ref2 = os.path.join(os.path.dirname(__file__), "..", "..", "tmp", "vis_ref_2img.npz")
+    if not os.path.exists(ref2):
+        print("  [skip] tmp/vis_ref_2img.npz not found")
+        return
+    import numpy as np
+
+    ref = np.load(ref2)
+    ids = torch.tensor(ref["input_ids"], dtype=torch.long)
+    grid = torch.tensor(ref["image_grid_thw"], dtype=torch.long)  # [2, 3]
+    got = get_rope_index(ids, image_token_id=248056, spatial_merge_size=2, image_grid_thw=grid)
+    assert torch.equal(got, torch.tensor(ref["rope_positions"], dtype=torch.long))
+
+
 def test_vision_tower_matches_hf_dump():
     if not os.path.exists(_REF) or not _CKPT:
         print("  [skip] dump or checkpoint missing")

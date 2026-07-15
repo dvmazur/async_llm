@@ -171,6 +171,38 @@ def test_refresh_block_equals_fresh_prefill():
     assert torch.allclose(lr, lf, atol=1e-4), f"max|Δ|={ (lr - lf).abs().max().item() }"
 
 
+def test_two_image_prefill_matches_hf():
+    """A prompt with TWO images prefills to the same next-token as HF (multi-image
+    path: get_rope_index over 2 grids + vision tower over 2 images + scatter)."""
+    if not torch.cuda.is_available() or not _CKPT:
+        print("  [skip] no CUDA / checkpoint")
+        return
+    import os
+
+    import numpy as np
+    import torch.nn.functional as F
+
+    ref2 = os.path.join(os.path.dirname(__file__), "..", "..", "tmp", "vis_ref_2img.npz")
+    if not os.path.exists(ref2):
+        print("  [skip] tmp/vis_ref_2img.npz not found")
+        return
+    _build()
+    session, mc = _CACHE["session"], _CACHE["mc"]
+    from minisgl.models.qwen3_5_mrope import get_rope_index
+
+    ref = np.load(ref2)
+    ids = torch.tensor(ref["input_ids"], dtype=torch.int32)
+    pv = torch.tensor(ref["pixel_values"], dtype=torch.float32)
+    grid = torch.tensor(ref["image_grid_thw"], dtype=torch.long)  # [2, 3]
+    mrope = get_rope_index(ids.long(), mc.image_token_id, mc.vision_config.spatial_merge_size, grid)
+    logits = session.prefill_block(
+        session.create_block(), ids, pixel_values=pv, image_grid_thw=grid, mrope_positions=mrope
+    )[0].float().cpu()
+    hf = torch.tensor(ref["last_logits"])
+    assert torch.equal(logits.argmax(), hf.argmax()), (int(logits.argmax()), int(hf.argmax()))
+    assert F.cosine_similarity(logits, hf, dim=0).item() > 0.99
+
+
 if __name__ == "__main__":
     import sys
 
