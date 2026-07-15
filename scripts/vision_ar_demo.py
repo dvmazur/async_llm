@@ -25,6 +25,7 @@ Run (check nvidia-smi first; the checkpoint lives under HF_HOME)::
 from __future__ import annotations
 
 import glob
+import os
 import sys
 
 import torch
@@ -33,6 +34,13 @@ from minisgl.engine import Engine, EngineConfig
 from minisgl.models.qwen3_5_mrope import get_rope_index
 from minisgl.shared_cache import SharedCacheSession, WorkerGroup
 from transformers import AutoTokenizer
+
+# Model + memory are env-configurable so the same demo runs on 0.8B or 27B:
+#   MINISGL_DEMO_MODEL   HF name ("Qwen/Qwen3.5-27B") or a local snapshot dir
+#   MINISGL_MEMORY_RATIO fraction of GPU memory the engine may use (lower for big
+#                        models, e.g. 0.5 for 27B; unset -> engine default)
+MODEL = os.environ.get("MINISGL_DEMO_MODEL", "Qwen/Qwen3.5-0.8B")
+MEMORY_RATIO = os.environ.get("MINISGL_MEMORY_RATIO")
 
 # Qwen3.5 special ids (see tmp/vis_ref.py / config).
 IMG_TOK, VSTART, VEND = 248056, 248053, 248054
@@ -86,22 +94,37 @@ def _stream(session, group, pending: int, n_steps: int, tokenizer) -> int:
     return pending
 
 
+def _resolve_ckpt(model: str) -> str:
+    """A local snapshot dir with weights, from an explicit path or an HF-cache name.
+
+    Passing the local snapshot path (not the repo id) avoids a transformers offline
+    ``model_info`` network call; we also skip snapshot dirs that hold no safetensors.
+    """
+    if os.path.isdir(model):
+        return model
+    cache = "models--" + model.replace("/", "--")
+    roots = [os.path.join(os.environ.get("HF_HOME", ""), "hub", cache), f"/mnt/LLM/hub/{cache}"]
+    for root in roots:
+        for snap in sorted(glob.glob(os.path.join(root, "snapshots", "*", ""))):
+            if glob.glob(os.path.join(snap, "*.safetensors")):
+                return snap
+    print(f"no snapshot with weights for {model!r} (set MINISGL_DEMO_MODEL)", file=sys.stderr)
+    sys.exit(2)
+
+
 def main() -> None:
     if not torch.cuda.is_available():
         print("CUDA required.", file=sys.stderr)
         sys.exit(2)
-    ckpt = glob.glob("/mnt/LLM/hub/models--Qwen--Qwen3.5-0.8B/snapshots/*/")
-    if not ckpt:
-        print("Qwen3.5-0.8B checkpoint not found under HF_HOME.", file=sys.stderr)
-        sys.exit(2)
-    ckpt = ckpt[0]
+    ckpt = _resolve_ckpt(MODEL)
 
-    print(_c("\n  Vision AR demo — updatable image in context (single worker)\n", "sys"))
+    print(_c(f"\n  Vision AR demo — updatable image in context (single worker)\n  model: {MODEL}\n", "sys"))
     tokenizer = AutoTokenizer.from_pretrained(ckpt)
 
+    extra = {"memory_ratio": float(MEMORY_RATIO)} if MEMORY_RATIO else {}
     cfg = EngineConfig(
         model_path=ckpt, tp_info=DistributedInfo(0, 1), dtype=torch.bfloat16,
-        max_running_req=4, num_page_override=8192, max_seq_len_override=8192,
+        max_running_req=4, num_page_override=8192, max_seq_len_override=8192, **extra,
     )
     engine = Engine(cfg)
     session = SharedCacheSession(engine)
