@@ -19,8 +19,9 @@ Phase 2) drives ``tick()`` from an event-loop task and swaps
 
 Token selection is engine-side: per-request ``forbid_ids`` are masked out of
 the logits (a logit bias), then the engine's ``Sampler`` picks the token.
-``prefill_block`` consumers that need raw logits (e.g. the mode-switching
-probe) use the prefill future's result instead.
+Logits are returned only on request (``return_logits=True``): a prefill then
+resolves with the last-token logits (e.g. for the mode-switching probe), a
+decode with ``(token_id, raw_logits)``.
 """
 
 from __future__ import annotations
@@ -87,7 +88,8 @@ class PrefillRequest:
     context: CacheView  # may be empty
     into: CacheBlock  # fresh block to fill
     capture_affine: bool
-    future: Any  # resolved with last-token logits [vocab]
+    return_logits: bool  # resolve with last-token logits instead of None
+    future: Any  # resolved with logits [vocab] if return_logits else None
 
 
 @dataclass
@@ -96,7 +98,8 @@ class DecodeRequest:
     input_id: int  # token to feed (KV not yet stored; typically last sampled)
     forbid_ids: Sequence[int]
     sampling_params: SamplingParams
-    future: Any  # resolved with the sampled token id (int)
+    return_logits: bool  # also return the raw (pre-mask) logits row
+    future: Any  # resolved with token id, or (token id, logits) if return_logits
 
 
 class AsyncCacheEngine:
@@ -161,9 +164,10 @@ class AsyncCacheEngine:
         into: CacheBlock,
         context: Optional[CacheView] = None,
         capture_affine: bool = True,
+        return_logits: bool = False,
     ) -> Any:
         """Queue a prefill of *into* (a fresh block); returns a future resolved
-        with the last-token logits ``[vocab]``."""
+        with the last-token logits ``[vocab]`` if *return_logits* else None."""
         assert into.num_tokens == 0, "prefill target must be a fresh block"
         future = self.future_factory()
         self._prefill_queue.append(
@@ -172,6 +176,7 @@ class AsyncCacheEngine:
                 context=list(context or []),
                 into=into,
                 capture_affine=capture_affine,
+                return_logits=return_logits,
                 future=future,
             )
         )
@@ -184,9 +189,11 @@ class AsyncCacheEngine:
         *,
         forbid_ids: Sequence[int] = (),
         sampling_params: Optional[SamplingParams] = None,
+        return_logits: bool = False,
     ) -> Any:
         """Queue one decode step for *context*; returns a future resolved with
-        the sampled token id."""
+        the sampled token id — or ``(token_id, logits)`` if *return_logits*,
+        where *logits* is the raw ``[vocab]`` row before forbid masking."""
         future = self.future_factory()
         self._decode_queue.append(
             DecodeRequest(
@@ -194,6 +201,7 @@ class AsyncCacheEngine:
                 input_id=int(input_id),
                 forbid_ids=list(forbid_ids),
                 sampling_params=sampling_params or _GREEDY,
+                return_logits=return_logits,
                 future=future,
             )
         )
@@ -229,7 +237,7 @@ class AsyncCacheEngine:
         except Exception as exc:
             req.future.set_exception(exc)
             raise
-        req.future.set_result(logits[0])
+        req.future.set_result(logits[0] if req.return_logits else None)
 
     def _run_decode_batch(self) -> None:
         # Take everything queued; reject late duplicates of an output block
@@ -255,13 +263,18 @@ class AsyncCacheEngine:
         try:
             with torch.inference_mode():
                 logits = self.session.decode_step(group, input_ids)
+                # Snapshot raw rows before the forbid mask mutates them.
+                raw_logits = {
+                    i: logits[i].clone() for i, req in enumerate(reqs) if req.return_logits
+                }
                 next_tokens = self._select_tokens(logits, reqs)
         except Exception as exc:
             for req in reqs:
                 req.future.set_exception(exc)
             raise
-        for req, token in zip(reqs, next_tokens.tolist()):
-            req.future.set_result(int(token))
+        for i, (req, token) in enumerate(zip(reqs, next_tokens.tolist())):
+            token = int(token)
+            req.future.set_result((token, raw_logits[i]) if req.return_logits else token)
 
     def _select_tokens(self, logits: torch.Tensor, reqs: List[DecodeRequest]) -> torch.Tensor:
         for i, req in enumerate(reqs):

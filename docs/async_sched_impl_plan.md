@@ -119,7 +119,11 @@ equivalence with the demo's `logits[ids] -= 100` masking.
 
 ## Phase 2 — `AsyncLLM`: asyncio frontend
 
-`python/minisgl/llm/async_llm.py`, exported as `minisgl.AsyncLLM`.
+`python/minisgl/llm/async_llm.py`, exported as `minisgl.llm.AsyncLLM`.
+(A top-level `minisgl/__init__.py` for the doc's `from minisgl import ...`
+spelling turned out to flip ruff's first-party import classification for the
+whole repo — deferred to the Phase 4 cleanup, where repo-wide churn is
+expected anyway.)
 
 - Owns the engine + `AsyncCacheEngine` + tokenizer. Public API is the design
   doc's snippet:

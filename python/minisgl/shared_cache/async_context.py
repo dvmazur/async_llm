@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 from .shared_block import CacheBlock
 
@@ -23,6 +23,11 @@ class AsyncContext:
 
     cache_view: CacheView = field(default_factory=list)
     output_block: CacheBlock = None  # type: ignore[assignment]
+    # The token the next decode step feeds (its KV is not stored yet): either
+    # the last sampled token, or policy-injected (e.g. a separator).  Owned by
+    # the AsyncLLM frontend so a stream can break and resume without losing
+    # the in-flight token; seed it via ``async_generate(first_token_id=...)``.
+    next_input_id: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.output_block is None:

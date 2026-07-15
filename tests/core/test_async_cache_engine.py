@@ -133,7 +133,9 @@ class TestQueueMechanics:
     def test_prefill_resolves_with_last_token_logits(self, stub_engine):
         engine, session = stub_engine
         block = engine.create_block()
-        fut = engine.submit_prefill(torch.tensor([1, 2, 3], dtype=torch.int32), into=block)
+        fut = engine.submit_prefill(
+            torch.tensor([1, 2, 3], dtype=torch.int32), into=block, return_logits=True
+        )
         assert engine.has_work and not fut.done()
         assert engine.tick() == "prefill"
         assert fut.done()
@@ -142,6 +144,14 @@ class TestQueueMechanics:
         assert int(logits.argmax()) == 5  # decoy of last token 3
         assert block.token_ids == [1, 2, 3]
         assert session.prefill_calls[0]["capture_affine"] is True
+
+    def test_prefill_default_resolves_none(self, stub_engine):
+        engine, _ = stub_engine
+        block = engine.create_block()
+        fut = engine.submit_prefill(torch.tensor([1], dtype=torch.int32), into=block)
+        engine.tick()
+        assert fut.result() is None
+        assert block.token_ids == [1]
 
     def test_prefill_runs_before_decode(self, stub_engine):
         engine, session = stub_engine
@@ -183,6 +193,17 @@ class TestQueueMechanics:
         fut = engine.submit_decode(ctx, input_id=5, forbid_ids=[7])  # mask the decoy
         engine.tick()
         assert fut.result() == 6  # falls back to the wanted token (t + 1)
+
+    def test_decode_return_logits_is_raw_row(self, stub_engine):
+        engine, _ = stub_engine
+        block = _prefilled_block(engine, [1])
+        ctx = AsyncContext(cache_view=[block])
+        fut = engine.submit_decode(ctx, input_id=5, forbid_ids=[7], return_logits=True)
+        engine.tick()
+        token, logits = fut.result()
+        assert token == 6  # masked selection
+        assert logits.shape == (VOCAB,)
+        assert int(logits.argmax()) == 7  # raw row: decoy unmasked
 
     def test_duplicate_output_block_fails_late_request(self, stub_engine):
         engine, session = stub_engine
@@ -293,7 +314,7 @@ class TestAsyncCacheEngineE2E:
         # Engine: same chain through submit + tick.
         engine = AsyncCacheEngine(real_engine)
         block = engine.create_block()
-        fut = engine.submit_prefill(prompt_ids, into=block)
+        fut = engine.submit_prefill(prompt_ids, into=block, return_logits=True)
         assert engine.tick() == "prefill"
         tokens = [int(fut.result().argmax())]
         ctx = AsyncContext(cache_view=[block])
@@ -361,7 +382,7 @@ class TestAsyncCacheEngineE2E:
         engine = AsyncCacheEngine(real_engine)
         block = engine.create_block()
         prompt_ids = _encode("The capital of France is")
-        fut = engine.submit_prefill(prompt_ids, into=block)
+        fut = engine.submit_prefill(prompt_ids, into=block, return_logits=True)
         engine.tick()
         logits = fut.result().float()
         top2 = logits.topk(2).indices.tolist()
