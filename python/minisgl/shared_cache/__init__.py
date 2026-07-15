@@ -1,3 +1,4 @@
+from .async_context import AsyncContext, CacheView
 from .attention import SharedCacheAttention, SharedCacheAttnMetadata
 from .gdn import SharedCacheGDN
 from .gdn_affine import (
@@ -8,10 +9,13 @@ from .gdn_affine import (
 )
 from .rope_correction import apply_rope_correction
 from .session import SharedCacheSession, extract_cos_sin_cache
-from .shared_block import SharedBlock
+from .shared_block import CacheBlock, SharedBlock
 from .worker_group import WorkerGroup
 
 __all__ = [
+    "AsyncContext",
+    "CacheBlock",
+    "CacheView",
     "SharedBlock",
     "WorkerGroup",
     "SharedCacheSession",
