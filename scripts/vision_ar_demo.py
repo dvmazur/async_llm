@@ -28,9 +28,11 @@ import glob
 import os
 import sys
 
+import numpy as np
 import torch
 from minisgl.distributed import DistributedInfo
 from minisgl.engine import Engine, EngineConfig
+from minisgl.models.qwen2vl_image import preprocess_image
 from minisgl.models.qwen3_5_mrope import get_rope_index
 from minisgl.shared_cache import SharedCacheSession, WorkerGroup
 from transformers import AutoTokenizer
@@ -53,23 +55,27 @@ def _c(text: str, k: str) -> str:
     return _C[k] + text + _C["z"]
 
 
-def _image_block(grid_hw: tuple[int, int], merge: int, patch_dim: int, tokenizer, seed: int):
-    """Build a re-prefillable image block from a *synthetic* image of the given
-    patch grid: '<|im_start|>user\\n' + <vision_start> + IMG*n + <vision_end>.
+def _synthetic_rgb(h_px: int, w_px: int, seed: int) -> np.ndarray:
+    """Deterministic H×W×3 uint8 image (no PIL; a stand-in for a real screenshot)."""
+    yy, xx = np.mgrid[0:h_px, 0:w_px]
+    a = (yy + xx + seed * 37) % 256
+    b = (yy * 3 + seed) % 256
+    c = (xx * 5 + seed) % 256
+    return np.stack([a, b, c], -1).astype("uint8")
 
-    The pixel values are deterministic filler (the demo showcases the block
-    re-prefill / AR mechanics, not real image understanding), shaped exactly as
-    the vision tower expects: ``[t*h*w, C*temporal*patch*patch]``.  Two different
-    grids => different token counts and mRoPE spans (the changing-mRoPE path).
 
-    Returns (input_ids[int32], pixel_values[f32], grid_thw[long,[1,3]], mrope[3,L]).
+def _image_block(px_hw: tuple[int, int], merge: int, tokenizer, seed: int):
+    """Build a re-prefillable image block from a synthetic image of pixel size
+    ``px_hw``, run through the real Qwen2-VL preprocessor (smart-resize + normalize
+    + patchify): '<|im_start|>user\\n' + <vision_start> + IMG*n + <vision_end>.
+
+    Different pixel sizes yield different patch grids -> different token counts and
+    mRoPE spans (the changing-mRoPE path).  Returns
+    (input_ids[int32], pixel_values[f32], grid_thw[long,[1,3]], mrope[3,L]).
     """
-    h, w = grid_hw
-    grid = torch.tensor([[1, h, w]], dtype=torch.long)  # [t=1, h, w] in patch units
-    n_patches = h * w
-    idx = torch.arange(n_patches * patch_dim, dtype=torch.float32).reshape(n_patches, patch_dim)
-    pixel_values = torch.sin(idx * 7.7e-4 + float(seed)) * 0.5
-    n_img = n_patches // (merge**2)
+    arr = _synthetic_rgb(*px_hw, seed)
+    pixel_values, grid = preprocess_image(arr, merge_size=merge)
+    n_img = int(grid.prod().item()) // (merge**2)
     pre = tokenizer.encode("<|im_start|>user\n", add_special_tokens=False)
     ids = torch.tensor(pre + [VSTART] + [IMG_TOK] * n_img + [VEND], dtype=torch.int32)
     mrope = get_rope_index(ids.long(), IMG_TOK, merge, grid)
@@ -129,9 +135,7 @@ def main() -> None:
     engine = Engine(cfg)
     session = SharedCacheSession(engine)
 
-    vc = cfg.model_config.vision_config
-    merge = vc.spatial_merge_size
-    patch_dim = vc.in_channels * vc.temporal_patch_size * vc.patch_size**2
+    merge = cfg.model_config.vision_config.spatial_merge_size
 
     prompt_ids = torch.tensor(tokenizer.encode(PROMPT_TEXT, add_special_tokens=False), dtype=torch.int32)
 
@@ -141,9 +145,10 @@ def main() -> None:
         P = session.create_block()  # fixed prompt text (non-re-prefillable)
         G = session.create_block()  # reasoning (single worker)
 
-        # Two DIFFERENT-SIZED synthetic images -> different grids -> different mRoPE
-        # spans, exercising the changing-mRoPE path through one re-prefillable block.
-        ids1, pv1, grid1, mrope1 = _image_block((8, 8), merge, patch_dim, tokenizer, seed=1)
+        # Two DIFFERENT-SIZED synthetic images (pixel sizes) -> different patch grids
+        # -> different mRoPE spans, exercising the changing-mRoPE path through one
+        # re-prefillable block.  Real Qwen2-VL preprocessing (smart-resize/normalize).
+        ids1, pv1, grid1, mrope1 = _image_block((64, 64), merge, tokenizer, seed=1)
         session.prefill_block(R, ids1, pixel_values=pv1, image_grid_thw=grid1, mrope_positions=mrope1)
         first = int(session.prefill_block(P, prompt_ids, context=[R])[0].argmax().item())
         print(_c(f"  image #1 grid={grid1.tolist()[0]}  R.tokens={R.num_tokens}  R.mrope_span={R.mrope_span}", "dim"))
@@ -154,7 +159,7 @@ def main() -> None:
         pending = _stream(session, group, first, 24, tokenizer)
 
         # --- Swap the image IN PLACE (different size => changing mRoPE) ---
-        ids2, pv2, grid2, mrope2 = _image_block((12, 8), merge, patch_dim, tokenizer, seed=2)
+        ids2, pv2, grid2, mrope2 = _image_block((96, 64), merge, tokenizer, seed=2)
         session.refresh_block(R, ids2, pixel_values=pv2, image_grid_thw=grid2, mrope_positions=mrope2)
         print(_c(f"  [refresh_block] image #2 grid={grid2.tolist()[0]}  R.tokens={R.num_tokens}  R.mrope_span={R.mrope_span}", "sys"))
         print(_c(f"  P and G kept ({P.num_tokens} + {G.num_tokens} tokens); only R re-encoded", "dim"))
