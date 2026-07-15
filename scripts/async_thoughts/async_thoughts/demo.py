@@ -1,4 +1,4 @@
-"""Prompting, display scaffolding, and the main decode loop.
+"""Prompting, display scaffolding, and the async thinker/writer/probe coroutines.
 
 Cache layout (mirrors AsyncReasoning's AsyncReasoningCache):
 
@@ -11,10 +11,18 @@ Cache layout (mirrors AsyncReasoning's AsyncReasoningCache):
                         thinker prefix (matters numerically -- prefilling
                         standalone gives the writer prefix the wrong attention
                         outputs at deeper layers).
+
+Concurrency (the ASYNC_SCHED_DESIGN.md user API): thinker and writer are
+independent coroutines over ``AsyncLLM.async_generate``; the scheduler batches
+whichever streams are live into one forward per tick.  The mode-switching
+probe runs as a third coroutine, signalled at the thinker's cadence, so the
+thinker never stalls while the probe prefill is in flight — unlike the old
+lock-step demo, which serialized the probe against decoding.
 """
 
 from __future__ import annotations
 
+import asyncio
 import gc
 import os
 import sys
@@ -22,11 +30,12 @@ from dataclasses import dataclass
 from typing import List
 
 import torch
-from minisgl.shared_cache import SharedCacheSession, WorkerGroup
+from minisgl.llm import AsyncLLM
+from minisgl.shared_cache import AsyncContext, CacheBlock
 from transformers import AutoTokenizer
 
 from .engine import (
-    build_engine,
+    build_async_llm,
     check_continue_writing,
     encode,
     ends_with_double_newline,
@@ -40,11 +49,10 @@ DEFAULT_PROBLEM = "Calculate x - x^2 + x^3 for x = 5, 6, 7, 8. Return all 4 answ
 # Qwen3-32B at bf16 fits on a single 80 GiB GPU and keeps the writer alive;
 # smaller Qwen3 models starve the writer because the probe margin is too small.
 #
-# Qwen3.5 (hybrid Gated-DeltaNet) models are also supported and run through the
-# same shared-cache session — their linear-attention layers compose via the GDN
-# affine cache (see minisgl.shared_cache.gdn).  Hybrid models decode eagerly
-# (CUDA graph is auto-disabled for them).  Even small Qwen3.5 variants
-# (e.g. Qwen/Qwen3.5-0.8B) keep the writer active, so they make handy quick demos;
+# Qwen3.5 (hybrid Gated-DeltaNet) models are also supported — their
+# linear-attention layers compose via the GDN affine cache (see
+# minisgl.shared_cache.gdn).  Even small Qwen3.5 variants (e.g.
+# Qwen/Qwen3.5-0.8B) keep the writer active, so they make handy quick demos;
 # for Qwen/Qwen3.5-27B lower --memory-ratio (~0.4) so the forward has headroom.
 DEFAULT_MODEL = os.environ.get("MINISGL_DEMO_MODEL", "Qwen/Qwen3-32B")
 DEFAULT_MAX_STEPS = 800
@@ -124,12 +132,20 @@ def _stream_token(text: str, role: str) -> None:
     sys.stdout.flush()
 
 
-def _run_loop(
+def _tokens_with_pending(block: CacheBlock, ctx: AsyncContext) -> List[int]:
+    """The stream's full token history: KV-backed tokens + the pending one."""
+    tokens = list(block.token_ids)
+    if ctx.next_input_id is not None:
+        tokens.append(ctx.next_input_id)
+    return tokens
+
+
+async def _run_loop(
     config: DemoConfig,
+    llm: AsyncLLM,
     tokenizer: AutoTokenizer,
-    session: SharedCacheSession,
     prompting: Prompting,
-) -> None:
+) -> tuple[List[int], List[int]]:
     # Forbidden token ids: never let the streams emit boundary markers.
     # Match AR's two forbidden sets, gracefully skipping any markers the
     # tokenizer doesn't have (e.g. for non-Qwen models without <think>).
@@ -144,137 +160,139 @@ def _run_loop(
 
     yes_id = single_token_id(prompting.yes_token, tokenizer)
     no_id = single_token_id(prompting.no_token, tokenizer)
-
-    # Prefill the three persistent blocks.
-    print("Prefilling blocks...")
-    prompt_blk = session.create_block()
-    thinker_blk = session.create_block()
-    writer_blk = session.create_block()
-
-    # input_prompt: prefilled standalone (matches AR -- input_prompt has no
-    # context to attend to).
-    prompt_ids = encode(prompting.input_prompt, tokenizer)
-    session.prefill_block(prompt_blk, prompt_ids)
-
-    # thinker_output_prefix: prefilled IN CONTEXT of [prompt].  AR does this via
-    # SharedCacheManager(view=[input_prompt, thinker_output]); minisgl's
-    # prefill_block(..., context=[...]) does the same in a single batched
-    # prefill pass (the new tokens attend causally to themselves and fully to
-    # the context), instead of one decode step per token.
-    thinker_prefix_ids = encode(prompting.thinker_output_prefix, tokenizer)
-    session.prefill_block(thinker_blk, thinker_prefix_ids, context=[prompt_blk])
-
-    # writer_output_prefix: prefilled IN CONTEXT of [prompt, thinker].
-    writer_prefix_ids = encode(prompting.writer_output_prefix, tokenizer)
-    session.prefill_block(writer_blk, writer_prefix_ids, context=[prompt_blk, thinker_blk])
-
-    # Token-sequence bookkeeping for display + the mode-switching probe.
-    # Includes the "\n\n" separator that AR appends but does NOT prefill; it
-    # gets sent as the first decode-step input below.
     nn_id = single_token_id("\n\n", tokenizer)
-    thinker_tokens: List[int] = thinker_prefix_ids.tolist() + [nn_id]
-    writer_tokens: List[int] = writer_prefix_ids.tolist() + [nn_id]
-
-    # Index into *_tokens of the next token to stream-print.  We skip the prefix
-    # when displaying since it's boilerplate, but the model internally sees it.
-    next_print_thinker = len(thinker_prefix_ids)
-    next_print_writer = len(writer_prefix_ids)
-
-    thinker_only_group = WorkerGroup(
-        cache_structure=[[prompt_blk, thinker_blk]],
-        write_to=[thinker_blk],
-    )
-
-    thinker_and_writer_group = WorkerGroup(
-        cache_structure=[
-            [prompt_blk, thinker_blk],
-            [prompt_blk, thinker_blk, writer_blk],
-        ],
-        write_to=[thinker_blk, writer_blk],
-    )
-
-    # Main decode loop.
-    state = "thinker_only"
-    _print_header("Generation")
-    print(_ansi("  thinker (dim cyan) | writer (bold green)\n", "dim"))
-
     eos_id = int(tokenizer.eos_token_id) if tokenizer.eos_token_id is not None else -1
 
-    for step in range(config.max_steps):
-        # decode one (or two) tokens
-        if state == "thinker_only":
-            inp = torch.tensor([thinker_tokens[-1]], dtype=torch.int32)
-            logits = session.decode_step(thinker_only_group, inp)[0].float()
-            logits[thinker_forbid_ids] -= 100.0
-            t_next = int(logits.argmax().item())
-            thinker_tokens.append(t_next)
+    # Prefill the three persistent blocks.  thinker/writer prefixes are
+    # prefilled IN CONTEXT of their prefix chain (matches AR; see module doc).
+    print("Prefilling blocks...")
+    prompt_blk = (await llm.prefill_block(encode(prompting.input_prompt, tokenizer))).block
+    thinker_blk = (
+        await llm.prefill_block(
+            encode(prompting.thinker_output_prefix, tokenizer), context=[prompt_blk]
+        )
+    ).block
+    writer_blk = (
+        await llm.prefill_block(
+            encode(prompting.writer_output_prefix, tokenizer), context=[prompt_blk, thinker_blk]
+        )
+    ).block
 
-        elif state == "thinker_and_writer":
-            inp = torch.tensor([thinker_tokens[-1], writer_tokens[-1]], dtype=torch.int32)
-            logits = session.decode_step(thinker_and_writer_group, inp).float()
-            logits[0, thinker_forbid_ids] -= 100.0
-            logits[1, writer_forbid_ids] -= 100.0
-            t_next = int(logits[0].argmax().item())
-            w_next = int(logits[1].argmax().item())
-            thinker_tokens.append(t_next)
-            writer_tokens.append(w_next)
+    # Per-agent contexts.  The "\n\n" separator that AR appends but does NOT
+    # prefill seeds each stream's first decode input.
+    thinker_ctx = AsyncContext(cache_view=[prompt_blk, thinker_blk], next_input_id=nn_id)
+    writer_ctx = AsyncContext(cache_view=[prompt_blk, thinker_blk, writer_blk], next_input_id=nn_id)
 
-            # Writer hit \n\n -> end of a writer step; back to thinker_only.
-            if writer_tokens[-1] == nn_id or ends_with_double_newline(writer_tokens, tokenizer):
-                state = "thinker_only"
-                _print_state_change("writer end-of-step -> thinker_only")
+    done = asyncio.Event()  # EOS / max-steps: everyone shuts down
+    writer_may_run = asyncio.Event()  # starts cleared: thinker leads
+    probe_due = asyncio.Event()  # thinker signals the probe's cadence
 
-        else:
-            raise RuntimeError(f"unexpected state {state!r}")
+    async def thinker_coro() -> None:
+        steps = 0
+        try:
+            async for token in llm.async_generate(thinker_ctx, forbid_ids=thinker_forbid_ids):
+                _stream_token(tokenizer.decode([token]), "thinker")
+                steps += 1
+                if done.is_set() or steps >= config.max_steps:
+                    if steps >= config.max_steps:
+                        _print_state_change("thinker hit max steps -- terminating")
+                    break
+                if steps % config.probe_period == 0 or ends_with_double_newline(
+                    _tokens_with_pending(thinker_blk, thinker_ctx), tokenizer
+                ):
+                    probe_due.set()
+        finally:
+            # Unpark everyone so the gather can finish.
+            done.set()
+            probe_due.set()
+            writer_may_run.set()
 
-        # stream newly-decided tokens to stdout
-        while next_print_thinker < len(thinker_tokens):
-            tok = thinker_tokens[next_print_thinker]
-            _stream_token(tokenizer.decode([tok]), "thinker")
-            next_print_thinker += 1
-        while next_print_writer < len(writer_tokens):
-            tok = writer_tokens[next_print_writer]
-            _stream_token(tokenizer.decode([tok]), "writer")
-            next_print_writer += 1
+    async def writer_coro() -> None:
+        while not done.is_set():
+            await writer_may_run.wait()  # park until the probe says "go"
+            if done.is_set():
+                return
 
-        # mode-switching probe
-        if (step + 1) % config.probe_period == 0 or ends_with_double_newline(
-            thinker_tokens, tokenizer
-        ):
-            should_write, yes_logit, no_logit = check_continue_writing(
-                session,
+            async for token in llm.async_generate(writer_ctx, forbid_ids=writer_forbid_ids):
+                _stream_token(tokenizer.decode([token]), "writer")
+                if token == eos_id:
+                    _print_state_change("writer hit EOS -- terminating")
+                    done.set()
+                    return
+                if done.is_set():
+                    return
+                # End of a paragraph: hand control back to the thinker; the
+                # probe re-arms writing when the thoughts catch up.
+                if token == nn_id or ends_with_double_newline(
+                    _tokens_with_pending(writer_blk, writer_ctx), tokenizer
+                ):
+                    _print_state_change("writer end-of-step -> thinker leads")
+                    writer_may_run.clear()
+                    break
+                if not writer_may_run.is_set():  # probe parked us mid-paragraph
+                    break
+
+    async def probe_coro() -> None:
+        while not done.is_set():
+            await probe_due.wait()
+            probe_due.clear()
+            if done.is_set():
+                return
+            should_write, yes_logit, no_logit = await check_continue_writing(
+                llm,
                 tokenizer,
                 prompting.mode_switching_prompt,
                 prompting.mode_switching_question,
-                thinker_tokens,
-                writer_tokens,
+                _tokens_with_pending(thinker_blk, thinker_ctx),
+                _tokens_with_pending(writer_blk, writer_ctx),
                 yes_id=yes_id,
                 no_id=no_id,
             )
-            new_state = "thinker_and_writer" if should_write else "thinker_only"
-            if new_state != state:
-                _print_state_change(
-                    f"step {step + 1}: probe yes={yes_logit:.2f} no={no_logit:.2f} -> {new_state}"
-                )
-                state = new_state
+            if done.is_set():
+                return
+            changed = should_write != writer_may_run.is_set()
+            if should_write:
+                writer_may_run.set()
+            else:
+                writer_may_run.clear()
+            if changed:
+                state = "thinker_and_writer" if should_write else "thinker_only"
+                _print_state_change(f"probe yes={yes_logit:.2f} no={no_logit:.2f} -> {state}")
 
-        # termination
-        if writer_tokens[-1] == eos_id:
-            _print_state_change("writer hit EOS -- terminating")
-            break
+    _print_header("Generation")
+    print(_ansi("  thinker (dim cyan) | writer (bold green)\n", "dim"))
+
+    await asyncio.gather(thinker_coro(), writer_coro(), probe_coro())
 
     # Final output.
     _print_header("Final")
     print(_ansi("  Thinker:", "thinker"))
+    thinker_tokens = _tokens_with_pending(thinker_blk, thinker_ctx)
     print(_ansi(tokenizer.decode(thinker_tokens, skip_special_tokens=True), "thinker"))
     print()
     print(_ansi("  Writer:", "writer"))
+    writer_tokens = _tokens_with_pending(writer_blk, writer_ctx)
     print(_ansi(tokenizer.decode(writer_tokens, skip_special_tokens=True), "writer"))
     print()
 
+    for blk in (prompt_blk, thinker_blk, writer_blk):
+        await llm.free_block(blk)
+
+    return thinker_tokens, writer_tokens
+
+
+async def _run_demo(
+    config: DemoConfig, llm: AsyncLLM, prompting: Prompting
+) -> tuple[List[int], List[int]]:
+    tokenizer = AutoTokenizer.from_pretrained(config.model, trust_remote_code=True)
+    try:
+        return await _run_loop(config, llm, tokenizer, prompting)
+    finally:
+        await llm.close()
+
 
 def run(config: DemoConfig) -> None:
-    """Run the demo end-to-end against a freshly-built engine."""
+    """Run the demo end-to-end against a freshly-built AsyncLLM."""
     if not torch.cuda.is_available():
         print("CUDA required.", file=sys.stderr)
         sys.exit(2)
@@ -285,16 +303,13 @@ def run(config: DemoConfig) -> None:
     print(f"  max steps: {config.max_steps}")
 
     print("\nLoading tokenizer & engine...")
-    tokenizer = AutoTokenizer.from_pretrained(config.model, trust_remote_code=True)
-    engine = build_engine(
+    llm = build_async_llm(
         config.model, memory_ratio=config.memory_ratio, page_size=config.page_size
     )
-    session = SharedCacheSession(engine)
     prompting = Prompting(config.problem)
 
     try:
-        _run_loop(config, tokenizer, session, prompting)
+        asyncio.run(_run_demo(config, llm, prompting))
     finally:
-        engine.shutdown()
         gc.collect()
         torch.cuda.empty_cache()

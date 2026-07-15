@@ -167,15 +167,18 @@ capture_affine=False)`.
 
 - All prompts, forbidden sets, `\n\n` end-of-step detection, probe text and
   yes/no comparison stay demo-side (`IDEAS.md` #2).
-- Oracle test: run the old lock-step `_run_loop` and the new asyncio demo on
-  the same model/problem with greedy sampling and a deterministic probe
-  cadence; assert identical thinker/writer token streams while both streams
-  are active in the same ticks. (When the writer parks, the thinker decodes
-  in batch-of-1 ticks — same as the lock-step `thinker_only` state, so
-  streams stay comparable.)
+- Oracle scope (revised during implementation): strict old-vs-new stream
+  equivalence is off the table *by design* — the async demo's probe no longer
+  stalls the thinker (it runs as a concurrent coroutine, so its verdict lands
+  a tick or two later than the lock-step demo's). The numeric equivalence of
+  the scheduling itself (concurrent streams + interleaved probe prefill ==
+  lock-step 2-worker `decode_step`) is pinned at the framework level in
+  `test_async_llm.py`; the demo gets an E2E smoke test
+  (`test_async_thoughts_demo.py`: terminates, both streams produce tokens, no
+  forbidden markers leak).
 
-Gate: demo runs on Qwen3-32B and a Qwen3.5 hybrid (GDN path exercised);
-oracle test green on Qwen2.5-0.5B in CI.
+Gate: demo runs on a dense Qwen3 and a Qwen3.5 hybrid (GDN path exercised);
+framework oracle + demo smoke test green.
 
 ## Phase 4 — Vanilla traffic on the unified path + deletion
 

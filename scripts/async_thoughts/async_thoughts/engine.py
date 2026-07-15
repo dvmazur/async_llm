@@ -1,30 +1,28 @@
-"""Thin wrappers around minisgl's engine + shared cache.
+"""Thin wrappers around minisgl's AsyncLLM.
 
-Everything in here is a helper that minisgl doesn't expose directly: engine
-construction, tokenizer encoding, shared-cache block bookkeeping, the
-in-context prefill, and the mode-switching probe.
+Everything in here is a helper that minisgl doesn't expose directly: AsyncLLM
+construction sized for the demo, tokenizer encoding, and the mode-switching
+probe.  All reasoning *policy* (prompts, forbidden sets, state machine) stays
+in ``demo.py``.
 """
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Tuple
 
 import torch
-from minisgl.distributed import DistributedInfo
-from minisgl.engine import Engine, EngineConfig
-from minisgl.shared_cache import SharedBlock, SharedCacheSession
+from minisgl.llm import AsyncLLM
 from transformers import AutoTokenizer
 
 
-def build_engine(
+def build_async_llm(
     model_path: str,
     memory_ratio: float,
     page_size: int = 1,
-) -> Engine:
-    """Build a single-GPU engine sized for 1- or 2-worker decode."""
-    config = EngineConfig(
-        model_path=model_path,
-        tp_info=DistributedInfo(rank=0, size=1),
+) -> AsyncLLM:
+    """Build a single-GPU AsyncLLM sized for 1- or 2-worker decode."""
+    return AsyncLLM(
+        model_path,
         dtype=torch.bfloat16,
         max_running_req=4,
         cuda_graph_bs=[1, 2],  # we only ever run 1- or 2-worker decode
@@ -33,7 +31,6 @@ def build_engine(
         max_seq_len_override=8192 * 2,
         page_size=page_size,
     )
-    return Engine(config)
 
 
 def encode(text: str, tokenizer: AutoTokenizer) -> torch.Tensor:
@@ -77,13 +74,8 @@ def ends_with_double_newline(token_ids: List[int], tokenizer: AutoTokenizer) -> 
     return tokenizer.decode(token_ids[-2:]).endswith("\n\n")
 
 
-def free_block(session: SharedCacheSession, block: SharedBlock) -> None:
-    """Return a block's pages to the engine's page allocator and reset it."""
-    session.free_block(block)
-
-
-def check_continue_writing(
-    session: SharedCacheSession,
+async def check_continue_writing(
+    llm: AsyncLLM,
     tokenizer: AutoTokenizer,
     mode_switching_prompt: str,
     mode_switching_question: str,
@@ -91,20 +83,20 @@ def check_continue_writing(
     writer_tokens: List[int],
     yes_id: int,
     no_id: int,
-) -> tuple[bool, float, float]:
-    """Monolithically prefill the mode-switching probe and compare yes/no.
+) -> Tuple[bool, float, float]:
+    """Prefill the mode-switching probe and compare the yes/no logits.
 
     Returns ``(should_continue_writing, yes_logit, no_logit)``.  The two raw
     logit values are useful for debug logging since they show how confident the
     probe was at any given step.
 
-    The probe still runs a fresh prefill of the whole context (correct: reusing
-    the *live* thinker/writer blocks as context under the new
-    ``mode_switching_prompt`` prefix would attend to stale KV/state).  But the
-    growing thinker/writer parts are already token-id lists, so we concatenate
-    them directly instead of decoding to text and re-encoding every call — that
-    avoids O(context) CPU re-encoding and any decode/encode token drift.  Only
-    the constant prompt/question fragments are encoded.
+    The probe runs a fresh, throwaway prefill of the whole context (correct:
+    reusing the *live* thinker/writer blocks as context under the new
+    ``mode_switching_prompt`` prefix would attend to stale KV/state).  The
+    growing thinker/writer parts arrive as token-id lists, so we concatenate
+    them directly instead of decoding to text and re-encoding every call.
+    Runs concurrently with the decode streams: the scheduler slots the prefill
+    between decode ticks.
     """
     mode_ids = encode(mode_switching_prompt, tokenizer)
     question_ids = encode(mode_switching_question, tokenizer)
@@ -116,14 +108,14 @@ def check_continue_writing(
             question_ids,
         ]
     )
-    blk = session.create_block()
+    # The probe block is read once (for yes/no logits) then freed, so skip
+    # the GDN affine capture — on hybrid (Qwen3.5) models that O(seq) capture
+    # over the growing probe context is the dominant per-probe cost.
+    res = await llm.prefill_block(ids, capture_affine=False, return_logits=True)
     try:
-        # The probe block is read once (for yes/no logits) then freed, so skip
-        # the GDN affine capture — on hybrid (Qwen3.5) models that O(seq) capture
-        # over the growing probe context is the dominant per-probe cost.
-        logits = session.prefill_block(blk, ids, capture_affine=False)[0].float().cpu()
+        logits = res.logits.float().cpu()
         yes_logit = float(logits[yes_id])
         no_logit = float(logits[no_id])
         return yes_logit > no_logit, yes_logit, no_logit
     finally:
-        free_block(session, blk)
+        await llm.free_block(res.block)
