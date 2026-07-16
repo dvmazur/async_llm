@@ -3,7 +3,7 @@ Async-reasoning support for Qwen3.5 Gated DeltaNet (GDN) linear-attention layers
 
 Full-attention layers reuse ``SharedCacheAttention`` (token-addressable KV blocks).
 GDN layers instead keep a monolithic recurrent state, so a worker's chain of blocks
-is composed via the **affine summary** ``(A_hat, B_hat)`` stored on each ``SharedBlock``
+is composed via the **affine summary** ``(A_hat, B_hat)`` stored on each ``CacheBlock``
 (see ``gdn_affine``): the initial recurrent state for a chain is
 ``S0 = 0 @ A_chain + B_chain = B_chain`` (block convention), transposed to the HF
 kernel convention ``[B, H, d_k, d_v]`` at the model interface.
@@ -22,7 +22,7 @@ import torch
 from .gdn_affine import compose_gdn_affines, init_gdn_affine, update_affine_summary
 
 if TYPE_CHECKING:
-    from .shared_block import SharedBlock
+    from .shared_block import CacheBlock
 
 
 class SharedCacheGDN:
@@ -45,13 +45,13 @@ class SharedCacheGDN:
         self.conv_dim = conv_dim
         self.conv_kernel = conv_kernel
         # Set per forward pass.
-        self.cache_structure: List[List[SharedBlock]] = []
-        self.write_to: List[SharedBlock] = []
+        self.cache_structure: List[List[CacheBlock]] = []
+        self.write_to: List[CacheBlock] = []
 
     def set_context(
         self,
-        cache_structure: Sequence[Sequence["SharedBlock"]],
-        write_to: Sequence["SharedBlock"],
+        cache_structure: Sequence[Sequence["CacheBlock"]],
+        write_to: Sequence["CacheBlock"],
     ) -> None:
         self.cache_structure = [list(c) for c in cache_structure]
         self.write_to = list(write_to)

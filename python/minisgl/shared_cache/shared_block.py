@@ -18,7 +18,7 @@ class _NullCacheHandle(BaseCacheHandle):
 NULL_CACHE_HANDLE = _NullCacheHandle(cached_len=0)
 
 
-class SharedBlock:
+class CacheBlock:
     """
     A reusable, paged block of KV cache that can be shared across multiple
     workers.
@@ -37,13 +37,18 @@ class SharedBlock:
     _next_id: int = 0
 
     def __init__(self, device: torch.device, page_size: int = 1):
-        self.block_id = SharedBlock._next_id
-        SharedBlock._next_id += 1
+        self.block_id = CacheBlock._next_id
+        CacheBlock._next_id += 1
         self.device = device
         self.page_size = page_size
         # Page-start token slots (multiples of page_size), one per owned page.
         self.page_starts: List[int] = []
         self.num_tokens: int = 0
+        # Host-side copy of the token ids stored in this block, in block order.
+        # Kept in sync by whoever writes the block (prefill extends it, the
+        # async engine appends decoded tokens); consumers use it for probes and
+        # end-of-step detection without decoding KV.
+        self.token_ids: List[int] = []
 
         # mRoPE span (Qwen3.5 multimodal): how much the running mRoPE position
         # advances over this block.  For text blocks it equals num_tokens (default,
@@ -123,12 +128,17 @@ class SharedBlock:
         self.page_starts.clear()
         self.num_tokens = 0
         self.mrope_span_override = None
+        self.token_ids.clear()
         self.linear_affine.clear()
         self.linear_conv_state.clear()
         return pages
 
     def __repr__(self) -> str:
         return (
-            f"SharedBlock(id={self.block_id}, tokens={self.num_tokens}, "
+            f"CacheBlock(id={self.block_id}, tokens={self.num_tokens}, "
             f"pages={self.num_pages}, page_size={self.page_size})"
         )
+
+
+# Historical name, kept so existing tests/scripts keep working.
+SharedBlock = CacheBlock
