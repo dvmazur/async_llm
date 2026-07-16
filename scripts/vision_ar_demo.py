@@ -48,14 +48,18 @@ from transformers import AutoTokenizer
 #                        models, e.g. 0.5 for 27B; unset -> engine default)
 #   MINISGL_DEMO_IMAGE   path to a real image for frame 1 (unset -> synthetic)
 #   MINISGL_DEMO_IMAGE2  path to a real image for frame 2 (unset -> synthetic)
-MODEL = os.environ.get("MINISGL_DEMO_MODEL", "Qwen/Qwen3.5-0.8B")
+#   MINISGL_DEMO_HINT    note injected into the reasoning at the swap (empty -> none)
+MODEL = os.environ.get("MINISGL_DEMO_MODEL", "Qwen/Qwen3.5-27B")
 MEMORY_RATIO = os.environ.get("MINISGL_MEMORY_RATIO")
 IMAGE1 = os.environ.get("MINISGL_DEMO_IMAGE")
 IMAGE2 = os.environ.get("MINISGL_DEMO_IMAGE2")
+# Injected into the thought stream when the image is swapped, so the model notices
+# the change and re-inspects instead of trusting its stale (previous-frame) reasoning.
+HINT = os.environ.get("MINISGL_DEMO_HINT", "\n\n[The image has been updated.]\n\n")
 
 # Qwen3.5 special ids (see tmp/vis_ref.py / config).
 IMG_TOK, VSTART, VEND = 248056, 248053, 248054
-PROMPT_TEXT = "What is in this image? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n"
+PROMPT_TEXT = "What is in this image? Inspect it closely.<|im_end|>\n<|im_start|>assistant\n"
 
 _C = {"img": "\033[1;35m", "gen": "\033[1;32m", "sys": "\033[1;33m", "dim": "\033[2m", "z": "\033[0m"}
 
@@ -114,6 +118,20 @@ def _stream(session, group, pending: int, n_steps: int, tokenizer) -> int:
         pending = _decode_emit(session, group, pending, tokenizer)
     print()
     return pending
+
+
+def _inject(session, group, pending: int, text: str, tokenizer) -> int:
+    """Force-feed ``pending`` then the tokens of ``text`` into the write block,
+    ignoring the model's own predictions (i.e. splice ``text`` into the thought
+    stream), echoing the injected text in the marker colour.  Returns the model's
+    next-token prediction after the injected text, to continue generating from."""
+    hint_ids = tokenizer.encode(text, add_special_tokens=False)
+    nxt = int(session.decode_step(group, torch.tensor([pending], dtype=torch.int32)).argmax(-1)[0])
+    for tid in hint_ids:
+        sys.stdout.write(_c(tokenizer.decode([tid]), "sys"))
+        sys.stdout.flush()
+        nxt = int(session.decode_step(group, torch.tensor([tid], dtype=torch.int32)).argmax(-1)[0])
+    return nxt
 
 
 def _resolve_ckpt(model: str) -> str:
@@ -175,7 +193,7 @@ def main() -> None:
         group = WorkerGroup(cache_structure=[[R, P, G]], write_to=[G])
         print(_c("  reasoning (frame 1): ", "img"), end="")
         sys.stdout.write(_c(tokenizer.decode([first]), "gen"))
-        pending = _stream(session, group, first, 24, tokenizer)
+        pending = _stream(session, group, first, 240, tokenizer)
 
         # --- Swap the image IN PLACE (different size => changing mRoPE) ---
         ids2, pv2, grid2, mrope2 = _image_block(arr2, merge, tokenizer)
@@ -183,8 +201,13 @@ def main() -> None:
         print(_c(f"  [refresh_block] image #2 grid={grid2.tolist()[0]}  R.tokens={R.num_tokens}  R.mrope_span={R.mrope_span}", "sys"))
         print(_c(f"  P and G kept ({P.num_tokens} + {G.num_tokens} tokens); only R re-encoded", "dim"))
 
-        # Continue the SAME reasoning block, now attending to image #2.
+        # Continue the SAME reasoning block, now attending to image #2 -- optionally
+        # splicing a "the image has been updated" note into the thoughts first so the
+        # model re-inspects instead of trusting its stale previous-frame reasoning.
         print(_c("  reasoning (frame 2): ", "img"), end="")
+        if HINT:
+            pending = _inject(session, group, pending, HINT, tokenizer)
+            sys.stdout.write(_c(tokenizer.decode([pending]), "gen"))
         _stream(session, group, pending, 24, tokenizer)
     finally:
         engine.shutdown()
