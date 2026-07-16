@@ -193,7 +193,7 @@ def main() -> None:
         group = WorkerGroup(cache_structure=[[R, P, G]], write_to=[G])
         print(_c("  reasoning (frame 1): ", "img"), end="")
         sys.stdout.write(_c(tokenizer.decode([first]), "gen"))
-        pending = _stream(session, group, first, 240, tokenizer)
+        pending = _stream(session, group, first, 100, tokenizer)
 
         # --- Swap the image IN PLACE (different size => changing mRoPE) ---
         ids2, pv2, grid2, mrope2 = _image_block(arr2, merge, tokenizer)
@@ -208,7 +208,7 @@ def main() -> None:
         if HINT:
             pending = _inject(session, group, pending, HINT, tokenizer)
             sys.stdout.write(_c(tokenizer.decode([pending]), "gen"))
-        _stream(session, group, pending, 24, tokenizer)
+        _stream(session, group, pending, 200, tokenizer)
     finally:
         engine.shutdown()
 
