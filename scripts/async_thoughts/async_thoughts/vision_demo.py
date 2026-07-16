@@ -39,6 +39,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
+from minisgl.core import SamplingParams
 from minisgl.llm import AsyncLLM
 from minisgl.models.qwen2vl_image import preprocess_image
 from minisgl.models.qwen3_5_mrope import get_rope_index
@@ -47,11 +48,16 @@ from transformers import AutoTokenizer
 
 from .engine import build_async_llm, encode
 
-DEFAULT_MODEL = os.environ.get("MINISGL_DEMO_MODEL", "Qwen/Qwen3.5-0.8B")
+DEFAULT_MODEL = os.environ.get("MINISGL_DEMO_MODEL", "Qwen/Qwen3.5-27B")
 DEFAULT_QUESTION = "Describe what you see in this image."
-DEFAULT_MAX_STEPS = 200
-DEFAULT_SWAP_EVERY = 60  # tokens between background image swaps
+DEFAULT_MAX_STEPS = 300
+DEFAULT_SWAP_EVERY = 100  # tokens between background image swaps
 DEFAULT_HINT = "\n\n[The image has been updated.]\n\n"
+# Decode with light sampling, not greedy: greedy latches onto the spliced hint
+# phrase and repeats it forever (SamplingParams has no repetition penalty), so a
+# small temperature is what keeps the stream from looping. temperature=0 -> greedy.
+DEFAULT_TEMPERATURE = 0.7
+DEFAULT_TOP_P = 0.95
 DEFAULT_MEMORY_RATIO = 0.9
 DEFAULT_PAGE_SIZE = 1
 
@@ -70,6 +76,8 @@ class VisionConfig:
     max_steps: int = DEFAULT_MAX_STEPS
     swap_every: int = DEFAULT_SWAP_EVERY
     hint: str = DEFAULT_HINT  # empty -> no note injected on swap
+    temperature: float = DEFAULT_TEMPERATURE  # 0 -> greedy (loops on the hint)
+    top_p: float = DEFAULT_TOP_P
     memory_ratio: float = DEFAULT_MEMORY_RATIO
     page_size: int = DEFAULT_PAGE_SIZE
 
@@ -198,6 +206,9 @@ async def _run_loop(config: VisionConfig, llm: AsyncLLM, tokenizer: AutoTokenize
     swap_now = asyncio.Event()  # reason -> feeder: a swap boundary was reached
     swapped = asyncio.Event()  # feeder -> reason: the image is refreshed
 
+    sampling = SamplingParams(temperature=config.temperature, top_p=config.top_p, max_tokens=1)
+    eot_id = tokenizer.vocab.get("<|im_end|>")  # turn end: stop, or swap if frames remain
+
     async def reason() -> None:
         _stream_token(tokenizer.decode([first]))
         emitted = 1
@@ -205,13 +216,20 @@ async def _run_loop(config: VisionConfig, llm: AsyncLLM, tokenizer: AutoTokenize
         try:
             while not done.is_set() and emitted < config.max_steps:
                 broke = False
-                async for token in llm.async_generate(ctx, forbid_ids=forbid_ids):
+                async for token in llm.async_generate(
+                    ctx, forbid_ids=forbid_ids, sampling_params=sampling
+                ):
                     _stream_token(tokenizer.decode([token]))
                     emitted += 1
                     if emitted >= config.max_steps:
                         break
-                    if swaps_left > 0 and emitted % config.swap_every == 0:
-                        broke = True
+                    # Turn end: swap now if frames remain (the current frame's answer
+                    # is done), else stop cleanly instead of over-generating (which
+                    # degenerates into a loop once the description is exhausted).
+                    at_turn_end = token == eot_id
+                    if at_turn_end and swaps_left == 0:
+                        return
+                    if broke := (swaps_left > 0 and (at_turn_end or emitted % config.swap_every == 0)):
                         break
                 if not broke or done.is_set():
                     break
@@ -294,6 +312,9 @@ def parse_args(argv: list[str] | None = None) -> VisionConfig:
                    help="Tokens between background image swaps.")
     p.add_argument("--hint", default=DEFAULT_HINT, help="Note spliced into the thoughts on each swap.")
     p.add_argument("--no-hint", action="store_true", help="Do not inject a note on swap.")
+    p.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE,
+                   help="Sampling temperature (0 = greedy, which loops on the hint).")
+    p.add_argument("--top-p", type=float, default=DEFAULT_TOP_P)
     p.add_argument("--memory-ratio", type=float, default=DEFAULT_MEMORY_RATIO)
     p.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE)
     a = p.parse_args(argv)
@@ -304,6 +325,8 @@ def parse_args(argv: list[str] | None = None) -> VisionConfig:
         max_steps=a.max_steps,
         swap_every=a.swap_every,
         hint="" if a.no_hint else a.hint,
+        temperature=a.temperature,
+        top_p=a.top_p,
         memory_ratio=a.memory_ratio,
         page_size=a.page_size,
     )
