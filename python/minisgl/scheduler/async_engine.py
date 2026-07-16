@@ -180,7 +180,7 @@ class AsyncCacheEngine:
         ``image_grid_thw`` / ``mrope_positions`` for a multimodal (image) block.
         Set ``refresh`` to re-encode a non-empty block in place (frees its pages
         first) — the hook for an updatable image."""
-        assert refresh or into.num_tokens == 0, "prefill target must be fresh (or refresh=True)"
+        assert refresh or into.num_tokens == 0, "prefill target must be a fresh block (or refresh=True)"
         future = self.future_factory()
         self._prefill_queue.append(
             PrefillRequest(
@@ -244,16 +244,15 @@ class AsyncCacheEngine:
 
     def _run_prefill(self, req: PrefillRequest) -> None:
         prefill = self.session.refresh_block if req.refresh else self.session.prefill_block
+        kwargs = {"context": req.context or None, "capture_affine": req.capture_affine}
+        # Only forward image kwargs for multimodal blocks, so the text path keeps the
+        # original prefill_block signature (stub/non-vision sessions stay compatible).
+        if req.pixel_values is not None:
+            kwargs["pixel_values"] = req.pixel_values
+            kwargs["image_grid_thw"] = req.image_grid_thw
+            kwargs["mrope_positions"] = req.mrope_positions
         try:
-            logits = prefill(
-                req.into,
-                req.token_ids,
-                context=req.context or None,
-                capture_affine=req.capture_affine,
-                pixel_values=req.pixel_values,
-                image_grid_thw=req.image_grid_thw,
-                mrope_positions=req.mrope_positions,
-            )
+            logits = prefill(req.into, req.token_ids, **kwargs)
         except Exception as exc:
             req.future.set_exception(exc)
             raise
