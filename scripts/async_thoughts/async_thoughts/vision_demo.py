@@ -223,7 +223,6 @@ async def _run_loop(config: VisionConfig, llm: AsyncLLM, tokenizer: AutoTokenize
     swapped = asyncio.Event()  # feeder -> reason: the image is refreshed
 
     sampling = SamplingParams(temperature=config.temperature, top_p=config.top_p, max_tokens=1)
-    _warm_sampler(llm, sampling)
     eot_id = tokenizer.vocab.get("<|im_end|>")  # turn end: stop, or swap if frames remain
 
     async def reason() -> None:
