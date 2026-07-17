@@ -277,9 +277,12 @@ class AsyncCacheEngine:
         if not reqs:
             return
 
-        group = WorkerGroup([req.context for req in reqs])
-        input_ids = torch.tensor([req.input_id for req in reqs], dtype=torch.int32)
         try:
+            # Build the group/inputs INSIDE the try too: anything that raises here
+            # (e.g. a bad cache view) must fail the popped futures, otherwise the
+            # awaiting coroutines hang forever instead of seeing the error.
+            group = WorkerGroup([req.context for req in reqs])
+            input_ids = torch.tensor([req.input_id for req in reqs], dtype=torch.int32)
             with torch.inference_mode():
                 logits = self.session.decode_step(group, input_ids)
                 # Snapshot raw rows before the forbid mask mutates them.
@@ -289,7 +292,8 @@ class AsyncCacheEngine:
                 next_tokens = self._select_tokens(logits, reqs)
         except Exception as exc:
             for req in reqs:
-                req.future.set_exception(exc)
+                if not req.future.done():
+                    req.future.set_exception(exc)
             raise
         for i, (req, token) in enumerate(zip(reqs, next_tokens.tolist())):
             token = int(token)
