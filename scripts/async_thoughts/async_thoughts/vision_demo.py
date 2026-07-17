@@ -165,6 +165,22 @@ def _frame(config: VisionConfig, i: int, tokenizer: AutoTokenizer) -> Tuple[np.n
 # ---------------------------------------------------------------------------
 
 
+def _warm_sampler(llm: AsyncLLM, sampling: SamplingParams) -> None:
+    """Trigger flashinfer's one-time JIT compile of the sampling kernel up front.
+
+    The first *sampled* (non-greedy) decode calls flashinfer's softmax/top-p
+    kernels, which compile with ninja on first use (~1-2 min) and are cached after.
+    Doing it here, with a message, keeps that pause from looking like a mid-stream
+    hang.  Greedy decode uses argmax and needs no kernel, so we skip it."""
+    if sampling.is_greedy:
+        return
+    print("Warming up sampling kernel (first run JIT-compiles with ninja, ~1-2 min)...", flush=True)
+    sampler = llm.engine.sampler
+    dummy = torch.zeros((1, sampler.vocab_size), dtype=torch.float32, device=sampler.device)
+    with torch.inference_mode():
+        sampler.sample(dummy, sampler.prepare_params([sampling]))
+
+
 async def _inject_hint(llm: AsyncLLM, ctx: AsyncContext, text: str, tokenizer: AutoTokenizer) -> None:
     """Splice *text* into the reasoning: force-feed its tokens into the output
     block (ignoring the model's own predictions), echoing them in the hint colour.
@@ -207,6 +223,7 @@ async def _run_loop(config: VisionConfig, llm: AsyncLLM, tokenizer: AutoTokenize
     swapped = asyncio.Event()  # feeder -> reason: the image is refreshed
 
     sampling = SamplingParams(temperature=config.temperature, top_p=config.top_p, max_tokens=1)
+    _warm_sampler(llm, sampling)
     eot_id = tokenizer.vocab.get("<|im_end|>")  # turn end: stop, or swap if frames remain
 
     async def reason() -> None:
