@@ -38,7 +38,7 @@ from minisgl.utils import div_ceil
 
 from .attention import SharedCacheAttention
 from .gdn import SharedCacheGDN
-from .shared_block import NULL_CACHE_HANDLE, SharedBlock
+from .shared_block import NULL_CACHE_HANDLE, CacheBlock
 from .worker_group import WorkerGroup
 
 if TYPE_CHECKING:
@@ -93,7 +93,7 @@ def _build_partial_cos_sin_cache(
 
 class SharedCacheSession:
     """
-    Manages ``SharedBlock`` pages and drives batched forward passes for a
+    Manages ``CacheBlock`` pages and drives batched forward passes for a
     ``WorkerGroup`` on a mini-sglang ``Engine``.
 
     Pages are **borrowed from the engine's main page cache**
@@ -184,10 +184,10 @@ class SharedCacheSession:
     # Public API
     # ------------------------------------------------------------------
 
-    def create_block(self) -> SharedBlock:
-        return SharedBlock(self.device, page_size=self.page_size)
+    def create_block(self) -> CacheBlock:
+        return CacheBlock(self.device, page_size=self.page_size)
 
-    def free_block(self, block: SharedBlock) -> None:
+    def free_block(self, block: CacheBlock) -> None:
         """Return a block's pages to the engine's page allocator and reset it."""
         page_starts = block.clear()
         if page_starts:
@@ -198,13 +198,13 @@ class SharedCacheSession:
     @torch.inference_mode()
     def prefill_block(
         self,
-        block: SharedBlock,
+        block: CacheBlock,
         input_ids: torch.Tensor,
-        context: Optional[List[SharedBlock]] = None,
+        context: Optional[List[CacheBlock]] = None,
         capture_affine: bool = True,
     ) -> torch.Tensor:
         """
-        Prefill a single ``SharedBlock`` with *input_ids* and return logits.
+        Prefill a single ``CacheBlock`` with *input_ids* and return logits.
 
         *input_ids* must be a 1-D CPU ``int32`` tensor.
 
@@ -251,6 +251,7 @@ class SharedCacheSession:
             logits = self._forward(batch, cache_structure=cs, write_to=[block])
 
             block.grow_pages(page_starts, seq_len)
+            block.token_ids.extend(input_ids.tolist())
 
             # NOTE: ParallelLMHead.forward already extracts last-token logits
             # for prefill batches, so logits has shape [bs, vocab].
@@ -260,9 +261,9 @@ class SharedCacheSession:
 
     def _prefill_block_in_context(
         self,
-        block: SharedBlock,
+        block: CacheBlock,
         input_ids: torch.Tensor,
-        context: List[SharedBlock],
+        context: List[CacheBlock],
     ) -> torch.Tensor:
         """Prefill *block* while attending to *context* blocks (all non-empty)."""
         seq_len = len(input_ids)
@@ -289,6 +290,7 @@ class SharedCacheSession:
         logits = self._forward(batch, cache_structure=[[*context, block]], write_to=[block])
 
         block.grow_pages(page_starts, seq_len)
+        block.token_ids.extend(input_ids.tolist())
         return logits[:1]
 
     @torch.inference_mode()
@@ -354,8 +356,9 @@ class SharedCacheSession:
         )
 
         # Commit growth now that the forward (which read post-append lengths) is done.
-        for wt in group.write_to:
+        for wi, wt in enumerate(group.write_to):
             wt.append_token(new_page_for_block[id(wt)])
+            wt.token_ids.append(int(input_ids[wi]))
         return logits[:num_workers]
 
     # ------------------------------------------------------------------
@@ -381,9 +384,8 @@ class SharedCacheSession:
         ``new_token_slots`` is ``[num_workers]`` int32 destination slots, and
         ``write_pos`` is the per-worker block-relative RoPE position.
         """
-        num_workers = group.num_workers
         new_page_for_block: Dict[int, Optional[int]] = {}
-        blocks_needing_page: List[SharedBlock] = []
+        blocks_needing_page: List[CacheBlock] = []
         for wt in group.write_to:
             if id(wt) in new_page_for_block:
                 raise ValueError("WorkerGroup has two workers writing the same block in one step")
@@ -448,8 +450,8 @@ class SharedCacheSession:
     def _forward(
         self,
         batch: Batch,
-        cache_structure: "List[List[SharedBlock]] | None" = None,
-        write_to: "List[SharedBlock] | None" = None,
+        cache_structure: "List[List[CacheBlock]] | None" = None,
+        write_to: "List[CacheBlock] | None" = None,
     ) -> torch.Tensor:
         ctx = self.engine.ctx
         # For hybrid (Qwen3.5) models, hand the GDN layers the worker chains so

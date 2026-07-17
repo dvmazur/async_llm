@@ -18,7 +18,7 @@ every cached key on every step.
 Paging
 ------
 The KV pool is paged: ``kv_cache.k_cache(layer)`` has shape
-``[num_pages, page_size, n_kv_heads, head_dim]``.  Each ``SharedBlock`` owns a
+``[num_pages, page_size, n_kv_heads, head_dim]``.  Each ``CacheBlock`` owns a
 list of page-start slots, so a block of length ``L`` occupies ``ceil(L/P)``
 pages whose last page holds ``L - (npages-1)*P`` valid tokens.  Per-segment
 attention runs through a FlashInfer paged decode wrapper planned with the
@@ -55,7 +55,7 @@ if TYPE_CHECKING:
     from minisgl.core import Batch
     from minisgl.kvcache import BaseKVCachePool
 
-    from .shared_block import SharedBlock
+    from .shared_block import CacheBlock
     from .worker_group import WorkerGroup
 
 
@@ -321,7 +321,7 @@ class SharedCacheAttention:
         return meta
 
     def prepare_context_prefill(
-        self, context: List[SharedBlock], new_page_starts: torch.Tensor, num_new: int
+        self, context: List[CacheBlock], new_page_starts: torch.Tensor, num_new: int
     ) -> SharedCacheAttnMetadata:
         """
         Plan one prefill of ``num_new`` new tokens (stored block-relative at
