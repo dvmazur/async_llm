@@ -12,12 +12,18 @@ Cache layout (mirrors AsyncReasoning's AsyncReasoningCache):
                         standalone gives the writer prefix the wrong attention
                         outputs at deeper layers).
 
-Concurrency (the ASYNC_SCHED_DESIGN.md user API): thinker and writer are
-independent coroutines over ``AsyncLLM.async_generate``; the scheduler batches
-whichever streams are live into one forward per tick.  The mode-switching
-probe runs as a third coroutine, signalled at the thinker's cadence, so the
-thinker never stalls while the probe prefill is in flight — unlike the old
-lock-step demo, which serialized the probe against decoding.
+Concurrency (the ASYNC_SCHED_DESIGN.md user API): everything below is custom
+scaffolding over the unified ``AsyncLLM.forward`` method — conditional
+prefill for the block setup, a decode-mode custom-generate loop per stream
+(client-side greedy pick over the raw logits), and a throwaway prefill for
+the probe (``ModeSwitchProbe``, which caches the static probe-prompt
+encodings and — on standard-attention models — its prefix KV, so each probe
+only prefills the growing thinker/writer tail in context of it).  Thinker
+and writer are independent coroutines; the scheduler
+batches whichever streams are live into one forward per tick.  The
+mode-switching probe runs as a third coroutine, signalled at the thinker's
+cadence, so the thinker never stalls while the probe prefill is in flight —
+unlike the old lock-step demo, which serialized the probe against decoding.
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ import gc
 import os
 import sys
 from dataclasses import dataclass
-from typing import List
+from typing import AsyncIterator, List
 
 import torch
 from minisgl.llm import AsyncLLM
@@ -35,8 +41,8 @@ from minisgl.shared_cache import AsyncContext, CacheBlock
 from transformers import AutoTokenizer
 
 from .engine import (
+    ModeSwitchProbe,
     build_async_llm,
-    check_continue_writing,
     encode,
     ends_with_double_newline,
     single_token_id,
@@ -140,6 +146,26 @@ def _tokens_with_pending(block: CacheBlock, ctx: AsyncContext) -> List[int]:
     return tokens
 
 
+async def _forward_generate(
+    llm: AsyncLLM, ctx: AsyncContext, forbid_ids: List[int]
+) -> AsyncIterator[int]:
+    """Custom greedy generate over ``AsyncLLM.forward`` (decode mode).
+
+    Each step feeds the context's pending token and picks the next one
+    client-side: mask the forbidden ids, argmax, re-seed ``next_input_id``.
+    Breaking out is clean — the pending token survives, so a later loop over
+    the same context resumes where it left off.
+    """
+    while True:
+        out = await llm.forward(cache_view=ctx)
+        logits = out.logits  # raw row; ours to mutate
+        if forbid_ids:
+            logits[forbid_ids] = float("-inf")
+        token = int(logits.argmax())
+        ctx.next_input_id = token
+        yield token
+
+
 async def _run_loop(
     config: DemoConfig,
     llm: AsyncLLM,
@@ -158,25 +184,40 @@ async def _run_loop(
         i for i in (vocab_id_or_none(tokenizer, n) for n in thinker_forbid_names) if i is not None
     ]
 
-    yes_id = single_token_id(prompting.yes_token, tokenizer)
-    no_id = single_token_id(prompting.no_token, tokenizer)
+    probe = ModeSwitchProbe(
+        llm,
+        tokenizer,
+        prompting.mode_switching_prompt,
+        prompting.mode_switching_question,
+        yes_token=prompting.yes_token,
+        no_token=prompting.no_token,
+    )
     nn_id = single_token_id("\n\n", tokenizer)
     eos_id = int(tokenizer.eos_token_id) if tokenizer.eos_token_id is not None else -1
 
-    # Prefill the three persistent blocks.  thinker/writer prefixes are
-    # prefilled IN CONTEXT of their prefix chain (matches AR; see module doc).
+    # Prefill the three persistent blocks via ``forward`` (conditional
+    # prefill: write_to is the last block of the view).  thinker/writer
+    # prefixes are prefilled IN CONTEXT of their prefix chain (matches AR;
+    # see module doc).
     print("Prefilling blocks...")
-    prompt_blk = (await llm.prefill_block(encode(prompting.input_prompt, tokenizer))).block
-    thinker_blk = (
-        await llm.prefill_block(
-            encode(prompting.thinker_output_prefix, tokenizer), context=[prompt_blk]
-        )
-    ).block
-    writer_blk = (
-        await llm.prefill_block(
-            encode(prompting.writer_output_prefix, tokenizer), context=[prompt_blk, thinker_blk]
-        )
-    ).block
+    prompt_blk, thinker_blk, writer_blk = await asyncio.gather(
+        llm.create_block(), llm.create_block(), llm.create_block()
+    )
+    await llm.forward(
+        encode(prompting.input_prompt, tokenizer),
+        write_to=prompt_blk,
+        return_logits=False,
+    )
+    await llm.forward(
+        encode(prompting.thinker_output_prefix, tokenizer),
+        [prompt_blk, thinker_blk],
+        return_logits=False,
+    )
+    await llm.forward(
+        encode(prompting.writer_output_prefix, tokenizer),
+        [prompt_blk, thinker_blk, writer_blk],
+        return_logits=False,
+    )
 
     # Per-agent contexts.  The "\n\n" separator that AR appends but does NOT
     # prefill seeds each stream's first decode input.
@@ -190,7 +231,7 @@ async def _run_loop(
     async def thinker_coro() -> None:
         steps = 0
         try:
-            async for token in llm.async_generate(thinker_ctx, forbid_ids=thinker_forbid_ids):
+            async for token in _forward_generate(llm, thinker_ctx, thinker_forbid_ids):
                 _stream_token(tokenizer.decode([token]), "thinker")
                 steps += 1
                 if done.is_set() or steps >= config.max_steps:
@@ -213,7 +254,7 @@ async def _run_loop(
             if done.is_set():
                 return
 
-            async for token in llm.async_generate(writer_ctx, forbid_ids=writer_forbid_ids):
+            async for token in _forward_generate(llm, writer_ctx, writer_forbid_ids):
                 _stream_token(tokenizer.decode([token]), "writer")
                 if token == eos_id:
                     _print_state_change("writer hit EOS -- terminating")
@@ -238,15 +279,9 @@ async def _run_loop(
             probe_due.clear()
             if done.is_set():
                 return
-            should_write, yes_logit, no_logit = await check_continue_writing(
-                llm,
-                tokenizer,
-                prompting.mode_switching_prompt,
-                prompting.mode_switching_question,
+            should_write, yes_logit, no_logit = await probe.check_continue_writing(
                 _tokens_with_pending(thinker_blk, thinker_ctx),
                 _tokens_with_pending(writer_blk, writer_ctx),
-                yes_id=yes_id,
-                no_id=no_id,
             )
             if done.is_set():
                 return
@@ -275,6 +310,7 @@ async def _run_loop(
     print(_ansi(tokenizer.decode(writer_tokens, skip_special_tokens=True), "writer"))
     print()
 
+    await probe.close()
     for blk in (prompt_blk, thinker_blk, writer_blk):
         await llm.free_block(blk)
 

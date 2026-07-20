@@ -15,6 +15,11 @@ the caller's event loop::
     async for token in llm.async_generate(ctx, first_token_id=sep_id):
         ...
 
+``forward`` is the unified single-pass method (prefill / decode / conditional
+prefill selected by its arguments) for building custom scaffolding on top of
+raw logits; ``prefill_block`` and ``async_generate`` remain the convenience
+paths with engine-side sampling.
+
 Everything runs single-threaded: the GPU forward blocks the loop for one tick,
 then every consumer woken by that tick gets to enqueue its next request before
 the following batch is formed (one ``sleep(0)`` round).  Concurrent agents
@@ -43,11 +48,18 @@ TokenIds = Union[torch.Tensor, Sequence[int]]
 
 
 @dataclass
-class PrefillResult:
-    block: CacheBlock  # the filled block
-    # Last-token logits [vocab]; only populated when the prefill was submitted
-    # with return_logits=True (e.g. the mode-switching probe), else None.
+class CausalLMOutput:
+    """Result of one forward pass (``forward`` / ``prefill_block``) — and
+    little else.
+
+    ``logits`` is the last-position row ``[vocab]``, a device-side tensor;
+    ``None`` unless the pass was submitted with ``return_logits=True``
+    (e.g. the mode-switching probe).  ``block`` is the write block the pass
+    appended its KV to.
+    """
+
     logits: Optional[torch.Tensor]
+    block: CacheBlock
 
 
 def _as_token_tensor(token_ids: TokenIds) -> torch.Tensor:
@@ -124,7 +136,7 @@ class AsyncLLM:
         into: Optional[CacheBlock] = None,
         capture_affine: bool = True,
         return_logits: bool = False,
-    ) -> PrefillResult:
+    ) -> CausalLMOutput:
         """Prefill a fresh block (created here unless *into* is given) with
         *token_ids*, attending to *context*; returns the block, plus the
         last-token logits when *return_logits* is set."""
@@ -139,7 +151,125 @@ class AsyncLLM:
         )
         self._work_event.set()
         logits = await future
-        return PrefillResult(block=block, logits=logits)
+        return CausalLMOutput(logits=logits, block=block)
+
+    async def forward(
+        self,
+        input_ids: Optional[TokenIds] = None,
+        cache_view: "AsyncContext | CacheView | None" = None,
+        *,
+        write_to: Optional[CacheBlock] = None,
+        return_logits: bool = True,
+        capture_affine: bool = True,
+    ) -> CausalLMOutput:
+        """Run a single forward pass on the LM with the specified cache view,
+        adding the new KVs to *write_to* — the unified method of
+        ASYNC_SCHED_DESIGN.md, covering (conditional) prefill, action choice
+        and custom generate.  The mode depends on the provided arguments:
+
+        * ``forward(input_ids, write_to=block)`` — **prefill**: fill the fresh
+          block *write_to* with *input_ids*.
+        * ``forward(cache_view=ctx)`` — **decode**: one step for the context,
+          feeding its pending ``next_input_id`` (consumed on success).  Token
+          selection is the caller's job: sample from ``.logits`` and re-seed
+          ``ctx.next_input_id`` (or pass ``input_ids``) for the next step.
+        * ``forward(input_ids, cache_view)`` — **in-context / conditional
+          prefill**: the new tokens attend to the view's blocks in order and
+          their KV is appended to *write_to*.  *write_to* must be the last
+          block of *cache_view* (earlier positions raise) or outside it.  A
+          fresh *write_to* takes the one-shot prefill path; a non-empty one is
+          *extended*, one decode step per token.
+
+        *write_to* defaults to the view's last block (``ctx.output_block``
+        when *cache_view* is an ``AsyncContext``); plain prefill requires it.
+        Like every request, the pass is batched by the engine tick with
+        whatever else is in flight.
+
+        Returns a :class:`CausalLMOutput` whose ``.logits`` is the raw (un-
+        sampled) last-position ``[vocab]`` row when *return_logits* is set,
+        and whose ``.block`` is the resolved write block.
+        """
+        ctx = cache_view if isinstance(cache_view, AsyncContext) else None
+        view: CacheView = list(ctx.cache_view if ctx is not None else (cache_view or []))
+        if write_to is None:
+            if ctx is not None:
+                write_to = ctx.output_block
+            elif view:
+                write_to = view[-1]
+
+        if input_ids is None:
+            # Decode mode: the input token is the context's pending one.
+            if cache_view is None:
+                raise ValueError("forward needs input_ids and/or cache_view")
+            if ctx is None or ctx.next_input_id is None:
+                raise ValueError(
+                    "decode mode needs a pending input token: pass an AsyncContext "
+                    "with next_input_id set, or provide input_ids"
+                )
+            step_ctx = (
+                ctx
+                if write_to is ctx.output_block
+                else AsyncContext(cache_view=view, output_block=write_to)
+            )
+            logits = await self._forward_decode_step(step_ctx, ctx.next_input_id, return_logits)
+            ctx.next_input_id = None  # consumed: its KV now lives in write_to
+            return CausalLMOutput(logits=logits, block=write_to)
+
+        ids = _as_token_tensor(input_ids)
+        if ids.numel() == 0:
+            raise ValueError("forward got empty input_ids")
+        if ctx is not None and ctx.next_input_id is not None:
+            raise ValueError(
+                "cache_view has a pending next_input_id and input_ids were also given; "
+                "feed the pending token first (forward(cache_view=ctx))"
+            )
+        if write_to is None:
+            raise ValueError("prefill mode needs a write_to block")
+        if any(b is write_to for b in view[:-1]):
+            raise ValueError("write_to must be the last block of cache_view")
+        in_view = bool(view) and view[-1] is write_to
+
+        if write_to.num_tokens == 0:
+            # (Conditional) prefill of a fresh block, one forward for all tokens.
+            self._ensure_loop()
+            future = self.async_engine.submit_prefill(
+                ids,
+                into=write_to,
+                context=(view[:-1] if in_view else view) or None,
+                capture_affine=capture_affine,
+                return_logits=return_logits,
+            )
+            self._work_event.set()
+            return CausalLMOutput(logits=await future, block=write_to)
+
+        # Non-empty write_to: extend it, one decode step per token.  A write
+        # block outside the view would not attend to its own earlier tokens,
+        # so only the last-of-view arrangement is meaningful here.
+        if not in_view:
+            raise ValueError("cannot extend a non-empty write_to outside cache_view")
+        step_ctx = (
+            ctx
+            if ctx is not None and write_to is ctx.output_block
+            else AsyncContext(cache_view=view, output_block=write_to)
+        )
+        tokens = ids.tolist()
+        logits = None
+        for i, token in enumerate(tokens):
+            want_logits = return_logits and i == len(tokens) - 1
+            logits = await self._forward_decode_step(step_ctx, token, want_logits)
+        return CausalLMOutput(logits=logits, block=write_to)
+
+    async def _forward_decode_step(
+        self, ctx: AsyncContext, input_id: int, return_logits: bool
+    ) -> Optional[torch.Tensor]:
+        """One engine decode for *ctx* feeding *input_id*; returns the raw
+        logits row (or ``None``).  The engine-sampled token is discarded —
+        ``forward`` callers do their own selection on the logits."""
+        self._ensure_loop()
+        future = self.async_engine.submit_decode(ctx, input_id, return_logits=return_logits)
+        self._work_event.set()
+        result = await future
+        return result[1] if return_logits else None
 
     async def async_generate(
         self,
