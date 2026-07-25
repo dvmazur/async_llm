@@ -1,4 +1,4 @@
-"""Config + constants for the Doom demo (scripts/doom/doom_demo.py)."""
+"""Config + constants for the Doom demo (``doom_demo.demo``)."""
 
 from __future__ import annotations
 

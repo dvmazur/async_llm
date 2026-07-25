@@ -1,5 +1,7 @@
 """Qwen3.5 vision plays ViZDoom through the AsyncLLM frontend.
 
+This module holds the episode loop; the command line lives in ``__main__``.
+
 The doer, each tick, re-encodes the current frame into an updatable image block
 (session.refresh_block) and, crucially, *reasons* about it before acting: it
 generates a short frame-grounded analysis, then presses a key-name action
@@ -23,15 +25,11 @@ fixed crosshair, then fire), and high enough resolution to localize the monster.
 
 Run (headless)::
 
-    HF_HOME=/mnt/LLM CUDA_VISIBLE_DEVICES=<gpu> \\
-      .venv/bin/python scripts/doom/doom_demo.py --steps 60 --out doom.gif
+    HF_HOME=/mnt/LLM CUDA_VISIBLE_DEVICES=<gpu> doom-demo --steps 60 --out doom.gif
 """
 
 from __future__ import annotations
 
-import argparse
-import asyncio
-import gc
 import os
 import sys
 
@@ -44,21 +42,14 @@ import gymnasium  # noqa: E402
 import vizdoom as vzd  # noqa: E402
 from async_thoughts.engine import build_async_llm, encode  # noqa: E402
 from async_thoughts.vision_demo import _warm_sampler  # noqa: E402
-from config import (  # noqa: E402
-    ACTIONS,
-    DEFAULT_MODEL,
-    IMG_TOK,
-    KEYNAMES,
-    MERGE,
-    VEND,
-    VSTART,
-    DoomConfig,
-)
 from minisgl.core import SamplingParams  # noqa: E402
 from minisgl.models.qwen2vl_image import preprocess_image  # noqa: E402
 from minisgl.models.qwen3_5_mrope import get_rope_index  # noqa: E402
 from minisgl.shared_cache import AsyncContext  # noqa: E402
-from prompt import (  # noqa: E402
+from vizdoom import gymnasium_wrapper  # noqa: E402,F401
+
+from .config import ACTIONS, IMG_TOK, KEYNAMES, MERGE, VEND, VSTART, DoomConfig  # noqa: E402
+from .prompt import (  # noqa: E402
     DOER_ACT_QUERY,
     DOER_QUERY_BASE,
     DOER_REASON_PREFIX,
@@ -67,7 +58,6 @@ from prompt import (  # noqa: E402
     THINK_PREFIX,
     USER_TEXT,
 )
-from vizdoom import gymnasium_wrapper  # noqa: E402,F401
 
 _C = {"doer": "\033[1;32m", "think": "\033[2;36m", "state": "\033[1;33m", "dim": "\033[2m",
       "reset": "\033[0m"}
@@ -268,55 +258,3 @@ async def run(cfg: DoomConfig) -> None:
         print(_c(f"  thinker (final): ...{final_plan[-300:]}", "dim"))
     if cfg.out:
         _save_gif(frames, cfg.out)
-
-
-def parse_args(argv: list[str] | None = None) -> DoomConfig:
-    p = argparse.ArgumentParser(prog="doom-demo", description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--model", default=DEFAULT_MODEL)
-    p.add_argument("--env-id", default="VizdoomBasic-v1")
-    p.add_argument("--steps", type=int, default=60)
-    p.add_argument("--seed", type=int, default=None, help="Env reset seed (fixes the spawn).")
-    p.add_argument("--frame-skip", type=int, default=4)
-    p.add_argument("--max-pixels", type=int, default=150 * 1000,
-                   help="Frame smart-resized to fit this (lower => can't localize the monster).")
-    p.add_argument("--k-frames", type=int, default=2,
-                   help="Keep the last K screen frames in context (image-block queue).")
-    p.add_argument("--user-prompt", default="", help="Override the user request text.")
-    p.add_argument("--no-reason", action="store_true",
-                   help="Reactive baseline: single key with no reasoning (a constant 'fire').")
-    p.add_argument("--reason-tokens", type=int, default=28,
-                   help="Per-action reasoning length before the key-name action.")
-    p.add_argument("--reason-temp", type=float, default=0.0,
-                   help="Reasoning sampling temperature (0 = greedy).")
-    p.add_argument("--thinker", action="store_true",
-                   help="Also run a separate persistent thinker whose plan the doer reads.")
-    p.add_argument("--thinker-temp", type=float, default=0.7)
-    p.add_argument("--thinker-tokens", type=int, default=8)
-    p.add_argument("--frame-hint", action="store_true",
-                   help="Splice a 'Screen is updated' note into the thinker on each new frame.")
-    p.add_argument("--memory-ratio", type=float, default=0.9)
-    p.add_argument("--out", default="doom.gif", help="GIF of the episode (empty to skip).")
-    a = p.parse_args(argv)
-    return DoomConfig(model=a.model, env_id=a.env_id, steps=a.steps, seed=a.seed,
-                      frame_skip=a.frame_skip,
-                      max_pixels=a.max_pixels, k_frames=a.k_frames, user_prompt=a.user_prompt,
-                      reason=not a.no_reason, reason_tokens=a.reason_tokens, reason_temp=a.reason_temp,
-                      thinker=a.thinker, thinker_temp=a.thinker_temp, thinker_tokens=a.thinker_tokens,
-                      frame_hint=a.frame_hint, memory_ratio=a.memory_ratio, out=a.out)
-
-
-def main(argv: list[str] | None = None) -> None:
-    if not torch.cuda.is_available():
-        print("CUDA required.", file=sys.stderr)
-        sys.exit(2)
-    cfg = parse_args(argv)
-    try:
-        asyncio.run(run(cfg))
-    finally:
-        gc.collect()
-        torch.cuda.empty_cache()
-
-
-if __name__ == "__main__":
-    main()
