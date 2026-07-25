@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "doom-basic"
+version = "0.1.0"
+description = "Basic VLM agent loop: Qwen3.5 vision plays ViZDoom, one prompt per env step"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "torch",
+    "transformers",
+    "numpy",
+    "vizdoom>=1.2.4",
+    "gymnasium",
+    "pillow",
+]
+
+# minisgl (the parent repo) is imported but not pulled from an index; install it
+# in the same environment first: `uv pip install -e .` from the repo root.
+
+[project.scripts]
+doom-basic = "doom_basic.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["doom_basic*"]
