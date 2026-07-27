@@ -49,6 +49,7 @@ the `MINISGL_DEMO_MODEL` environment variable. Pick the GPU with
 | `--max-steps` | `800` | Hard cap on total decode steps. |
 | `--probe-period` | `30` | Run the mode-switching probe every N steps. |
 | `--memory-ratio` | `0.9` | Fraction of free GPU memory for weights + KV cache. |
+| `--page-size` | `1` | Number of tokens per KV-cache page. |
 
 ### Notes
 
