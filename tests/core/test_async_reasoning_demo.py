@@ -1,9 +1,9 @@
 """
-E2E smoke test for the async-thoughts demo (``scripts/async_thoughts``) on the
+E2E smoke test for the async-reasoning demo (``scripts/async_reasoning``) on the
 asyncio API.  Requires ``MINISGL_E2E_MODEL`` + CUDA; run in its own process
 (the demo builds its own engine)::
 
-    MINISGL_E2E_MODEL=Qwen/Qwen3-0.6B pytest tests/core/test_async_thoughts_demo.py -v
+    MINISGL_E2E_MODEL=Qwen/Qwen3-0.6B pytest tests/core/test_async_reasoning_demo.py -v
 
 Numeric equivalence of the underlying scheduling (concurrent streams + probe
 vs lock-step group stepping) is pinned in ``test_async_llm.py``; this test
@@ -28,7 +28,7 @@ requires_e2e = pytest.mark.skipif(
 )
 
 _SCRIPTS_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "async_thoughts")
+    os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "async_reasoning")
 )
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
@@ -36,8 +36,8 @@ if _SCRIPTS_DIR not in sys.path:
 
 @requires_e2e
 def test_demo_smoke():
-    from async_thoughts.demo import DemoConfig, Prompting, _run_demo
-    from async_thoughts.engine import build_async_llm, encode, vocab_id_or_none
+    from async_reasoning.demo import DemoConfig, Prompting, _run_demo
+    from async_reasoning.engine import build_async_llm, encode, vocab_id_or_none
     from transformers import AutoTokenizer
 
     config = DemoConfig(

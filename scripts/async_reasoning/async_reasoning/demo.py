@@ -1,25 +1,3 @@
-"""Prompting, display scaffolding, and the async thinker/writer/probe coroutines.
-
-Cache layout (mirrors AsyncReasoning's AsyncReasoningCache):
-
-  input_prompt block  : chat-formatted user prompt ending with <|im_end|>.
-  thinker_output block: pre-filled with "<|im_start|>assistant\\n<think>\\n",
-                        grows as the thinker decodes.
-  writer_output block : pre-filled with " ... [SYSTEM: thoughts will continue
-                        here]\\n</think>\\n", grows as the writer decodes.
-                        This block is prefilled IN CONTEXT of the prompt +
-                        thinker prefix (matters numerically -- prefilling
-                        standalone gives the writer prefix the wrong attention
-                        outputs at deeper layers).
-
-Concurrency (the ASYNC_SCHED_DESIGN.md user API): thinker and writer are
-independent coroutines over ``AsyncLLM.async_generate``; the scheduler batches
-whichever streams are live into one forward per tick.  The mode-switching
-probe runs as a third coroutine, signalled at the thinker's cadence, so the
-thinker never stalls while the probe prefill is in flight — unlike the old
-lock-step demo, which serialized the probe against decoding.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -297,7 +275,7 @@ def run(config: DemoConfig) -> None:
         print("CUDA required.", file=sys.stderr)
         sys.exit(2)
 
-    _print_header("Async Thoughts Demo (minisgl)")
+    _print_header("Async Reasoning Demo (minisgl)")
     print(f"  model    : {config.model}")
     print(f"  problem  : {config.problem}")
     print(f"  max steps: {config.max_steps}")

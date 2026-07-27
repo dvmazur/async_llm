@@ -1,4 +1,4 @@
-"""Async Thoughts demo on minisgl's shared-cache."""
+"""Async Reasoning demo on minisgl's shared-cache."""
 
 from __future__ import annotations
 

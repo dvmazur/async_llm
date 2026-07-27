@@ -1,6 +1,6 @@
-"""Command-line entry point for the async-thoughts demo.
+"""Command-line entry point for the async-reasoning demo.
 
-Runnable as ``python -m async_thoughts`` or via the ``async-thoughts`` console
+Runnable as ``python -m async_reasoning`` or via the ``async-reasoning`` console
 script (see pyproject.toml).
 """
 
@@ -23,7 +23,7 @@ from .demo import (
 
 def parse_args(argv: list[str] | None = None) -> DemoConfig:
     p = argparse.ArgumentParser(
-        prog="async-thoughts",
+        prog="async-reasoning",
         description=_PKG_DOC,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
