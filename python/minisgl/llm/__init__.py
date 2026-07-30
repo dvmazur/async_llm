@@ -1,4 +1,4 @@
-from .async_llm import AsyncLLM, PrefillResult
+from .async_llm import AsyncLLM, CausalLMOutput
 from .llm import LLM
 
-__all__ = ["LLM", "AsyncLLM", "PrefillResult"]
+__all__ = ["LLM", "AsyncLLM", "CausalLMOutput"]
