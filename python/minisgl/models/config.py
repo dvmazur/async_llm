@@ -131,15 +131,22 @@ class ModelConfig:
         norm_topk_prob = getattr(config, "norm_topk_prob", False)
         architectures = getattr(config, "architectures", ["LlamaForCausalLM"])
 
-        # Rope: Qwen3.5 nests it under `rope_parameters`; Llama/Qwen use a direct
-        # `rope_theta`; Mistral keeps it inside the `rope_scaling` dict.
+        # Rope: Qwen3.5 nests under `rope_parameters`; Llama/Qwen use a direct `rope_theta`; Mistral uses `rope_scaling`
         rope_params = getattr(config, "rope_parameters", None)
         partial_rotary_factor = getattr(config, "partial_rotary_factor", 1.0)
+        mrope_section = None
         if rope_params is not None:
-            rope_scaling = None
-            rope_theta = rope_params.get("rope_theta") if isinstance(rope_params, dict) else getattr(rope_params, "rope_theta")
-            partial_rotary_factor = getattr(
-                rope_params, "partial_rotary_factor", partial_rotary_factor
+            rope_params = dict(rope_params)
+            rope_theta = rope_params.pop("rope_theta")
+            partial_rotary_factor = rope_params.pop("partial_rotary_factor", partial_rotary_factor)
+            # mrope_* describe the position-id layout, not rope scaling (transformers keeps
+            # them out of rope validation), so strip them from the scaling dict.
+            ms = rope_params.pop("mrope_section", None)
+            mrope_section = tuple(ms) if ms is not None else None
+            rope_params.pop("mrope_interleaved", None)
+            # What remains is the scaling spec, e.g. {"rope_type": "yarn", "factor": 4.0, ...}.
+            rope_scaling = (
+                rope_params if rope_params.get("rope_type", "default") != "default" else None
             )
         else:
             rope_scaling = getattr(config, "rope_scaling", None)
@@ -148,12 +155,6 @@ class ModelConfig:
         # Hybrid linear-attention (Gated DeltaNet) layout, present only on Qwen3.5.
         layer_types = getattr(config, "layer_types", None)
         layer_types = tuple(layer_types) if layer_types is not None else None
-
-        # Interleaved mRoPE section (Qwen3.5), inside rope_parameters.
-        mrope_section = None
-        if rope_params is not None:
-            ms = getattr(rope_params, "mrope_section", None)
-            mrope_section = tuple(ms) if ms is not None else None
 
         # Vision tower + multimodal token ids (from the top-level multimodal config).
         vc = getattr(top, "vision_config", None)
