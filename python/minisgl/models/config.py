@@ -137,6 +137,7 @@ class ModelConfig:
         partial_rotary_factor = getattr(config, "partial_rotary_factor", 1.0)
         if rope_params is not None:
             rope_scaling = None
+            print(rope_params)
             rope_theta = getattr(rope_params, "rope_theta")
             partial_rotary_factor = getattr(
                 rope_params, "partial_rotary_factor", partial_rotary_factor
