@@ -36,6 +36,9 @@ from minisgl.models.qwen3_5_vision import Qwen3_5VisionModel
 _MODEL_ID = "Qwen/Qwen3.5-0.8B"
 _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+torch.backends.cuda.matmul.allow_tf32 = False
+torch.backends.cudnn.allow_tf32 = False
+
 
 @functools.lru_cache(maxsize=1)
 def _make_hf_model():
