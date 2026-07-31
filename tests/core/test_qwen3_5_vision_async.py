@@ -1,8 +1,9 @@
 """Stage-2 tests: async-reasoning (shared-cache) with an image in the prompt.
 
-Gated on a GPU, the Qwen3.5-0.8B checkpoint, and the HF multimodal dump
-``tmp/qwen3_5_0.8B_ref.npz`` (produced by ``tmp/vis_ref.py`` in the isolated
-transformers-5.12.1 env, which also stores a greedy continuation).
+Gated on a GPU and on ``Qwen/Qwen3.5-0.8B`` being loadable through
+``transformers``.  The HF ground truth (prompts, a greedy continuation, and
+last-token logits) is computed in-process on CPU/fp32 before the engine
+initializes CUDA, and compared against:
 
   - single-worker AR over an image prompt greedy-matches HF ``generate``;
   - a 2-worker (thinker/writer-style) group over the image prompt decodes
@@ -12,65 +13,103 @@ transformers-5.12.1 env, which also stores a greedy continuation).
 
 Run::
 
-    HF_HOME=/mnt/LLM CUDA_VISIBLE_DEVICES=3 pytest tests/core/test_qwen3_5_vision_async.py -v
+    CUDA_VISIBLE_DEVICES=3 pytest tests/core/test_qwen3_5_vision_async.py -v
 """
 
 from __future__ import annotations
 
-import glob
-import os
+import functools
 
 import pytest
 import torch
 
-_REF = os.path.join(os.path.dirname(__file__), "..", "resources", "qwen3_5_0.8B_ref.npz")
-_REF_2IMG = os.path.join(os.path.dirname(__file__), "..", "resources", "qwen3_5_0.8B_ref_2img.npz")
-_CKPT = glob.glob("/mnt/LLM/hub/models--Qwen--Qwen3.5-0.8B/snapshots/*/")
+_MODEL_ID = "Qwen/Qwen3.5-0.8B"
+_GREEDY_TOKENS = 16
 
 
 def _skip_reason():
     if not torch.cuda.is_available():
         return "no CUDA"
-    if not _CKPT:
-        return "checkpoint missing"
-    if not os.path.exists(_REF):
-        return f"missing {_REF}"
-    return None
+    try:
+        from transformers import AutoConfig
 
-
-def _skip_reason_2img():
-    if not torch.cuda.is_available() or not _CKPT:
-        return "no CUDA / checkpoint"
-    if not os.path.exists(_REF_2IMG):
-        return f"{_REF_2IMG} not found"
+        AutoConfig.from_pretrained(_MODEL_ID)  # cheap: config only
+    except Exception as e:  # noqa: BLE001
+        return f"{_MODEL_ID} unavailable: {type(e).__name__}: {e}"
     return None
 
 
 _SKIP = _skip_reason()
 requires_env = pytest.mark.skipif(_SKIP is not None, reason=_SKIP or "")
 
-_SKIP_2IMG = _skip_reason_2img()
-requires_env_2img = pytest.mark.skipif(_SKIP_2IMG is not None, reason=_SKIP_2IMG or "")
-
 _CACHE = {}
+
+
+def _hf_inputs(processor, num_images: int):
+    """Processor output for a prompt with ``num_images`` deterministic images."""
+    import numpy as np
+    from PIL import Image
+
+    rng = np.random.default_rng(0)
+    content = [
+        {"type": "image", "image": Image.fromarray(rng.integers(0, 256, (64, 96, 3), dtype=np.uint8))}
+        for _ in range(num_images)
+    ]
+    content.append({"type": "text", "text": "Describe the image."})
+    return processor.apply_chat_template(
+        [{"role": "user", "content": content}],
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _hf_reference():
+    """HF ground truth: one- and two-image prompts, a greedy continuation of the
+    single-image prompt, and HF's last-token logits for the two-image prompt.
+
+    Runs on CPU/fp32 and frees the model afterwards -- it must not touch CUDA,
+    since Engine asserts CUDA isn't already initialized.
+    """
+    from transformers import AutoModelForImageTextToText, AutoProcessor
+
+    processor = AutoProcessor.from_pretrained(_MODEL_ID)
+    model = AutoModelForImageTextToText.from_pretrained(
+        _MODEL_ID, dtype=torch.float32, device_map="cpu"
+    ).eval()
+    one, two = _hf_inputs(processor, 1), _hf_inputs(processor, 2)
+    with torch.no_grad():
+        greedy = model.generate(**one, max_new_tokens=_GREEDY_TOKENS, do_sample=False)
+        last_logits = model(**two).logits[0, -1].float()
+    ref = {
+        "one": one,
+        "two": two,
+        "greedy_ids": greedy[0, one["input_ids"].shape[-1] :].tolist(),
+        "last_logits": last_logits,
+    }
+    del model
+    return ref
 
 
 def _build():
     # One engine per process (Engine asserts CUDA isn't already initialized), shared
     # across the tests below.
     if "engine" not in _CACHE:
-        import numpy as np
+        from huggingface_hub import snapshot_download
         from minisgl.distributed import DistributedInfo
         from minisgl.engine import Engine, EngineConfig
         from minisgl.models.qwen3_5_mrope import get_rope_index
         from minisgl.shared_cache import SharedCacheSession
 
-        ref = np.load(_REF)
-        input_ids = torch.tensor(ref["input_ids"], dtype=torch.int32)
-        pixel_values = torch.tensor(ref["pixel_values"], dtype=torch.float32)
-        grid = torch.tensor(ref["image_grid_thw"], dtype=torch.long)
+        ref = _hf_reference()  # before Engine: CPU only
+        input_ids = ref["one"]["input_ids"][0].to(torch.int32)
+        pixel_values = ref["one"]["pixel_values"].float()
+        grid = ref["one"]["image_grid_thw"]
         cfg = EngineConfig(
-            model_path=_CKPT[0], tp_info=DistributedInfo(0, 1), dtype=torch.bfloat16,
+            model_path=snapshot_download(_MODEL_ID), tp_info=DistributedInfo(0, 1),
+            dtype=torch.bfloat16,
             max_running_req=4, num_page_override=4096, max_seq_len_override=4096,
         )
         engine = Engine(cfg)
@@ -114,7 +153,7 @@ def test_ar_image_single_worker_matches_hf_greedy():
     from minisgl.shared_cache import WorkerGroup
 
     engine, session, input_ids, pixel_values, grid, mrope, ref = _build()
-    hf = ref["greedy_ids"].tolist()
+    hf = ref["greedy_ids"]
     N = len(hf)
     prompt = session.create_block()
     first = int(session.prefill_block(
@@ -178,26 +217,25 @@ def test_refresh_block_equals_fresh_prefill():
     assert torch.allclose(lr, lf, atol=1e-4), f"max|Δ|={ (lr - lf).abs().max().item() }"
 
 
-@requires_env_2img
+@requires_env
 def test_two_image_prefill_matches_hf():
     """A prompt with TWO images prefills to the same next-token as HF (multi-image
     path: get_rope_index over 2 grids + vision tower over 2 images + scatter)."""
-    import numpy as np
     import torch.nn.functional as F
 
     _build()
-    session, mc = _CACHE["session"], _CACHE["mc"]
+    session, mc, ref = _CACHE["session"], _CACHE["mc"], _CACHE["ref"]
     from minisgl.models.qwen3_5_mrope import get_rope_index
 
-    ref = np.load(_REF_2IMG)
-    ids = torch.tensor(ref["input_ids"], dtype=torch.int32)
-    pv = torch.tensor(ref["pixel_values"], dtype=torch.float32)
-    grid = torch.tensor(ref["image_grid_thw"], dtype=torch.long)  # [2, 3]
+    ids = ref["two"]["input_ids"][0].to(torch.int32)
+    pv = ref["two"]["pixel_values"].float()
+    grid = ref["two"]["image_grid_thw"]  # [2, 3]
+    assert grid.shape[0] == 2
     mrope = get_rope_index(ids.long(), mc.image_token_id, mc.vision_config.spatial_merge_size, grid)
     logits = session.prefill_block(
         session.create_block(), ids, pixel_values=pv, image_grid_thw=grid, mrope_positions=mrope
     )[0].float().cpu()
-    hf = torch.tensor(ref["last_logits"])
+    hf = ref["last_logits"]
     assert torch.equal(logits.argmax(), hf.argmax()), (int(logits.argmax()), int(hf.argmax()))
     assert F.cosine_similarity(logits, hf, dim=0).item() > 0.99
 
