@@ -40,9 +40,7 @@ _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 @functools.lru_cache(maxsize=1)
 def _make_hf_model():
     """HF reference model + processor."""
-    model = AutoModelForImageTextToText.from_pretrained(
-        _MODEL_ID, dtype=torch.float32, device_map=_DEVICE
-    ).eval()
+    model = AutoModelForImageTextToText.from_pretrained(_MODEL_ID, dtype=torch.float32, device_map=_DEVICE).eval()
     return model, AutoProcessor.from_pretrained(_MODEL_ID)
 
 
