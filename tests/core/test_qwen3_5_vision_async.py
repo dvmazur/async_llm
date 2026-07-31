@@ -27,7 +27,7 @@ import torch
 import torch.nn.functional as F
 
 from huggingface_hub import snapshot_download
-from minisgl.distributed import DistributedInfo
+from minisgl.distributed import DistributedInfo, set_tp_info
 from minisgl.engine import Engine, EngineConfig
 from minisgl.shared_cache import SharedCacheSession
 from minisgl.models.qwen3_5_mrope import get_rope_index
@@ -71,24 +71,24 @@ def _make_hf_reference():
 
 @functools.lru_cache(maxsize=1)
 def _build_async_engine():
-    cfg = EngineConfig(
-        model_path=snapshot_download(_MODEL_ID), tp_info=DistributedInfo(0, 1),
-        dtype=torch.bfloat16,
-        max_running_req=4, num_page_override=4096, max_seq_len_override=4096,
-    )
     try:
         set_tp_info(rank=0, size=1)
     except Exception:
         pass  # already set
+    engine_config = EngineConfig(
+        model_path=snapshot_download(_MODEL_ID), tp_info=DistributedInfo(0, 1),
+        dtype=torch.bfloat16,
+        max_running_req=4, num_page_override=4096, max_seq_len_override=4096,
+    )
 
-    engine = Engine(cfg)  # Engine asserts that cuda is not initialized, so it is created first
+    engine = Engine(engine_config)  # Engine asserts that cuda is not initialized, so it is created first
     ref = _make_hf_reference()  # compute reference model after engine is already initialized
     input_ids = ref["one"]["input_ids"][0].to(torch.int32)
     pixel_values = ref["one"]["pixel_values"].float()
     grid = ref["one"]["image_grid_thw"]
 
     session = SharedCacheSession(engine)
-    config = cfg.model_config
+    config = engine_config.model_config
     mrope = get_rope_index(
         input_ids.long(), config.image_token_id, config.vision_config.spatial_merge_size, grid
     )
