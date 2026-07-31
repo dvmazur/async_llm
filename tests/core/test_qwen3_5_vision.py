@@ -20,15 +20,23 @@ from __future__ import annotations
 
 import functools
 
+import pytest
+
 import torch
 
 from minisgl.models.qwen3_5_mrope import get_rope_index
+from minisgl.distributed import set_tp_info
+from minisgl.models import ModelConfig
+from minisgl.models.qwen3_5_vision import Qwen3_5VisionModel
+
 
 _MODEL_ID = "Qwen/Qwen3.5-0.8B"
 
 
-def _rel(a: torch.Tensor, b: torch.Tensor) -> float:
-    return (a.float() - b.float()).norm().item() / max(b.float().norm().item(), 1e-30)
+try:
+    set_tp_info(rank=0, size=1)
+except Exception:
+    pass  # already set
 
 
 @functools.lru_cache(maxsize=1)
@@ -52,7 +60,7 @@ def _hf_inputs(processor, num_images: int):
 
     rng = np.random.default_rng(0)
     content = [
-        {"type": "image", "image": Image.fromarray(rng.integers(0, 256, (16, 24, 3), dtype=np.uint8))}
+        {"type": "image", "image": Image.fromarray(rng.integers(0, 256, (64, 96, 3), dtype=np.uint8))}
         for _ in range(num_images)
     ]
     content.append({"type": "text", "text": "Describe the image."})
@@ -94,11 +102,9 @@ def test_get_rope_index_image_compression():
 # --- HF-ground-truth tests (gated) -----------------------------------------
 
 
-def _check_rope_index_against_hf(num_images: int):
-    hf = _hf()
-    if hf is None:
-        return
-    model, processor = hf
+@pytest.mark.parametrize("num_images", [1, 2])
+def test_get_rope_index_matches_hf(num_images: int):
+    model, processor = _hf()
     inputs = _hf_inputs(processor, num_images)
     grid = inputs["image_grid_thw"]
     assert grid.shape[0] == num_images
@@ -112,33 +118,13 @@ def _check_rope_index_against_hf(num_images: int):
         expected, _ = model.model.get_rope_index(
             inputs["input_ids"],
             image_grid_thw=grid,
+            mm_token_type_ids=inputs["mm_token_type_ids"],
             attention_mask=inputs.get("attention_mask"),
         )
     assert torch.equal(got, expected[:, 0].long())
 
-
-def test_get_rope_index_matches_hf():
-    _check_rope_index_against_hf(1)
-
-
-def test_get_rope_index_two_images_matches_hf():
-    _check_rope_index_against_hf(2)
-
-
 def test_vision_tower_matches_hf():
-    hf = _hf()
-    if hf is None:
-        return
-    from minisgl.distributed import set_tp_info
-
-    try:
-        set_tp_info(rank=0, size=1)
-    except Exception:
-        pass  # already set
-    from minisgl.models import ModelConfig
-    from minisgl.models.qwen3_5_vision import Qwen3_5VisionModel
-
-    model, processor = hf
+    model, processor = _hf()
     hf_vis = model.model.visual
     cfg = ModelConfig.from_hf(model.config)
     vis = Qwen3_5VisionModel(cfg.vision_config)  # cpu, fp32
@@ -155,7 +141,7 @@ def test_vision_tower_matches_hf():
         ref = hf_vis(pixel_values, grid).pooler_output
     if isinstance(ref, tuple):  # (embeds, deepstack_features)
         ref = ref[0]
-    rel = _rel(out, ref)
+    rel = (out.float() - ref.float()).norm().item() / max(out.float().norm().item(), 1e-30)
     assert rel < 1e-4, f"vision tower relL2={rel:.2e}"
 
 
