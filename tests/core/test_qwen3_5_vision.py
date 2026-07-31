@@ -130,7 +130,7 @@ def test_vision_tower_matches_hf():
     model, processor = _make_hf_model()
     hf_vis = model.model.visual
     cfg = ModelConfig.from_hf(model.config)
-    vis = Qwen3_5VisionModel(cfg.vision_config).to(_DEVICE)  # fp32
+    vis = Qwen3_5VisionModel(cfg.vision_config)
     keys = set(vis.state_dict().keys())
     sd = {k: v.detach().float() for k, v in hf_vis.state_dict().items() if k in keys}
     assert set(sd.keys()) == keys, keys - set(sd.keys())
