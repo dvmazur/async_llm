@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict
 
-from transformers import PretrainedConfig
+from transformers import PreTrainedConfig
 
 
 @dataclass(frozen=True)
@@ -111,11 +111,11 @@ class ModelConfig:
         return 2 * self.linear_key_dim + self.linear_value_dim
 
     @classmethod
-    def from_hf(cls, config: PretrainedConfig) -> ModelConfig:
+    def from_hf(cls, config: PreTrainedConfig) -> ModelConfig:
         top = config  # original (multimodal) config, before swapping to text_config
         if hasattr(config, "text_config") and config.text_config is not None:
             config = config.text_config
-            for attr in ("architectures", "rope_theta", "rope_scaling"):
+            for attr in ("architectures", "rope_parameters"):
                 if not getattr(config, attr, None) and getattr(top, attr, None):
                     setattr(config, attr, getattr(top, attr))
 
