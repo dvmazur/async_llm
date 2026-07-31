@@ -22,7 +22,11 @@ import functools
 
 import pytest
 
+import numpy as np
+from PIL import Image
 import torch
+
+from transformers import AutoModelForImageTextToText, AutoProcessor
 
 from minisgl.models.qwen3_5_mrope import get_rope_index
 from minisgl.distributed import set_tp_info
@@ -39,16 +43,9 @@ torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
 
 
-try:
-    set_tp_info(rank=0, size=1)
-except Exception:
-    pass  # already set
-
-
 @functools.lru_cache(maxsize=1)
 def _make_hf_model():
     """HF reference model + processor."""
-    from transformers import AutoModelForImageTextToText, AutoProcessor
     model = AutoModelForImageTextToText.from_pretrained(
         _MODEL_ID, dtype=torch.float32, device_map=_DEVICE
     ).eval()
@@ -57,8 +54,6 @@ def _make_hf_model():
 
 def _make_hf_inputs(processor, num_images: int):
     """Processor output for a prompt with ``num_images`` deterministic images."""
-    import numpy as np
-    from PIL import Image
 
     rng = np.random.default_rng(0)
     content = [
