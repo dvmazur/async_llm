@@ -19,7 +19,6 @@ dependencies = [
 
 [project.scripts]
 async-thoughts = "async_thoughts.__main__:main"
-vision-demo = "async_thoughts.vision_demo:main"
 
 [tool.setuptools.packages.find]
 include = ["async_thoughts*"]
