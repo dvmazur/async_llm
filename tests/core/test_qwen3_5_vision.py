@@ -56,7 +56,7 @@ def _make_hf_inputs(processor, num_images: int):
     """Processor output for a prompt with ``num_images`` deterministic images."""
 
     rng = np.random.default_rng(42)
-    x = np.linspace(0, 1, w, dtype=np.float32)
+    x = np.linspace(0, 1, 96, dtype=np.float32)
     first_image = np.stack([255 * x, 255 * (1 - x), 255 * x], axis=-1).astype(np.uint8)
     content = ([first_image] if num_images > 0 else []) + [
         {"type": "image", "image": Image.fromarray(rng.integers(0, 256, (64, 96, 3), dtype=np.uint8))}
