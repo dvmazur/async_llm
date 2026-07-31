@@ -137,13 +137,13 @@ class ModelConfig:
         mrope_section = None
         if rope_params is not None:
             rope_params = dict(rope_params)
-            rope_theta = rope_params.pop("rope_theta")
-            partial_rotary_factor = rope_params.pop("partial_rotary_factor", partial_rotary_factor)
+            rope_theta = rope_params.get("rope_theta")
+            partial_rotary_factor = rope_params.get("partial_rotary_factor", partial_rotary_factor)
             # mrope_* describe the position-id layout, not rope scaling (transformers keeps
             # them out of rope validation), so strip them from the scaling dict.
-            ms = rope_params.pop("mrope_section", None)
+            ms = rope_params.get("mrope_section", None)
             mrope_section = tuple(ms) if ms is not None else None
-            rope_params.pop("mrope_interleaved", None)
+            rope_params.get("mrope_interleaved", None)
             # What remains is the scaling spec, e.g. {"rope_type": "yarn", "factor": 4.0, ...}.
             rope_scaling = (
                 rope_params if rope_params.get("rope_type", "default") != "default" else None
