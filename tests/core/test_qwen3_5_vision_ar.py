@@ -1,7 +1,7 @@
 """Stage-2 tests: async-reasoning (shared-cache) with an image in the prompt.
 
 Gated on a GPU, the Qwen3.5-0.8B checkpoint, and the HF multimodal dump
-``tmp/vis_ref.npz`` (produced by ``tmp/vis_ref.py`` in the isolated
+``tmp/qwen3_5_0.8B_ref.npz`` (produced by ``tmp/vis_ref.py`` in the isolated
 transformers-5.12.1 env, which also stores a greedy continuation).
 
   - single-worker AR over an image prompt greedy-matches HF ``generate``;
@@ -23,8 +23,8 @@ import os
 import pytest
 import torch
 
-_REF = os.path.join(os.path.dirname(__file__), "..", "..", "tmp", "vis_ref.npz")
-_REF_2IMG = os.path.join(os.path.dirname(__file__), "..", "..", "tmp", "vis_ref_2img.npz")
+_REF = os.path.join(os.path.dirname(__file__), "..", "resources", "qwen3_5_0.8B_ref.npz")
+_REF_2IMG = os.path.join(os.path.dirname(__file__), "..", "resources", "qwen3_5_0.8B_ref_2img.npz")
 _CKPT = glob.glob("/mnt/LLM/hub/models--Qwen--Qwen3.5-0.8B/snapshots/*/")
 
 
@@ -34,7 +34,7 @@ def _skip_reason():
     if not _CKPT:
         return "checkpoint missing"
     if not os.path.exists(_REF):
-        return "tmp/vis_ref.npz missing (run tmp/vis_ref.py)"
+        return f"missing {_REF}"
     return None
 
 
@@ -42,7 +42,7 @@ def _skip_reason_2img():
     if not torch.cuda.is_available() or not _CKPT:
         return "no CUDA / checkpoint"
     if not os.path.exists(_REF_2IMG):
-        return "tmp/vis_ref_2img.npz not found"
+        return f"{_REF_2IMG} not found"
     return None
 
 

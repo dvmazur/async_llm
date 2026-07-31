@@ -5,7 +5,7 @@ Two self-contained CPU tests of the interleaved-mRoPE position logic
 
 Two ground-truth tests are gated on an HF dump produced by
 ``tmp/vis_ref.py`` (in the isolated transformers-5.12.1 env) landing at
-``tmp/vis_ref.npz`` plus the Qwen3.5-0.8B checkpoint being present:
+``tmp/qwen3_5_0.8B_ref.npz`` plus the Qwen3.5-0.8B checkpoint being present:
   - ``get_rope_index`` matches HF exactly;
   - the ported vision tower matches HF's vision embeddings (fp32).
 
@@ -25,7 +25,7 @@ import torch
 
 from minisgl.models.qwen3_5_mrope import get_rope_index
 
-_REF = os.path.join(os.path.dirname(__file__), "..", "..", "tmp", "vis_ref.npz")
+_REF = os.path.join(os.path.dirname(__file__), "..", "resources", "qwen3_5_0.8B_ref.npz")
 _CKPT = glob.glob("/mnt/LLM/hub/models--Qwen--Qwen3.5-0.8B/snapshots/*/")
 
 
@@ -64,7 +64,7 @@ def test_get_rope_index_image_compression():
 
 def test_get_rope_index_matches_hf_dump():
     if not os.path.exists(_REF):
-        print("  [skip] tmp/vis_ref.npz not found (run tmp/vis_ref.py)")
+        print("  [skip] tmp/qwen3_5_0.8B_ref.npz not found (run tmp/vis_ref.py)")
         return
     import numpy as np
 
@@ -76,9 +76,9 @@ def test_get_rope_index_matches_hf_dump():
 
 
 def test_get_rope_index_two_images_matches_hf_dump():
-    ref2 = os.path.join(os.path.dirname(__file__), "..", "..", "tmp", "vis_ref_2img.npz")
+    ref2 = os.path.join(os.path.dirname(__file__), "..", "..", "tmp", "qwen3_5_0.8B_ref.npz")
     if not os.path.exists(ref2):
-        print("  [skip] tmp/vis_ref_2img.npz not found")
+        print("  [skip] tmp/qwen3_5_0.8B_ref.npz not found")
         return
     import numpy as np
 
