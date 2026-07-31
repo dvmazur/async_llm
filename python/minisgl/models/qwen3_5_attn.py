@@ -27,7 +27,6 @@ class Qwen3_5Attention(BaseOP):
 
     def __init__(self, config: ModelConfig, kv_idx: int):
         print(config, config.mrope_section)
-        raise
         self.num_qo_heads = config.num_qo_heads
         self.num_kv_heads = config.num_kv_heads
         self.head_dim = config.head_dim
