@@ -12,7 +12,7 @@ transformers-5.12.1 env, which also stores a greedy continuation).
 
 Run::
 
-    HF_HOME=/mnt/LLM CUDA_VISIBLE_DEVICES=3 pytest tests/core/test_qwen3_5_vision_ar.py -v
+    HF_HOME=/mnt/LLM CUDA_VISIBLE_DEVICES=3 pytest tests/core/test_qwen3_5_vision_async.py -v
 """
 
 from __future__ import annotations
