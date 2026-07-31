@@ -36,7 +36,6 @@ def _hf():
     """HF reference model (cpu, fp32) + processor, or ``None`` if unavailable."""
     try:
         from transformers import AutoModelForImageTextToText, AutoProcessor
-
         model = AutoModelForImageTextToText.from_pretrained(
             _MODEL_ID, dtype=torch.float32, device_map="cpu"
         ).eval()
@@ -53,7 +52,7 @@ def _hf_inputs(processor, num_images: int):
 
     rng = np.random.default_rng(0)
     content = [
-        {"type": "image", "image": Image.fromarray(rng.integers(0, 256, (64, 96, 3), dtype=np.uint8))}
+        {"type": "image", "image": Image.fromarray(rng.integers(0, 256, (16, 24, 3), dtype=np.uint8))}
         for _ in range(num_images)
     ]
     content.append({"type": "text", "text": "Describe the image."})
@@ -153,7 +152,7 @@ def test_vision_tower_matches_hf():
     grid = inputs["image_grid_thw"]
     with torch.no_grad():
         out = vis.forward(pixel_values, grid)
-        ref = hf_vis(pixel_values, grid)
+        ref = hf_vis(pixel_values, grid).pooler_output
     if isinstance(ref, tuple):  # (embeds, deepstack_features)
         ref = ref[0]
     rel = _rel(out, ref)
