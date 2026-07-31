@@ -40,20 +40,16 @@ except Exception:
 
 
 @functools.lru_cache(maxsize=1)
-def _hf():
+def _make_hf_model():
     """HF reference model (cpu, fp32) + processor, or ``None`` if unavailable."""
-    try:
-        from transformers import AutoModelForImageTextToText, AutoProcessor
-        model = AutoModelForImageTextToText.from_pretrained(
-            _MODEL_ID, dtype=torch.float32, device_map="cpu"
-        ).eval()
-        return model, AutoProcessor.from_pretrained(_MODEL_ID)
-    except Exception as e:  # noqa: BLE001
-        print(f"  [skip] cannot load {_MODEL_ID}: {type(e).__name__}: {e}")
-        return None
+    from transformers import AutoModelForImageTextToText, AutoProcessor
+    model = AutoModelForImageTextToText.from_pretrained(
+        _MODEL_ID, dtype=torch.float32, device_map="cpu"
+    ).eval()
+    return model, AutoProcessor.from_pretrained(_MODEL_ID)
 
 
-def _hf_inputs(processor, num_images: int):
+def _make_hf_inputs(processor, num_images: int):
     """Processor output for a prompt with ``num_images`` deterministic images."""
     import numpy as np
     from PIL import Image
@@ -104,8 +100,8 @@ def test_get_rope_index_image_compression():
 
 @pytest.mark.parametrize("num_images", [1, 2])
 def test_get_rope_index_matches_hf(num_images: int):
-    model, processor = _hf()
-    inputs = _hf_inputs(processor, num_images)
+    model, processor = _make_hf_model()
+    inputs = _make_hf_inputs(processor, num_images)
     grid = inputs["image_grid_thw"]
     assert grid.shape[0] == num_images
     got = get_rope_index(
@@ -124,7 +120,7 @@ def test_get_rope_index_matches_hf(num_images: int):
     assert torch.equal(got, expected[:, 0].long())
 
 def test_vision_tower_matches_hf():
-    model, processor = _hf()
+    model, processor = _make_hf_model()
     hf_vis = model.model.visual
     cfg = ModelConfig.from_hf(model.config)
     vis = Qwen3_5VisionModel(cfg.vision_config)  # cpu, fp32
@@ -133,7 +129,7 @@ def test_vision_tower_matches_hf():
     assert set(sd.keys()) == keys, keys - set(sd.keys())
     vis.load_state_dict(sd)
 
-    inputs = _hf_inputs(processor, 1)
+    inputs = _make_hf_inputs(processor, 1)
     pixel_values = inputs["pixel_values"].float()
     grid = inputs["image_grid_thw"]
     with torch.no_grad():
@@ -146,16 +142,4 @@ def test_vision_tower_matches_hf():
 
 
 if __name__ == "__main__":
-    import sys
-
-    fns = [v for n, v in sorted(globals().items()) if n.startswith("test_") and callable(v)]
-    failed = 0
-    for fn in fns:
-        try:
-            fn()
-            print(f"PASS {fn.__name__}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL {fn.__name__}: {type(e).__name__}: {e}")
-    print(f"\n{len(fns) - failed}/{len(fns)} passed")
-    sys.exit(1 if failed else 0)
+    pytest.main([__file__, "-v"])
