@@ -55,7 +55,7 @@ def _make_hf_model():
 def _make_hf_inputs(processor, num_images: int):
     """Processor output for a prompt with ``num_images`` deterministic images."""
 
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(42)
     content = [
         {"type": "image", "image": Image.fromarray(rng.integers(0, 256, (64, 96, 3), dtype=np.uint8))}
         for _ in range(num_images)

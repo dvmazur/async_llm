@@ -20,7 +20,6 @@ Run::
 from __future__ import annotations
 
 import functools
-import gc
 
 import pytest
 import torch
@@ -40,12 +39,6 @@ _MODEL_ID = "Qwen/Qwen3.5-0.8B"
 _GREEDY_TOKENS = 16
 
 
-def _on_device(inputs):
-    """Kwargs for the HF reference on ``_DEVICE``, leaving ``inputs`` (which the
-    engine later consumes) untouched -- ``BatchFeature.to`` mutates in place."""
-    return {k: (v.to(_DEVICE) if isinstance(v, torch.Tensor) else v) for k, v in inputs.items()}
-
-
 @functools.lru_cache(maxsize=1)
 def _make_hf_reference():
     """HF ground truth: one- and two-image prompts, a greedy continuation of the
@@ -57,8 +50,8 @@ def _make_hf_reference():
     model, processor = _make_hf_model()
     one, two = _make_hf_inputs(processor, 1), _make_hf_inputs(processor, 2)
     with torch.no_grad():
-        greedy = model.generate(**_on_device(one), max_new_tokens=_GREEDY_TOKENS, do_sample=False)
-        last_logits = model(**_on_device(two)).logits[0, -1].float().cpu()
+        greedy = model.generate(**one.to(_DEVICE), max_new_tokens=_GREEDY_TOKENS, do_sample=False)
+        last_logits = model(**two.to(_DEVICE)).logits[0, -1].float().cpu()
     return dict(one=one, two=two, greedy_ids=greedy[0, one["input_ids"].shape[-1] :].tolist(), last_logits=last_logits)
 
 
