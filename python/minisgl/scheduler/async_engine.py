@@ -256,7 +256,9 @@ class AsyncCacheEngine:
         except Exception as exc:
             req.future.set_exception(exc)
             raise
-        req.future.set_result(logits[0] if req.return_logits else None)
+        # Clone outside inference mode: callers own the returned row and may
+        # mutate it (e.g. a forbid mask before their own argmax).
+        req.future.set_result(logits[0].clone() if req.return_logits else None)
 
     def _run_decode_batch(self) -> None:
         # Take everything queued; reject late duplicates of an output block
@@ -283,12 +285,12 @@ class AsyncCacheEngine:
             # awaiting coroutines hang forever instead of seeing the error.
             group = WorkerGroup([req.context for req in reqs])
             input_ids = torch.tensor([req.input_id for req in reqs], dtype=torch.int32)
+            logits = self.session.decode_step(group, input_ids)  # inference_mode inside
+            # Snapshot raw rows before the forbid mask mutates them.  Cloned
+            # outside inference mode: callers own these rows and may mutate
+            # them (e.g. a forbid mask before their own argmax).
+            raw_logits = {i: logits[i].clone() for i, req in enumerate(reqs) if req.return_logits}
             with torch.inference_mode():
-                logits = self.session.decode_step(group, input_ids)
-                # Snapshot raw rows before the forbid mask mutates them.
-                raw_logits = {
-                    i: logits[i].clone() for i, req in enumerate(reqs) if req.return_logits
-                }
                 next_tokens = self._select_tokens(logits, reqs)
         except Exception as exc:
             for req in reqs:
