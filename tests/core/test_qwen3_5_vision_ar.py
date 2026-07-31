@@ -12,7 +12,7 @@ transformers-5.12.1 env, which also stores a greedy continuation).
 
 Run::
 
-    HF_HOME=/mnt/LLM CUDA_VISIBLE_DEVICES=3 .venv/bin/python tests/core/test_qwen3_5_vision_ar.py
+    HF_HOME=/mnt/LLM CUDA_VISIBLE_DEVICES=3 pytest tests/core/test_qwen3_5_vision_ar.py -v
 """
 
 from __future__ import annotations
@@ -20,9 +20,11 @@ from __future__ import annotations
 import glob
 import os
 
+import pytest
 import torch
 
 _REF = os.path.join(os.path.dirname(__file__), "..", "..", "tmp", "vis_ref.npz")
+_REF_2IMG = os.path.join(os.path.dirname(__file__), "..", "..", "tmp", "vis_ref_2img.npz")
 _CKPT = glob.glob("/mnt/LLM/hub/models--Qwen--Qwen3.5-0.8B/snapshots/*/")
 
 
@@ -35,6 +37,20 @@ def _skip_reason():
         return "tmp/vis_ref.npz missing (run tmp/vis_ref.py)"
     return None
 
+
+def _skip_reason_2img():
+    if not torch.cuda.is_available() or not _CKPT:
+        return "no CUDA / checkpoint"
+    if not os.path.exists(_REF_2IMG):
+        return "tmp/vis_ref_2img.npz not found"
+    return None
+
+
+_SKIP = _skip_reason()
+requires_env = pytest.mark.skipif(_SKIP is not None, reason=_SKIP or "")
+
+_SKIP_2IMG = _skip_reason_2img()
+requires_env_2img = pytest.mark.skipif(_SKIP_2IMG is not None, reason=_SKIP_2IMG or "")
 
 _CACHE = {}
 
@@ -93,11 +109,8 @@ def _synthetic_image_block(mc, h: int, w: int, seed: int):
     return ids, pixel_values, grid, mrope
 
 
+@requires_env
 def test_ar_image_single_worker_matches_hf_greedy():
-    reason = _skip_reason()
-    if reason:
-        print(f"  [skip] {reason}")
-        return
     from minisgl.shared_cache import WorkerGroup
 
     engine, session, input_ids, pixel_values, grid, mrope, ref = _build()
@@ -117,11 +130,8 @@ def test_ar_image_single_worker_matches_hf_greedy():
     assert ar == hf, f"AR {ar}\nHF {hf}"
 
 
+@requires_env
 def test_ar_image_two_workers_decode():
-    reason = _skip_reason()
-    if reason:
-        print(f"  [skip] {reason}")
-        return
     from minisgl.shared_cache import WorkerGroup
 
     engine, session, input_ids, pixel_values, grid, mrope, ref = _build()
@@ -138,14 +148,11 @@ def test_ar_image_two_workers_decode():
     assert w1.num_tokens == 8 and w2.num_tokens == 8
 
 
+@requires_env
 def test_refresh_block_equals_fresh_prefill():
     """``refresh_block`` (free + re-prefill in place) must reproduce a fresh prefill
     of the same content bit-for-bit, including a *different* image size (changing
     token count + mRoPE span).  This is the updatable-image-in-context hook."""
-    reason = _skip_reason()
-    if reason:
-        print(f"  [skip] {reason}")
-        return
     _build()  # ensure the shared engine/session + model config are cached
     session, mc = _CACHE["session"], _CACHE["mc"]
 
@@ -171,26 +178,18 @@ def test_refresh_block_equals_fresh_prefill():
     assert torch.allclose(lr, lf, atol=1e-4), f"max|Δ|={ (lr - lf).abs().max().item() }"
 
 
+@requires_env_2img
 def test_two_image_prefill_matches_hf():
     """A prompt with TWO images prefills to the same next-token as HF (multi-image
     path: get_rope_index over 2 grids + vision tower over 2 images + scatter)."""
-    if not torch.cuda.is_available() or not _CKPT:
-        print("  [skip] no CUDA / checkpoint")
-        return
-    import os
-
     import numpy as np
     import torch.nn.functional as F
 
-    ref2 = os.path.join(os.path.dirname(__file__), "..", "..", "tmp", "vis_ref_2img.npz")
-    if not os.path.exists(ref2):
-        print("  [skip] tmp/vis_ref_2img.npz not found")
-        return
     _build()
     session, mc = _CACHE["session"], _CACHE["mc"]
     from minisgl.models.qwen3_5_mrope import get_rope_index
 
-    ref = np.load(ref2)
+    ref = np.load(_REF_2IMG)
     ids = torch.tensor(ref["input_ids"], dtype=torch.int32)
     pv = torch.tensor(ref["pixel_values"], dtype=torch.float32)
     grid = torch.tensor(ref["image_grid_thw"], dtype=torch.long)  # [2, 3]
@@ -204,16 +203,4 @@ def test_two_image_prefill_matches_hf():
 
 
 if __name__ == "__main__":
-    import sys
-
-    fns = [v for n, v in sorted(globals().items()) if n.startswith("test_") and callable(v)]
-    failed = 0
-    for fn in fns:
-        try:
-            fn()
-            print(f"PASS {fn.__name__}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL {fn.__name__}: {type(e).__name__}: {e}")
-    print(f"\n{len(fns) - failed}/{len(fns)} passed")
-    sys.exit(1 if failed else 0)
+    pytest.main([__file__, "-v"])
