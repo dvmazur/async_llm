@@ -4,8 +4,8 @@ Two CPU tests of the interleaved-mRoPE position logic
 (``minisgl.models.qwen3_5_mrope.get_rope_index``) always run.
 
 Three ground-truth tests are gated on the HF ``Qwen/Qwen3.5-0.8B``
-checkpoint being loadable through ``transformers``; they run it on CPU in
-fp32 and compare against it directly:
+checkpoint being loadable through ``transformers``; they run it on CUDA
+if available (else CPU) in fp32 and compare against it directly:
   - ``get_rope_index`` matches HF exactly (one and two images);
   - the ported vision tower matches HF's vision embeddings (fp32).
 
@@ -31,6 +31,12 @@ from minisgl.models.qwen3_5_vision import Qwen3_5VisionModel
 
 
 _MODEL_ID = "Qwen/Qwen3.5-0.8B"
+_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Keep fp32 actually fp32 on Ampere+, otherwise the 1e-4 tolerance below is
+# swamped by TF32 rounding in matmul/conv.
+torch.backends.cuda.matmul.allow_tf32 = False
+torch.backends.cudnn.allow_tf32 = False
 
 
 try:
@@ -41,10 +47,10 @@ except Exception:
 
 @functools.lru_cache(maxsize=1)
 def _make_hf_model():
-    """HF reference model (cpu, fp32) + processor, or ``None`` if unavailable."""
+    """HF reference model + processor."""
     from transformers import AutoModelForImageTextToText, AutoProcessor
     model = AutoModelForImageTextToText.from_pretrained(
-        _MODEL_ID, dtype=torch.float32, device_map="cpu"
+        _MODEL_ID, dtype=torch.float32, device_map=_DEVICE
     ).eval()
     return model, AutoProcessor.from_pretrained(_MODEL_ID)
 
@@ -110,28 +116,29 @@ def test_get_rope_index_matches_hf(num_images: int):
         spatial_merge_size=2,
         image_grid_thw=grid,
     )
+    hf_inputs = inputs.to(_DEVICE)
     with torch.no_grad():
         expected, _ = model.model.get_rope_index(
-            inputs["input_ids"],
-            image_grid_thw=grid,
-            mm_token_type_ids=inputs["mm_token_type_ids"],
-            attention_mask=inputs.get("attention_mask"),
+            hf_inputs["input_ids"],
+            image_grid_thw=hf_inputs["image_grid_thw"],
+            mm_token_type_ids=hf_inputs["mm_token_type_ids"],
+            attention_mask=hf_inputs.get("attention_mask"),
         )
-    assert torch.equal(got, expected[:, 0].long())
+    assert torch.equal(got, expected[:, 0].long().cpu())
 
 def test_vision_tower_matches_hf():
     model, processor = _make_hf_model()
     hf_vis = model.model.visual
     cfg = ModelConfig.from_hf(model.config)
-    vis = Qwen3_5VisionModel(cfg.vision_config)  # cpu, fp32
+    vis = Qwen3_5VisionModel(cfg.vision_config).to(_DEVICE)  # fp32
     keys = set(vis.state_dict().keys())
     sd = {k: v.detach().float() for k, v in hf_vis.state_dict().items() if k in keys}
     assert set(sd.keys()) == keys, keys - set(sd.keys())
     vis.load_state_dict(sd)
 
     inputs = _make_hf_inputs(processor, 1)
-    pixel_values = inputs["pixel_values"].float()
-    grid = inputs["image_grid_thw"]
+    pixel_values = inputs["pixel_values"].float().to(_DEVICE)
+    grid = inputs["image_grid_thw"].to(_DEVICE)
     with torch.no_grad():
         out = vis.forward(pixel_values, grid)
         ref = hf_vis(pixel_values, grid).pooler_output
