@@ -27,7 +27,7 @@ import torch
 import torch.nn.functional as F
 
 from huggingface_hub import snapshot_download
-from minisgl.distributed import DistributedInfo, set_tp_info
+from minisgl.distributed import DistributedInfo
 from minisgl.engine import Engine, EngineConfig
 from minisgl.shared_cache import SharedCacheSession
 from minisgl.models.qwen3_5_mrope import get_rope_index
@@ -59,22 +59,11 @@ def _make_hf_reference():
     with torch.no_grad():
         greedy = model.generate(**_on_device(one), max_new_tokens=_GREEDY_TOKENS, do_sample=False)
         last_logits = model(**_on_device(two)).logits[0, -1].float().cpu()
-    ref = dict(one=one, two=two, greedy_ids=greedy[0, one["input_ids"].shape[-1] :].tolist(), last_logits=last_logits)
-
-    del model, processor, greedy
-    _make_hf_model.cache_clear()
-    gc.collect()
-    if _DEVICE == "cuda":
-        torch.cuda.empty_cache()
-    return ref
+    return dict(one=one, two=two, greedy_ids=greedy[0, one["input_ids"].shape[-1] :].tolist(), last_logits=last_logits)
 
 
 @functools.lru_cache(maxsize=1)
 def _build_async_engine():
-    try:
-        set_tp_info(rank=0, size=1)
-    except Exception:
-        pass  # already set
     engine_config = EngineConfig(
         model_path=snapshot_download(_MODEL_ID), tp_info=DistributedInfo(0, 1),
         dtype=torch.bfloat16,
