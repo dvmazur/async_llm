@@ -29,7 +29,6 @@ import torch
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
 from minisgl.models.qwen3_5_mrope import get_rope_index
-from minisgl.distributed import set_tp_info
 from minisgl.models import ModelConfig
 from minisgl.models.qwen3_5_vision import Qwen3_5VisionModel
 
