@@ -86,7 +86,7 @@ class SimpleFuture:
 class PrefillRequest:
     token_ids: torch.Tensor  # 1-D int32 cpu
     context: CacheView  # may be empty
-    into: CacheBlock  # block to fill (fresh, or being refreshed in place)
+    into: CacheBlock  # block to fill
     capture_affine: bool
     return_logits: bool  # resolve with last-token logits instead of None
     future: Any  # resolved with logits [vocab] if return_logits else None
@@ -94,7 +94,6 @@ class PrefillRequest:
     pixel_values: Optional[torch.Tensor] = None
     image_grid_thw: Optional[torch.Tensor] = None
     mrope_positions: Optional[torch.Tensor] = None
-    refresh: bool = False  # re-encode `into` in place (free its pages first)
 
 
 @dataclass
@@ -173,14 +172,13 @@ class AsyncCacheEngine:
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
         mrope_positions: Optional[torch.Tensor] = None,
-        refresh: bool = False,
     ) -> Any:
-        """Queue a prefill of *into*; returns a future resolved with the last-token
+        """
+        Queue a prefill of *into*; returns a future resolved with the last-token
         logits ``[vocab]`` if *return_logits* else None.  Pass ``pixel_values`` /
         ``image_grid_thw`` / ``mrope_positions`` for a multimodal (image) block.
-        Set ``refresh`` to re-encode a non-empty block in place (frees its pages
-        first) — the hook for an updatable image."""
-        assert refresh or into.num_tokens == 0, "prefill target must be a fresh block (or refresh=True)"
+        """
+        assert into.num_tokens == 0, "prefill target must be an empty block"
         future = self.future_factory()
         self._prefill_queue.append(
             PrefillRequest(
@@ -193,7 +191,6 @@ class AsyncCacheEngine:
                 pixel_values=pixel_values,
                 image_grid_thw=image_grid_thw,
                 mrope_positions=mrope_positions,
-                refresh=refresh,
             )
         )
         return future
@@ -243,7 +240,6 @@ class AsyncCacheEngine:
         return None
 
     def _run_prefill(self, req: PrefillRequest) -> None:
-        prefill = self.session.refresh_block if req.refresh else self.session.prefill_block
         kwargs = {"context": req.context or None, "capture_affine": req.capture_affine}
         # Only forward image kwargs for multimodal blocks, so the text path keeps the
         # original prefill_block signature (stub/non-vision sessions stay compatible).
@@ -252,7 +248,7 @@ class AsyncCacheEngine:
             kwargs["image_grid_thw"] = req.image_grid_thw
             kwargs["mrope_positions"] = req.mrope_positions
         try:
-            logits = prefill(req.into, req.token_ids, **kwargs)
+            logits = self.session.prefill_block(req.into, req.token_ids, **kwargs)
         except Exception as exc:
             req.future.set_exception(exc)
             raise

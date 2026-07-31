@@ -7,10 +7,7 @@ CPU) before the engine initializes its KV pool -- the reference model is then
 freed -- and compared against:
 
   - single-worker AR over an image prompt greedy-matches HF ``generate``;
-  - a 2-worker (thinker/writer-style) group over the image prompt decodes
-    coherent, distinct streams;
-  - ``refresh_block`` (in-place re-prefill, e.g. an updatable image of a
-    different size) reproduces a fresh prefill of the same content.
+  - a 2-worker (thinker/writer-style) group over the image prompt decodes coherent, distinct streams;
 
 Run::
 
@@ -130,8 +127,8 @@ def test_ar_image_two_workers_decode():
     assert w1.num_tokens == 8 and w2.num_tokens == 8
 
 
-def test_refresh_block_equals_fresh_prefill():
-    """``refresh_block`` (free + re-prefill in place) must reproduce a fresh prefill
+def test_repeated_block_prefill_equals_fresh_prefill():
+    """Prefill after clear must reproduce a fresh prefill
     of the same content bit-for-bit, including a *different* image size (changing
     token count + mRoPE span).  This is the updatable-image-in-context hook."""
     engine, session, input_ids, pixel_values, grid, mrope, ref, mc = _build_async_engine()
@@ -144,7 +141,7 @@ def test_refresh_block_equals_fresh_prefill():
         fresh, ids_b, pixel_values=pv_b, image_grid_thw=grid_b, mrope_positions=mr_b
     )[0].float()
 
-    # Prefill image A, then refresh in place to image B.
+    # Prefill image A, then refresh (clear-prefill) in place to image B.
     reused = session.create_block()
     session.prefill_block(reused, ids_a, pixel_values=pv_a, image_grid_thw=grid_a, mrope_positions=mr_a)
 

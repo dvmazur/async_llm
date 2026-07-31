@@ -278,37 +278,6 @@ class AsyncLLM:
         result = await future
         return result[1] if return_logits else None
 
-    async def refresh_block(
-        self,
-        block: CacheBlock,
-        token_ids: TokenIds,
-        *,
-        context: Optional[CacheView] = None,
-        capture_affine: bool = True,
-        pixel_values: Optional[torch.Tensor] = None,
-        image_grid_thw: Optional[torch.Tensor] = None,
-        mrope_positions: Optional[torch.Tensor] = None,
-    ) -> PrefillResult:
-        """Re-encode an existing *block* in place (frees its pages, keeps its
-        identity so live contexts stay valid), through the engine tick so it is
-        serialized with decodes.  The hook for an updatable image: pass fresh
-        ``pixel_values`` / ``image_grid_thw`` / ``mrope_positions`` to swap the
-        image while surrounding blocks (prompt, generated reasoning) are kept."""
-        self._ensure_loop()
-        future = self.async_engine.submit_prefill(
-            _as_token_tensor(token_ids),
-            into=block,
-            context=context,
-            capture_affine=capture_affine,
-            pixel_values=pixel_values,
-            image_grid_thw=image_grid_thw,
-            mrope_positions=mrope_positions,
-            refresh=True,
-        )
-        self._work_event.set()
-        await future
-        return PrefillResult(block=block, logits=None)
-
     async def async_generate(
         self,
         context: AsyncContext,
