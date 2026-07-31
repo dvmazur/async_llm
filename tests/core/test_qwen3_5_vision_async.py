@@ -32,7 +32,7 @@ from minisgl.shared_cache import SharedCacheSession
 from minisgl.models.qwen3_5_mrope import get_rope_index
 from minisgl.shared_cache import WorkerGroup
 
-from test_qwen3_5_vision import _make_hf_model, _make_hf_inputs, _DEVICE
+from test_qwen3_5_vision_encoder import _make_hf_model, _make_hf_inputs, _DEVICE
 
 
 _MODEL_ID = "Qwen/Qwen3.5-0.8B"

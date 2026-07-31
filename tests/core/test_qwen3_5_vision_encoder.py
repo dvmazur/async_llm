@@ -11,9 +11,9 @@ if available (else CPU) in fp32 and compare against it directly:
 
 Run::
 
-    uv run pytest tests/core/test_qwen3_5_vision.py -v
+    uv run pytest tests/core/test_qwen3_5_vision_encoder.py -v
     # or standalone:
-    .venv/bin/python tests/core/test_qwen3_5_vision.py
+    .venv/bin/python tests/core/test_qwen3_5_vision_encoder.py
 """
 
 from __future__ import annotations
