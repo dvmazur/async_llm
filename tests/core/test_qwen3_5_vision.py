@@ -58,7 +58,7 @@ def _make_hf_inputs(processor, num_images: int):
     rng = np.random.default_rng(42)
     x = np.linspace(0, 1, 96, dtype=np.float32)
     images = [
-        np.stack([255 * x, 255 * (1 - x), 255 * x], axis=-1).astype(np.uint8)
+        np.broadcast_to(np.stack([255 * x, 255 * (1 - x), 255 * x], axis=-1).astype(np.uint8), (64, 96, 3))
     ] + [rng.integers(0, 256, (64, 96, 3), dtype=np.uint8) for _ in range(num_images - 1)]
     content = [{"type": "image", "image": Image.fromarray(images[i])} for i in range(0, num_images)]
     content.append({"type": "text", "text": "Describe the image."})
