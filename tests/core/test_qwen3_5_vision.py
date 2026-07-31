@@ -1,39 +1,72 @@
 """Tests for Qwen3.5 vision support.
 
-Two self-contained CPU tests of the interleaved-mRoPE position logic
+Two CPU tests of the interleaved-mRoPE position logic
 (``minisgl.models.qwen3_5_mrope.get_rope_index``) always run.
 
-Two ground-truth tests are gated on an HF dump produced by
-``tmp/vis_ref.py`` (in the isolated transformers-5.12.1 env) landing at
-``tmp/qwen3_5_0.8B_ref.npz`` plus the Qwen3.5-0.8B checkpoint being present:
-  - ``get_rope_index`` matches HF exactly;
+Three ground-truth tests are gated on the HF ``Qwen/Qwen3.5-0.8B``
+checkpoint being loadable through ``transformers``; they run it on CPU in
+fp32 and compare against it directly:
+  - ``get_rope_index`` matches HF exactly (one and two images);
   - the ported vision tower matches HF's vision embeddings (fp32).
 
 Run::
 
     uv run pytest tests/core/test_qwen3_5_vision.py -v
     # or standalone:
-    HF_HOME=/mnt/LLM .venv/bin/python tests/core/test_qwen3_5_vision.py
+    .venv/bin/python tests/core/test_qwen3_5_vision.py
 """
 
 from __future__ import annotations
 
-import glob
-import os
+import functools
 
 import torch
 
 from minisgl.models.qwen3_5_mrope import get_rope_index
 
-_REF = os.path.join(os.path.dirname(__file__), "..", "resources", "qwen3_5_0.8B_ref.npz")
-_CKPT = glob.glob("/mnt/LLM/hub/models--Qwen--Qwen3.5-0.8B/snapshots/*/")
+_MODEL_ID = "Qwen/Qwen3.5-0.8B"
 
 
 def _rel(a: torch.Tensor, b: torch.Tensor) -> float:
     return (a.float() - b.float()).norm().item() / max(b.float().norm().item(), 1e-30)
 
 
-# --- self-contained mRoPE position tests -----------------------------------
+@functools.lru_cache(maxsize=1)
+def _hf():
+    """HF reference model (cpu, fp32) + processor, or ``None`` if unavailable."""
+    try:
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+
+        model = AutoModelForImageTextToText.from_pretrained(
+            _MODEL_ID, dtype=torch.float32, device_map="cpu"
+        ).eval()
+        return model, AutoProcessor.from_pretrained(_MODEL_ID)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [skip] cannot load {_MODEL_ID}: {type(e).__name__}: {e}")
+        return None
+
+
+def _hf_inputs(processor, num_images: int):
+    """Processor output for a prompt with ``num_images`` deterministic images."""
+    import numpy as np
+    from PIL import Image
+
+    rng = np.random.default_rng(0)
+    content = [
+        {"type": "image", "image": Image.fromarray(rng.integers(0, 256, (64, 96, 3), dtype=np.uint8))}
+        for _ in range(num_images)
+    ]
+    content.append({"type": "text", "text": "Describe the image."})
+    return processor.apply_chat_template(
+        [{"role": "user", "content": content}],
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    )
+
+
+# --- mRoPE position tests ---------------------------------------------------
 
 
 def test_get_rope_index_text_only():
@@ -62,39 +95,41 @@ def test_get_rope_index_image_compression():
 # --- HF-ground-truth tests (gated) -----------------------------------------
 
 
-def test_get_rope_index_matches_hf_dump():
-    if not os.path.exists(_REF):
-        print("  [skip] tmp/qwen3_5_0.8B_ref.npz not found (run tmp/vis_ref.py)")
+def _check_rope_index_against_hf(num_images: int):
+    hf = _hf()
+    if hf is None:
         return
-    import numpy as np
+    model, processor = hf
+    inputs = _hf_inputs(processor, num_images)
+    grid = inputs["image_grid_thw"]
+    assert grid.shape[0] == num_images
+    got = get_rope_index(
+        inputs["input_ids"][0],
+        image_token_id=model.config.image_token_id,
+        spatial_merge_size=2,
+        image_grid_thw=grid,
+    )
+    with torch.no_grad():
+        expected, _ = model.model.get_rope_index(
+            inputs["input_ids"],
+            image_grid_thw=grid,
+            attention_mask=inputs.get("attention_mask"),
+        )
+    assert torch.equal(got, expected[:, 0].long())
 
-    ref = np.load(_REF)
-    ids = torch.tensor(ref["input_ids"], dtype=torch.long)
-    grid = torch.tensor(ref["image_grid_thw"], dtype=torch.long)
-    got = get_rope_index(ids, image_token_id=248056, spatial_merge_size=2, image_grid_thw=grid)
-    assert torch.equal(got, torch.tensor(ref["rope_positions"], dtype=torch.long))
+
+def test_get_rope_index_matches_hf():
+    _check_rope_index_against_hf(1)
 
 
-def test_get_rope_index_two_images_matches_hf_dump():
-    ref2 = os.path.join(os.path.dirname(__file__), "..", "..", "tmp", "qwen3_5_0.8B_ref.npz")
-    if not os.path.exists(ref2):
-        print("  [skip] tmp/qwen3_5_0.8B_ref.npz not found")
+def test_get_rope_index_two_images_matches_hf():
+    _check_rope_index_against_hf(2)
+
+
+def test_vision_tower_matches_hf():
+    hf = _hf()
+    if hf is None:
         return
-    import numpy as np
-
-    ref = np.load(ref2)
-    ids = torch.tensor(ref["input_ids"], dtype=torch.long)
-    grid = torch.tensor(ref["image_grid_thw"], dtype=torch.long)  # [2, 3]
-    got = get_rope_index(ids, image_token_id=248056, spatial_merge_size=2, image_grid_thw=grid)
-    assert torch.equal(got, torch.tensor(ref["rope_positions"], dtype=torch.long))
-
-
-def test_vision_tower_matches_hf_dump():
-    if not os.path.exists(_REF) or not _CKPT:
-        print("  [skip] dump or checkpoint missing")
-        return
-    import numpy as np
-    import safetensors
     from minisgl.distributed import set_tp_info
 
     try:
@@ -103,30 +138,25 @@ def test_vision_tower_matches_hf_dump():
         pass  # already set
     from minisgl.models import ModelConfig
     from minisgl.models.qwen3_5_vision import Qwen3_5VisionModel
-    from minisgl.utils import cached_load_hf_config
 
-    path = _CKPT[0]
-    cfg = ModelConfig.from_hf(cached_load_hf_config(path))
+    model, processor = hf
+    hf_vis = model.model.visual
+    cfg = ModelConfig.from_hf(model.config)
     vis = Qwen3_5VisionModel(cfg.vision_config)  # cpu, fp32
-    sd = {}
     keys = set(vis.state_dict().keys())
-    for f in sorted(glob.glob(path + "*.safetensors")):
-        with safetensors.safe_open(f, framework="pt") as sf:
-            for k in sf.keys():
-                if k.startswith("model.visual."):
-                    name = k[len("model.visual.") :]
-                    if name in keys:
-                        sd[name] = sf.get_tensor(k).float()
+    sd = {k: v.detach().float() for k, v in hf_vis.state_dict().items() if k in keys}
     assert set(sd.keys()) == keys, keys - set(sd.keys())
     vis.load_state_dict(sd)
 
-    ref = np.load(_REF)
+    inputs = _hf_inputs(processor, 1)
+    pixel_values = inputs["pixel_values"].float()
+    grid = inputs["image_grid_thw"]
     with torch.no_grad():
-        out = vis.forward(
-            torch.tensor(ref["pixel_values"], dtype=torch.float32),
-            torch.tensor(ref["image_grid_thw"], dtype=torch.long),
-        )
-    rel = _rel(out, torch.tensor(ref["vision_embeds"], dtype=torch.float32))
+        out = vis.forward(pixel_values, grid)
+        ref = hf_vis(pixel_values, grid)
+    if isinstance(ref, tuple):  # (embeds, deepstack_features)
+        ref = ref[0]
+    rel = _rel(out, ref)
     assert rel < 1e-4, f"vision tower relL2={rel:.2e}"
 
 
