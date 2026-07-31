@@ -236,7 +236,7 @@ class TestQueueMechanics:
     def test_prefill_requires_fresh_block(self, stub_engine):
         engine, _ = stub_engine
         block = _prefilled_block(engine, [1])
-        with pytest.raises(AssertionError, match="fresh block"):
+        with pytest.raises(AssertionError, match="empty block"):
             engine.submit_prefill(torch.tensor([2], dtype=torch.int32), into=block)
 
     def test_failure_propagates_to_all_futures(self, stub_engine):

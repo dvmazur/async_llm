@@ -136,10 +136,14 @@ class AsyncLLM:
         into: Optional[CacheBlock] = None,
         capture_affine: bool = True,
         return_logits: bool = False,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.Tensor] = None,
+        mrope_positions: Optional[torch.Tensor] = None,
     ) -> CausalLMOutput:
         """Prefill a fresh block (created here unless *into* is given) with
         *token_ids*, attending to *context*; returns the block, plus the
-        last-token logits when *return_logits* is set."""
+        last-token logits when *return_logits* is set.  Pass ``pixel_values`` /
+        ``image_grid_thw`` / ``mrope_positions`` for a multimodal (image) block."""
         self._ensure_loop()
         block = into if into is not None else self.async_engine.create_block()
         future = self.async_engine.submit_prefill(
@@ -148,6 +152,9 @@ class AsyncLLM:
             context=context,
             capture_affine=capture_affine,
             return_logits=return_logits,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mrope_positions=mrope_positions,
         )
         self._work_event.set()
         logits = await future

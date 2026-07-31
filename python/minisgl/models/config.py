@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict
 
-from transformers import PretrainedConfig
+from transformers import PreTrainedConfig
 
 
 @dataclass(frozen=True)
@@ -13,6 +13,23 @@ class RotaryConfig:
     max_position: int
     base: float
     scaling: Dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class VisionConfig:
+    """Qwen3.5 vision-tower config (ViT). Present only for the multimodal path."""
+
+    depth: int
+    hidden_size: int
+    num_heads: int
+    intermediate_size: int
+    in_channels: int
+    patch_size: int
+    temporal_patch_size: int
+    spatial_merge_size: int
+    out_hidden_size: int
+    num_position_embeddings: int
+    hidden_act: str
 
 
 @dataclass(frozen=True)
@@ -43,6 +60,17 @@ class ModelConfig:
     linear_key_head_dim: int = 0
     linear_value_head_dim: int = 0
     linear_conv_kernel_dim: int = 0
+    # Multimodal (Qwen3.5 vision) extensions; None/absent for text-only models.
+    mrope_section: tuple[int, ...] | None = None
+    vision_config: VisionConfig | None = None
+    image_token_id: int = -1
+    video_token_id: int = -1
+    vision_start_token_id: int = -1
+    vision_end_token_id: int = -1
+
+    @property
+    def is_multimodal(self) -> bool:
+        return self.vision_config is not None
 
     @property
     def is_moe(self) -> bool:
@@ -83,11 +111,11 @@ class ModelConfig:
         return 2 * self.linear_key_dim + self.linear_value_dim
 
     @classmethod
-    def from_hf(cls, config: PretrainedConfig) -> ModelConfig:
+    def from_hf(cls, config: PreTrainedConfig) -> ModelConfig:
+        top = config  # original (multimodal) config, before swapping to text_config
         if hasattr(config, "text_config") and config.text_config is not None:
-            top = config
             config = config.text_config
-            for attr in ("architectures", "rope_theta", "rope_scaling"):
+            for attr in ("architectures", "rope_parameters"):
                 if not getattr(config, attr, None) and getattr(top, attr, None):
                     setattr(config, attr, getattr(top, attr))
 
@@ -103,15 +131,22 @@ class ModelConfig:
         norm_topk_prob = getattr(config, "norm_topk_prob", False)
         architectures = getattr(config, "architectures", ["LlamaForCausalLM"])
 
-        # Rope: Qwen3.5 nests it under `rope_parameters`; Llama/Qwen use a direct
-        # `rope_theta`; Mistral keeps it inside the `rope_scaling` dict.
+        # Rope: Qwen3.5 nests under `rope_parameters`; Llama/Qwen use a direct `rope_theta`; Mistral uses `rope_scaling`
         rope_params = getattr(config, "rope_parameters", None)
         partial_rotary_factor = getattr(config, "partial_rotary_factor", 1.0)
+        mrope_section = None
         if rope_params is not None:
-            rope_scaling = None
-            rope_theta = getattr(rope_params, "rope_theta")
-            partial_rotary_factor = getattr(
-                rope_params, "partial_rotary_factor", partial_rotary_factor
+            rope_params = dict(rope_params)
+            rope_theta = rope_params.get("rope_theta")
+            partial_rotary_factor = rope_params.get("partial_rotary_factor", partial_rotary_factor)
+            # mrope_* describe the position-id layout, not rope scaling (transformers keeps
+            # them out of rope validation), so strip them from the scaling dict.
+            ms = rope_params.get("mrope_section", None)
+            mrope_section = tuple(ms) if ms is not None else None
+            rope_params.get("mrope_interleaved", None)
+            # What remains is the scaling spec, e.g. {"rope_type": "yarn", "factor": 4.0, ...}.
+            rope_scaling = (
+                rope_params if rope_params.get("rope_type", "default") != "default" else None
             )
         else:
             rope_scaling = getattr(config, "rope_scaling", None)
@@ -120,6 +155,24 @@ class ModelConfig:
         # Hybrid linear-attention (Gated DeltaNet) layout, present only on Qwen3.5.
         layer_types = getattr(config, "layer_types", None)
         layer_types = tuple(layer_types) if layer_types is not None else None
+
+        # Vision tower + multimodal token ids (from the top-level multimodal config).
+        vc = getattr(top, "vision_config", None)
+        vision_config = None
+        if vc is not None:
+            vision_config = VisionConfig(
+                depth=vc.depth,
+                hidden_size=vc.hidden_size,
+                num_heads=vc.num_heads,
+                intermediate_size=vc.intermediate_size,
+                in_channels=getattr(vc, "in_channels", 3),
+                patch_size=vc.patch_size,
+                temporal_patch_size=vc.temporal_patch_size,
+                spatial_merge_size=vc.spatial_merge_size,
+                out_hidden_size=vc.out_hidden_size,
+                num_position_embeddings=vc.num_position_embeddings,
+                hidden_act=getattr(vc, "hidden_act", "gelu_pytorch_tanh"),
+            )
 
         return cls(
             num_layers=config.num_hidden_layers,
@@ -153,4 +206,10 @@ class ModelConfig:
             linear_key_head_dim=getattr(config, "linear_key_head_dim", 0),
             linear_value_head_dim=getattr(config, "linear_value_head_dim", 0),
             linear_conv_kernel_dim=getattr(config, "linear_conv_kernel_dim", 0),
+            mrope_section=mrope_section,
+            vision_config=vision_config,
+            image_token_id=getattr(top, "image_token_id", -1),
+            video_token_id=getattr(top, "video_token_id", -1),
+            vision_start_token_id=getattr(top, "vision_start_token_id", -1),
+            vision_end_token_id=getattr(top, "vision_end_token_id", -1),
         )

@@ -196,7 +196,7 @@ def _build_minisgl_cos_sin_cache(
     rope_type only; the kernel tests pick configs without rope_scaling).
     """
     head_dim = _head_dim(config)
-    base = float(config.rope_theta)
+    base = float(getattr(config, "rope_parameters", None).get("rope_theta"))
     max_pos = int(config.max_position_embeddings)
     inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, dtype=torch.float) / head_dim))
     t = torch.arange(max_pos, dtype=torch.float)

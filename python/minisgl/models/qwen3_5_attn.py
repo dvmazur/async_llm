@@ -34,6 +34,7 @@ class Qwen3_5Attention(BaseOP):
         self._kv_idx = kv_idx
         self.rotary_dim = int(self.head_dim * config.partial_rotary_factor)
         self._rope_base = config.rotary_config.base
+        self._mrope_section = config.mrope_section  # None for text-only
         self._inv_freq: torch.Tensor | None = None
 
         # qkv_proj output layout: [q+gate (2*qo_dim) | k (kv_dim) | v (kv_dim)]
@@ -55,6 +56,29 @@ class Qwen3_5Attention(BaseOP):
                 )
             )
         freqs = positions.float()[:, None] * self._inv_freq[None, :]  # (T, rotary_dim/2)
+        return self._apply_from_freqs(x, freqs)
+
+    def _apply_mrope(self, x: torch.Tensor, mrope_positions: torch.Tensor) -> torch.Tensor:
+        """Interleaved mRoPE: ``mrope_positions`` is ``[3, T]`` (temporal/height/width).
+        Frequency slots are interleaved across the 3 axes per ``mrope_section``."""
+        self._ensure_inv_freq(x.device)
+        p = mrope_positions.to(x.device).float()  # (3, T)
+        freqs3 = p[:, :, None] * self._inv_freq[None, None, :]  # (3, T, rotary_dim/2)
+        freqs = freqs3[0].clone()  # start from all-T
+        for dim, offset in ((1, 1), (2, 2)):  # H, W
+            length = self._mrope_section[dim] * 3
+            idx = slice(offset, length, 3)
+            freqs[..., idx] = freqs3[dim][..., idx]
+        return self._apply_from_freqs(x, freqs)
+
+    def _ensure_inv_freq(self, device) -> None:
+        if self._inv_freq is None:
+            self._inv_freq = 1.0 / (
+                self._rope_base
+                ** (torch.arange(0, self.rotary_dim, 2, dtype=torch.float32, device=device) / self.rotary_dim)
+            )
+
+    def _apply_from_freqs(self, x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
         emb = torch.cat((freqs, freqs), dim=-1)  # (T, rotary_dim)
         cos = emb.cos().to(x.dtype)[:, None, :]
         sin = emb.sin().to(x.dtype)[:, None, :]
@@ -87,8 +111,13 @@ class Qwen3_5Attention(BaseOP):
                 q.reshape(-1, self.qo_dim), k.reshape(-1, self.kv_dim), v, self._kv_idx, ctx.batch
             )
         else:
-            q = self._apply_rope(q, ctx.batch.positions)
-            k = self._apply_rope(k, ctx.batch.positions)
+            mrope = ctx.batch.mrope_positions
+            if mrope is not None:
+                q = self._apply_mrope(q, mrope)
+                k = self._apply_mrope(k, mrope)
+            else:
+                q = self._apply_rope(q, ctx.batch.positions)
+                k = self._apply_rope(k, ctx.batch.positions)
             o = ctx.attn_backend.forward(q, k.reshape(-1, self.kv_dim), v, self._kv_idx, ctx.batch)
 
         o = o.view(-1, self.num_qo_heads, self.head_dim) * torch.sigmoid(gate)

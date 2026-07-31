@@ -86,10 +86,14 @@ class SimpleFuture:
 class PrefillRequest:
     token_ids: torch.Tensor  # 1-D int32 cpu
     context: CacheView  # may be empty
-    into: CacheBlock  # fresh block to fill
+    into: CacheBlock  # block to fill
     capture_affine: bool
     return_logits: bool  # resolve with last-token logits instead of None
     future: Any  # resolved with logits [vocab] if return_logits else None
+    # Multimodal (Qwen3.5 vision): the vision tower + interleaved mRoPE run when set.
+    pixel_values: Optional[torch.Tensor] = None
+    image_grid_thw: Optional[torch.Tensor] = None
+    mrope_positions: Optional[torch.Tensor] = None
 
 
 @dataclass
@@ -165,10 +169,16 @@ class AsyncCacheEngine:
         context: Optional[CacheView] = None,
         capture_affine: bool = True,
         return_logits: bool = False,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.Tensor] = None,
+        mrope_positions: Optional[torch.Tensor] = None,
     ) -> Any:
-        """Queue a prefill of *into* (a fresh block); returns a future resolved
-        with the last-token logits ``[vocab]`` if *return_logits* else None."""
-        assert into.num_tokens == 0, "prefill target must be a fresh block"
+        """
+        Queue a prefill of *into*; returns a future resolved with the last-token
+        logits ``[vocab]`` if *return_logits* else None.  Pass ``pixel_values`` /
+        ``image_grid_thw`` / ``mrope_positions`` for a multimodal (image) block.
+        """
+        assert into.num_tokens == 0, "prefill target must be an empty block"
         future = self.future_factory()
         self._prefill_queue.append(
             PrefillRequest(
@@ -178,6 +188,9 @@ class AsyncCacheEngine:
                 capture_affine=capture_affine,
                 return_logits=return_logits,
                 future=future,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                mrope_positions=mrope_positions,
             )
         )
         return future
@@ -227,13 +240,15 @@ class AsyncCacheEngine:
         return None
 
     def _run_prefill(self, req: PrefillRequest) -> None:
+        kwargs = {"context": req.context or None, "capture_affine": req.capture_affine}
+        # Only forward image kwargs for multimodal blocks, so the text path keeps the
+        # original prefill_block signature (stub/non-vision sessions stay compatible).
+        if req.pixel_values is not None:
+            kwargs["pixel_values"] = req.pixel_values
+            kwargs["image_grid_thw"] = req.image_grid_thw
+            kwargs["mrope_positions"] = req.mrope_positions
         try:
-            logits = self.session.prefill_block(
-                req.into,
-                req.token_ids,
-                context=req.context or None,
-                capture_affine=req.capture_affine,
-            )
+            logits = self.session.prefill_block(req.into, req.token_ids, **kwargs)
         except Exception as exc:
             req.future.set_exception(exc)
             raise
@@ -260,9 +275,12 @@ class AsyncCacheEngine:
         if not reqs:
             return
 
-        group = WorkerGroup([req.context for req in reqs])
-        input_ids = torch.tensor([req.input_id for req in reqs], dtype=torch.int32)
         try:
+            # Build the group/inputs INSIDE the try too: anything that raises here
+            # (e.g. a bad cache view) must fail the popped futures, otherwise the
+            # awaiting coroutines hang forever instead of seeing the error.
+            group = WorkerGroup([req.context for req in reqs])
+            input_ids = torch.tensor([req.input_id for req in reqs], dtype=torch.int32)
             logits = self.session.decode_step(group, input_ids)  # inference_mode inside
             # Snapshot raw rows before the forbid mask mutates them.  Cloned
             # outside inference mode: callers own these rows and may mutate
@@ -272,7 +290,8 @@ class AsyncCacheEngine:
                 next_tokens = self._select_tokens(logits, reqs)
         except Exception as exc:
             for req in reqs:
-                req.future.set_exception(exc)
+                if not req.future.done():
+                    req.future.set_exception(exc)
             raise
         for i, (req, token) in enumerate(zip(reqs, next_tokens.tolist())):
             token = int(token)

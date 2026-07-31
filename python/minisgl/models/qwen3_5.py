@@ -51,6 +51,14 @@ class Qwen3_5Model(BaseOP):
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
         )
+        self._image_token_id = config.image_token_id
+        if config.is_multimodal:
+            from .qwen3_5_vision import Qwen3_5VisionModel
+
+            assert config.vision_config.out_hidden_size == config.hidden_size, (
+                "vision out_hidden_size must equal LM hidden_size for the embed scatter"
+            )
+            self.visual = Qwen3_5VisionModel(config.vision_config)
         layers = []
         kv_idx = linear_idx = 0
         for layer_id in range(config.num_layers):
@@ -62,8 +70,18 @@ class Qwen3_5Model(BaseOP):
         self.layers = OPList(layers)
         self.norm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         x = self.embed_tokens.forward(input_ids)
+        if pixel_values is not None:
+            image_embeds = self.visual.forward(pixel_values, image_grid_thw)  # (n_img, hidden)
+            mask = input_ids == self._image_token_id
+            x = x.clone()
+            x[mask] = image_embeds.to(x.dtype)
         residual: torch.Tensor | None = None
         for layer in self.layers.op_list:
             x, residual = layer.forward(x, residual)
@@ -82,7 +100,12 @@ class Qwen3_5ForCausalLM(BaseLLMModel):
         super().__init__()
 
     def forward(self) -> torch.Tensor:
-        output = self.model.forward(get_global_ctx().batch.input_ids)
+        batch = get_global_ctx().batch
+        output = self.model.forward(
+            batch.input_ids,
+            pixel_values=batch.pixel_values,
+            image_grid_thw=batch.image_grid_thw,
+        )
         logits = self.lm_head.forward(output)
         return logits
 

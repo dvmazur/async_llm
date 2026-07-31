@@ -147,6 +147,10 @@ class SharedCacheSession:
             num_qo_heads = attn0.num_qo_heads
             num_kv_heads = attn0.num_kv_heads
             head_dim = attn0.head_dim
+            # Interleaved mRoPE in the shared-cache op for Qwen3.5 (needed so AR decode
+            # attends correctly to image keys in the prompt; reduces to 1D for text).
+            sc_mrope = attn0._mrope_section
+            sc_rope_base = attn0._rope_base
             gdn0 = _first_gdn(engine)  # Qwen3_5GatedDeltaNet
             self.sc_gdn: SharedCacheGDN | None = SharedCacheGDN(
                 num_heads=gdn0.num_v_heads,
@@ -166,6 +170,8 @@ class SharedCacheSession:
             num_qo_heads = attn0.num_qo_heads
             num_kv_heads = attn0.num_kv_heads
             head_dim = attn0.head_dim
+            sc_mrope = None
+            sc_rope_base = None
             self.sc_gdn = None
 
         self.sc_attn = SharedCacheAttention(
@@ -178,6 +184,8 @@ class SharedCacheSession:
             dtype=self.kv_cache.dtype,
             device=self.device,
             rotary_dim=rotary_dim,
+            mrope_section=sc_mrope,
+            rope_base=sc_rope_base,
         )
 
     # ------------------------------------------------------------------
@@ -202,6 +210,9 @@ class SharedCacheSession:
         input_ids: torch.Tensor,
         context: Optional[List[CacheBlock]] = None,
         capture_affine: bool = True,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.Tensor] = None,
+        mrope_positions: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Prefill a single ``CacheBlock`` with *input_ids* and return logits.
@@ -225,6 +236,16 @@ class SharedCacheSession:
 
         context = [b for b in (context or []) if b.num_tokens > 0]
         if context:
+            if pixel_values is not None:
+                # A mid-sequence image block would need 3D block-relative mRoPE key
+                # rotation in the context-prefill op (query/key positions become the
+                # image grid, not a scalar) -- not implemented.  Prefill an image
+                # block standalone (context=None, root or placed after other blocks
+                # in the decode view) instead; only text blocks context-prefill today.
+                raise NotImplementedError(
+                    "image (pixel_values) in a context prefill is unsupported; "
+                    "prefill image blocks standalone (context=None)"
+                )
             return self._prefill_block_in_context(block, input_ids, context)
 
         page_starts, token_slots = self._alloc_token_storage(seq_len)
@@ -244,6 +265,13 @@ class SharedCacheSession:
                 cache_handle=NULL_CACHE_HANDLE,
             )
             batch = self._build_batch([req], phase="prefill")
+            # Multimodal (Qwen3.5 vision): attach pixel_values/grid + 3D mRoPE positions
+            # so the vision tower + interleaved mRoPE run in the model forward.
+            if pixel_values is not None:
+                batch.pixel_values = pixel_values.to(self.device)
+                batch.image_grid_thw = image_grid_thw.to(self.device)
+            if mrope_positions is not None:
+                batch.mrope_positions = mrope_positions.to(self.device)
             # Throwaway prefills (capture_affine=False) skip the AR path so the
             # GDN layers don't pay the O(seq) affine capture; a from-zero
             # standalone prefill is identical to composing an empty chain.
@@ -252,6 +280,10 @@ class SharedCacheSession:
 
             block.grow_pages(page_starts, seq_len)
             block.token_ids.extend(input_ids.tolist())
+            if mrope_positions is not None:
+                # image tokens compress positions: record the block's mRoPE span so
+                # later decode queries rotate at their true (continued) mRoPE position.
+                block.mrope_span_override = int(mrope_positions.max().item()) + 1
 
             # NOTE: ParallelLMHead.forward already extracts last-token logits
             # for prefill batches, so logits has shape [bs, vocab].
