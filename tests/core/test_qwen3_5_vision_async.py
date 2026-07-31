@@ -147,10 +147,11 @@ def test_refresh_block_equals_fresh_prefill():
     # Prefill image A, then refresh in place to image B.
     reused = session.create_block()
     session.prefill_block(reused, ids_a, pixel_values=pv_a, image_grid_thw=grid_a, mrope_positions=mr_a)
-    lr = session.refresh_block(
+
+    session.free_block(reused)  # clear() (keeps the object) + return pages
+    lr = session.prefill_block(
         reused, ids_b, pixel_values=pv_b, image_grid_thw=grid_b, mrope_positions=mr_b
     )[0].float()
-
     assert reused.num_tokens == fresh.num_tokens, (reused.num_tokens, fresh.num_tokens)
     assert reused.mrope_span == fresh.mrope_span
     assert torch.equal(lr.argmax(), lf.argmax())

@@ -291,46 +291,6 @@ class SharedCacheSession:
         finally:
             self._free_table_idx(table_idx)
 
-    @torch.inference_mode()
-    def refresh_block(
-        self,
-        block: SharedBlock,
-        input_ids: torch.Tensor,
-        context: Optional[List[SharedBlock]] = None,
-        capture_affine: bool = True,
-        pixel_values: Optional[torch.Tensor] = None,
-        image_grid_thw: Optional[torch.Tensor] = None,
-        mrope_positions: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Re-encode an existing block *in place*: free its current pages and
-        re-prefill it from scratch, **keeping the block's identity** so live
-        ``WorkerGroup.cache_structure`` references stay valid.
-
-        Works for any content -- text or image -- and any new length (a resized
-        image changes the token count and the mRoPE span; that is fine).  Blocks
-        downstream in a decode view keep their own cached KV / GDN affine (the
-        fixed-trajectory AR reuse), but their decode-time rotation offsets adapt to
-        this block's new ``mrope_span`` automatically (see
-        ``SharedCacheAttention.prepare``), and the GDN chain recomposes with this
-        block's fresh affine.
-
-        This is the hook for an *updatable image in context*: pass fresh
-        ``pixel_values`` / ``image_grid_thw`` / ``mrope_positions`` to swap the image
-        while the surrounding prompt text and generated reasoning are preserved.
-        Image content is only supported as a standalone (``context=None``) prefill;
-        a text block may be re-encoded in context of earlier blocks.
-        """
-        self.free_block(block)  # clear() (keeps the object) + return pages
-        return self.prefill_block(
-            block,
-            input_ids,
-            context=context,
-            capture_affine=capture_affine,
-            pixel_values=pixel_values,
-            image_grid_thw=image_grid_thw,
-            mrope_positions=mrope_positions,
-        )
-
     def _prefill_block_in_context(
         self,
         block: CacheBlock,
