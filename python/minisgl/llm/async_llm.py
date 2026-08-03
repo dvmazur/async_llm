@@ -237,9 +237,9 @@ class AsyncLLM:
             raise ValueError("prefill mode needs a write_to block")
         if any(b is write_to for b in view[:-1]):
             raise ValueError("write_to must be the last block of cache_view")
-        write_to_in_view = bool(view) and view[-1] is write_to
+        in_view = bool(view) and view[-1] is write_to
 
-        if write_to.num_tokens > 0 and not write_to_in_view:
+        if write_to.num_tokens > 0 and not in_view:
             raise ValueError("cannot extend a non-empty write_to outside cache_view")
 
         # (Conditional) prefill / extension: one forward for all tokens.
@@ -247,7 +247,7 @@ class AsyncLLM:
         future = self.async_engine.submit_prefill(
             ids,
             into=write_to,
-            context=(view[:-1] if write_to_in_view else view) or None,
+            context=(view[:-1] if in_view else view) or None,
             capture_affine=capture_affine,
             return_logits=return_logits,
         )
