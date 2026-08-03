@@ -239,10 +239,6 @@ class AsyncLLM:
             raise ValueError("write_to must be the last block of cache_view")
         in_view = bool(view) and view[-1] is write_to
 
-        # A non-empty write_to is extended by the same prefill (its new tokens
-        # attend causally to the ones already there).  Outside the view that
-        # would be meaningless -- the block's own prefix cannot be excluded from
-        # a causal extension the way the decode path excludes it.
         if write_to.num_tokens > 0 and not in_view:
             raise ValueError("cannot extend a non-empty write_to outside cache_view")
 
