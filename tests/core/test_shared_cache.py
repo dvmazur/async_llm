@@ -91,6 +91,37 @@ class TestSharedBlock:
         assert block.last_page_len == 1
         assert block.token_slots_tensor().tolist() == list(range(9))
 
+    def test_pages_needed(self):
+        block = SharedBlock(torch.device("cpu"), page_size=4)
+        assert block.free_tail == 0
+        assert block.pages_needed(1) == 1 and block.pages_needed(9) == 3
+        block.grow_pages(torch.tensor([0, 4], dtype=torch.int32), 5)
+        assert block.free_tail == 3
+        # the 3 free slots of the last page come first
+        assert block.pages_needed(3) == 0
+        assert block.pages_needed(4) == 1
+        assert block.pages_needed(12) == 3
+
+    def test_grow_pages_extends_non_empty_block(self):
+        block = SharedBlock(torch.device("cpu"), page_size=4)
+        block.grow_pages(torch.tensor([0, 4], dtype=torch.int32), 5)
+        # 3 more tokens fit in the last page's free slots -> no new pages
+        block.grow_pages(torch.tensor([], dtype=torch.int32), 3)
+        assert block.num_tokens == 8 and block.page_starts == [0, 4]
+        assert not block.has_capacity
+        # 5 more need 2 fresh pages
+        block.grow_pages(torch.tensor([8, 12], dtype=torch.int32), 5)
+        assert block.num_tokens == 13
+        assert block.page_starts == [0, 4, 8, 12]
+        assert block.last_page_len == 1
+        assert block.token_slots_tensor().tolist() == list(range(13))
+
+    def test_grow_pages_rejects_wrong_page_count(self):
+        block = SharedBlock(torch.device("cpu"), page_size=4)
+        block.grow_pages(torch.tensor([0], dtype=torch.int32), 2)
+        with pytest.raises(AssertionError, match="grow_pages got"):
+            block.grow_pages(torch.tensor([4], dtype=torch.int32), 2)  # fits in the last page
+
     def test_clear(self):
         block = SharedBlock(torch.device("cpu"), page_size=4)
         block.grow_pages(torch.tensor([8, 12], dtype=torch.int32), 6)
@@ -425,6 +456,121 @@ class TestSharedCacheE2E:
             f"Reordering had no effect on logits (max diff = {diff}). "
             "This suggests RoPE correction is not being applied."
         )
+
+    def test_prefill_extends_non_empty_block(self, engine_and_session):
+        """Prefilling a non-empty block appends: two prefills of a split prompt
+        must land the same tokens, KV and logits as one prefill of the whole."""
+        engine, session = engine_and_session
+        ids = _encode("The capital of France is a city that", E2E_MODEL_PATH)
+        cut = len(ids) // 2
+        assert cut > 0 and cut < len(ids)
+
+        whole = session.create_block()
+        ref_logits = session.prefill_block(whole, ids)
+
+        split = session.create_block()
+        session.prefill_block(split, ids[:cut])
+        assert split.num_tokens == cut
+        logits = session.prefill_block(split, ids[cut:])
+
+        assert split.num_tokens == len(ids)
+        assert split.token_ids == ids.tolist()
+
+        # Layer-0 key parity: the appended keys are rotated at the same
+        # block-relative positions the one-shot prefill used.
+        k_pool = engine.kv_cache.k_cache(0)
+        k_flat = k_pool.reshape(-1, *k_pool.shape[2:])
+
+        def keys_of(blk):
+            return k_flat[blk.token_slots_tensor().to(torch.int64)].float()
+
+        kv_diff = (keys_of(split) - keys_of(whole)).abs().max().item()
+        assert kv_diff < 1e-2, f"extended keys differ from one-shot prefill: {kv_diff}"
+
+        diff = (logits[0] - ref_logits[0]).abs().max().item()
+        print(f"\n[extend prefill] max |logit diff| vs one-shot prefill = {diff}")
+        assert diff < 1e-2, f"extension logits differ from one-shot prefill: {diff}"
+
+        session.free_block(whole)
+        session.free_block(split)
+
+    def test_prefill_extends_non_empty_block_in_context(self, engine_and_session):
+        """Same, with a context view: extending in context must match one
+        context prefill of the concatenated tokens."""
+        engine, session = engine_and_session
+        prompt_ids = _encode("Once upon a time", E2E_MODEL_PATH)
+        tail_ids = _encode(" there was a small village near the sea", E2E_MODEL_PATH)
+        cut = len(tail_ids) // 2
+
+        prompt = session.create_block()
+        session.prefill_block(prompt, prompt_ids)
+
+        whole = session.create_block()
+        ref_logits = session.prefill_block(whole, tail_ids, context=[prompt])
+
+        split = session.create_block()
+        session.prefill_block(split, tail_ids[:cut], context=[prompt])
+        logits = session.prefill_block(split, tail_ids[cut:], context=[prompt])
+
+        assert split.num_tokens == len(tail_ids)
+        diff = (logits[0] - ref_logits[0]).abs().max().item()
+        print(f"\n[extend context prefill] max |logit diff| vs one-shot = {diff}")
+        assert diff < 1e-2, f"in-context extension differs from one-shot prefill: {diff}"
+
+        for blk in (prompt, whole, split):
+            session.free_block(blk)
+
+    def test_prefill_rejects_write_block_in_context(self, engine_and_session):
+        """A non-empty write block listed in its own context would be counted
+        twice (context segment + causal self segment)."""
+        engine, session = engine_and_session
+        ids = _encode("The capital of France is", E2E_MODEL_PATH)
+
+        prompt = session.create_block()
+        session.prefill_block(prompt, ids)
+        blk = session.create_block()
+        # A fresh block in the view is filtered out (empty) -- still allowed.
+        session.prefill_block(blk, ids, context=[prompt, blk])
+        with pytest.raises(ValueError, match="must not appear in context"):
+            session.prefill_block(blk, ids, context=[prompt, blk])
+
+        session.free_block(prompt)
+        session.free_block(blk)
+
+    def test_prefill_extend_matches_decode_growth(self, engine_and_session):
+        """An extension leaves the same block state (tokens, pages, slots) that
+        feeding the tokens through ``decode_step`` would.
+
+        Numeric parity is asserted against the *one-shot prefill* of the whole
+        sequence (see ``test_prefill_extends_non_empty_block``): the two batched
+        kernels agree exactly, whereas lock-step decode -- query rotation plus
+        per-segment LSE merging -- differs from any prefill kernel at bf16."""
+        engine, session = engine_and_session
+        prompt_ids = _encode("The largest planet in our solar system is", E2E_MODEL_PATH)
+        fed = [11, 13, 17, 19]
+
+        ref = session.create_block()
+        session.prefill_block(ref, prompt_ids)
+        group = WorkerGroup(cache_structure=[[ref]])
+        for tok in fed:
+            session.decode_step(group, torch.tensor([tok], dtype=torch.int32))
+
+        ext = session.create_block()
+        session.prefill_block(ext, prompt_ids)
+        session.prefill_block(ext, torch.tensor(fed, dtype=torch.int32))
+
+        assert ext.num_tokens == ref.num_tokens == len(prompt_ids) + len(fed)
+        assert ext.num_pages == ref.num_pages
+        assert ext.last_page_len == ref.last_page_len
+        assert ext.token_ids == ref.token_ids
+        # slots are page-packed in both cases (different pages, same offsets)
+        page_size = session.page_size
+        assert [s % page_size for s in ext.token_slots_tensor().tolist()] == [
+            s % page_size for s in ref.token_slots_tensor().tolist()
+        ]
+
+        session.free_block(ref)
+        session.free_block(ext)
 
 
 # =============================================================================

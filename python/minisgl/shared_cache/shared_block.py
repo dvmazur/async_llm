@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 from minisgl.kvcache import BaseCacheHandle
+from minisgl.utils import div_ceil
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,16 @@ class CacheBlock:
         """Whether the current last page has room for one more token."""
         return self.num_tokens < self.num_pages * self.page_size
 
+    @property
+    def free_tail(self) -> int:
+        """Free token slots left in the current last page (0 if the block is empty)."""
+        return self.num_pages * self.page_size - self.num_tokens
+
+    def pages_needed(self, num_new_tokens: int) -> int:
+        """How many fresh pages appending ``num_new_tokens`` requires: the last
+        page's free slots are filled first, the rest go to new pages."""
+        return div_ceil(max(0, num_new_tokens - self.free_tail), self.page_size)
+
     def page_starts_tensor(self) -> torch.Tensor:
         """Page-start token slots as a device tensor ``[num_pages]``."""
         return torch.tensor(self.page_starts, dtype=torch.int32, device=self.device)
@@ -104,10 +115,17 @@ class CacheBlock:
         return (starts[:, None] + offsets[None, :]).flatten()[: self.num_tokens]
 
     def grow_pages(self, page_starts: torch.Tensor, num_new_tokens: int) -> None:
-        """Record a prefill write: ``num_new_tokens`` tokens packed into the
-        given freshly-allocated ``page_starts`` (``ceil(num_new_tokens/P)`` of
-        them).  The block must be empty (prefill always writes a fresh block)."""
-        assert self.num_tokens == 0, "grow_pages only supports prefilling a fresh block"
+        """Record a prefill write: ``num_new_tokens`` tokens appended to the
+        block, filling the current last page's free slots first and then the
+        freshly-allocated ``page_starts`` (``pages_needed(num_new_tokens)`` of
+        them).  A non-empty block is *extended*, exactly as ``append_token``
+        does one token at a time."""
+        assert num_new_tokens > 0, "grow_pages needs at least one token"
+        expected = self.pages_needed(num_new_tokens)
+        assert page_starts.numel() == expected, (
+            f"grow_pages got {page_starts.numel()} pages for {num_new_tokens} tokens "
+            f"(free tail {self.free_tail}, page_size {self.page_size}); expected {expected}"
+        )
         self.page_starts.extend(int(p) for p in page_starts.tolist())
         self.num_tokens += num_new_tokens
 

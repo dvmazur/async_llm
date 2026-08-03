@@ -178,7 +178,6 @@ class AsyncCacheEngine:
         logits ``[vocab]`` if *return_logits* else None.  Pass ``pixel_values`` /
         ``image_grid_thw`` / ``mrope_positions`` for a multimodal (image) block.
         """
-        assert into.num_tokens == 0, "prefill target must be an empty block"
         future = self.future_factory()
         self._prefill_queue.append(
             PrefillRequest(

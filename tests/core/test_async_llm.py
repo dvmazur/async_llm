@@ -287,11 +287,13 @@ def test_forward_extend_non_empty_block():
         block = await llm.create_block()
         await llm.forward([1], write_to=block)
 
-        # Extending the (non-empty) last-of-view block runs one decode per token.
+        # Extending the (non-empty) last-of-view block appends the tokens in one
+        # prefill; the block itself is the write target, not part of the context.
         out = await llm.forward([5, 7], [block])
         assert block.token_ids == [1, 5, 7]
-        assert len(session.decode_calls) == 2
-        assert [c["input_ids"] for c in session.decode_calls] == [[5], [7]]
+        assert not session.decode_calls
+        assert [c["ids"] for c in session.prefill_calls] == [[1], [5, 7]]
+        assert session.prefill_calls[-1]["context"] is None
         assert int(out.logits.argmax()) == 9  # raw decoy of the last fed token
 
         # A non-empty write block outside the view would not see its own tokens.
@@ -299,6 +301,25 @@ def test_forward_extend_non_empty_block():
         await llm.forward([2], write_to=other)
         with pytest.raises(ValueError, match="outside cache_view"):
             await llm.forward([3], [block], write_to=other)
+        await llm.close()
+
+    asyncio.run(main())
+
+
+def test_forward_extend_non_empty_block_in_context():
+    async def main():
+        llm, session = _make_llm()
+        prompt = await llm.create_block()
+        await llm.forward([1, 2], write_to=prompt)
+        block = await llm.create_block()
+        await llm.forward([3], [prompt, block])  # fresh block in context
+        await llm.forward([4, 5], [prompt, block])  # extend it in the same context
+
+        assert block.token_ids == [3, 4, 5]
+        assert not session.decode_calls
+        last = session.prefill_calls[-1]
+        assert last["ids"] == [4, 5]
+        assert last["context"] == [prompt]  # the write block is the target, not context
         await llm.close()
 
     asyncio.run(main())
