@@ -177,9 +177,6 @@ class AsyncCacheEngine:
         Queue a prefill of *into*; returns a future resolved with the last-token
         logits ``[vocab]`` if *return_logits* else None.  Pass ``pixel_values`` /
         ``image_grid_thw`` / ``mrope_positions`` for a multimodal (image) block.
-
-        A non-empty *into* is extended (the tokens are appended to it), so
-        queueing several prefills for one block chains them in submission order.
         """
         future = self.future_factory()
         self._prefill_queue.append(
