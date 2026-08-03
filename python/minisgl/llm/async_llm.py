@@ -140,10 +140,12 @@ class AsyncLLM:
         image_grid_thw: Optional[torch.Tensor] = None,
         mrope_positions: Optional[torch.Tensor] = None,
     ) -> CausalLMOutput:
-        """Prefill a fresh block (created here unless *into* is given) with
+        """Prefill a block (created here unless *into* is given) with
         *token_ids*, attending to *context*; returns the block, plus the
-        last-token logits when *return_logits* is set.  Pass ``pixel_values`` /
-        ``image_grid_thw`` / ``mrope_positions`` for a multimodal (image) block."""
+        last-token logits when *return_logits* is set.  A non-empty *into* is
+        extended: the tokens are appended to what it already holds and attend to
+        it causally.  Pass ``pixel_values`` / ``image_grid_thw`` /
+        ``mrope_positions`` for a multimodal (image) block."""
         self._ensure_loop()
         block = into if into is not None else self.async_engine.create_block()
         future = self.async_engine.submit_prefill(
@@ -184,8 +186,9 @@ class AsyncLLM:
           prefill**: the new tokens attend to the view's blocks in order and
           their KV is appended to *write_to*.  *write_to* must be the last
           block of *cache_view* (earlier positions raise) or outside it.  A
-          fresh *write_to* takes the one-shot prefill path; a non-empty one is
-          *extended*, one decode step per token.
+          non-empty *write_to* is *extended* — the new tokens are appended after
+          the ones it already holds and attend to them causally — which requires
+          it to be the view's last block.
 
         *write_to* defaults to the view's last block (``ctx.output_block``
         when *cache_view* is an ``AsyncContext``); plain prefill requires it.
@@ -236,35 +239,24 @@ class AsyncLLM:
             raise ValueError("write_to must be the last block of cache_view")
         in_view = bool(view) and view[-1] is write_to
 
-        if write_to.num_tokens == 0:
-            # (Conditional) prefill of a fresh block, one forward for all tokens.
-            self._ensure_loop()
-            future = self.async_engine.submit_prefill(
-                ids,
-                into=write_to,
-                context=(view[:-1] if in_view else view) or None,
-                capture_affine=capture_affine,
-                return_logits=return_logits,
-            )
-            self._work_event.set()
-            return CausalLMOutput(logits=await future, block=write_to)
-
-        # Non-empty write_to: extend it, one decode step per token.  A write
-        # block outside the view would not attend to its own earlier tokens,
-        # so only the last-of-view arrangement is meaningful here.
-        if not in_view:
+        # A non-empty write_to is extended by the same prefill (its new tokens
+        # attend causally to the ones already there).  Outside the view that
+        # would be meaningless -- the block's own prefix cannot be excluded from
+        # a causal extension the way the decode path excludes it.
+        if write_to.num_tokens > 0 and not in_view:
             raise ValueError("cannot extend a non-empty write_to outside cache_view")
-        step_ctx = (
-            ctx
-            if ctx is not None and write_to is ctx.output_block
-            else AsyncContext(cache_view=view, output_block=write_to)
+
+        # (Conditional) prefill / extension: one forward for all tokens.
+        self._ensure_loop()
+        future = self.async_engine.submit_prefill(
+            ids,
+            into=write_to,
+            context=(view[:-1] if in_view else view) or None,
+            capture_affine=capture_affine,
+            return_logits=return_logits,
         )
-        tokens = ids.tolist()
-        logits = None
-        for i, token in enumerate(tokens):
-            want_logits = return_logits and i == len(tokens) - 1
-            logits = await self._forward_decode_step(step_ctx, token, want_logits)
-        return CausalLMOutput(logits=logits, block=write_to)
+        self._work_event.set()
+        return CausalLMOutput(logits=await future, block=write_to)
 
     async def _forward_decode_step(
         self, ctx: AsyncContext, input_id: int, return_logits: bool

@@ -368,31 +368,44 @@ class SharedCacheAttention:
         return meta
 
     def prepare_context_prefill(
-        self, context: List[CacheBlock], new_page_starts: torch.Tensor, num_new: int
+        self,
+        context: List[CacheBlock],
+        self_page_starts: torch.Tensor,
+        num_new: int,
+        self_prefix_len: int = 0,
     ) -> SharedCacheAttnMetadata:
         """
-        Plan one prefill of ``num_new`` new tokens (stored block-relative at
-        0..num_new-1 in the pages ``new_page_starts``) that attend causally to
+        Plan one prefill of ``num_new`` new tokens that attend causally to
         themselves and fully to each *context* block, as if the blocks were
         concatenated ``[ctx_0, ..., ctx_{n-1}, new]``.
+
+        ``self_page_starts`` is the write block's complete (post-write) page
+        list; ``self_prefix_len`` is how many tokens it already held, i.e. 0 for
+        a fresh block (new tokens stored block-relative at 0..num_new-1) and
+        ``block.num_tokens`` when the block is being *extended* -- the new tokens
+        then sit at block-relative ``self_prefix_len ...`` and the causal self
+        segment covers the prefix too.
 
         Mirrors the reference's ``prefill_cache_block(text, [ctx..., new])``.
         """
         assert context and all(b.num_tokens > 0 for b in context)
         P = self.page_size
         S = int(num_new)
+        T = int(self_prefix_len)
         n_ctx = len(context)
         ctx_lens = [b.num_tokens for b in context]  # physical token counts (paging)
         ctx_spans = [b.mrope_span for b in context]  # running-mRoPE advance (rotation)
-        self_offset = sum(ctx_spans)
+        # Running position of the first new token: past every context block, plus
+        # the write block's own prefix (text-only, so span == token count).
+        self_offset = sum(ctx_spans) + T
 
         # q-row gather + per-row rotation positions: for context block j whose
         # cumulative mRoPE prefix span is P_j, new token i (at mRoPE position
         # ``self_offset + i``) is rotated to ``(self_offset + i) - P_j``; the self
-        # segment rotates to its block-relative position i.  Spans equal token
-        # counts for text/standard models, but an image context block compresses
-        # positions -- rotation must use the span, not num_tokens, so the new
-        # (text) tokens sit at their true mRoPE offset past the image.  The self
+        # segment rotates to its block-relative position ``T + i``.  Spans equal
+        # token counts for text/standard models, but an image context block
+        # compresses positions -- rotation must use the span, not num_tokens, so the
+        # new (text) tokens sit at their true mRoPE offset past the image.  The self
         # segment assumes the new block is text (block-relative pos == index),
         # which holds: images live in the re-prefilled root, never a context
         # prefill.
@@ -404,7 +417,7 @@ class SharedCacheAttention:
             sub_loc.extend(self_offset + i - prefix for i in range(S))
             prefix += span
         sub_gather.extend(range(S))
-        sub_loc.extend(range(S))
+        sub_loc.extend(T + i for i in range(S))
 
         CPU_KWARGS = {"device": "cpu", "dtype": torch.int32, "pin_memory": True}
 
@@ -419,13 +432,16 @@ class SharedCacheAttention:
         ctx_seq_lens = torch.tensor(ctx_lens, **CPU_KWARGS)
         ctx_last_page = torch.tensor([b.last_page_len for b in context], **CPU_KWARGS)
 
-        # Self segment (causal): the new block's freshly-allocated pages.
-        self_kv_indices = (new_page_starts.to(self.device) // P).to(torch.int32)
+        # Self segment (causal): the write block's pages, prefix included.  With
+        # ``qo_len = S < kv_len = T + S`` FlashInfer aligns the causal mask to the
+        # end, so the queries are the last S positions -- exactly an extend prefill.
+        self_kv_indices = (self_page_starts.to(self.device) // P).to(torch.int32)
         n_self_pages = int(self_kv_indices.numel())
+        self_len = T + S
         self_indptr = torch.tensor([0, n_self_pages], **CPU_KWARGS)
         self_qo_indptr = torch.tensor([0, S], **CPU_KWARGS)
-        self_seq_lens = torch.tensor([S], **CPU_KWARGS)
-        self_last_page = torch.tensor([S - (n_self_pages - 1) * P], **CPU_KWARGS)
+        self_seq_lens = torch.tensor([self_len], **CPU_KWARGS)
+        self_last_page = torch.tensor([self_len - (n_self_pages - 1) * P], **CPU_KWARGS)
 
         plan_common = dict(
             num_qo_heads=self.num_qo_heads,

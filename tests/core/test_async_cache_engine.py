@@ -233,11 +233,15 @@ class TestQueueMechanics:
         engine.free_block(block)
         assert block.num_tokens == 0
 
-    def test_prefill_requires_fresh_block(self, stub_engine):
-        engine, _ = stub_engine
-        block = _prefilled_block(engine, [1])
-        with pytest.raises(AssertionError, match="empty block"):
-            engine.submit_prefill(torch.tensor([2], dtype=torch.int32), into=block)
+    def test_prefill_appends_to_non_empty_block(self, stub_engine):
+        engine, session = stub_engine
+        block = _prefilled_block(engine, [1, 2])
+        engine.submit_prefill(torch.tensor([3, 4], dtype=torch.int32), into=block)
+        assert engine.tick() == "prefill"
+        assert block.num_tokens == 4
+        assert block.token_ids == [1, 2, 3, 4]
+        # queued prefills for one block chain in submission order
+        assert [c["ids"] for c in session.prefill_calls] == [[1, 2], [3, 4]]
 
     def test_failure_propagates_to_all_futures(self, stub_engine):
         engine, session = stub_engine
