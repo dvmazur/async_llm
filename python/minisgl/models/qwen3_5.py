@@ -93,7 +93,7 @@ class Qwen3_5Model(BaseOP):
             x[image_mask] = image_embeds.to(x.dtype)
             spatial_merge_size = self.config.vision_config.spatial_merge_size
             mrope_positions = get_rope_index(input_ids, mm_token_type_ids, spatial_merge_size, image_grid_thw)
-            batch.mrope_span_override = int(mrope_positions.max().item()) + 1
+            batch.updated_position_span = int(mrope_positions.max().item()) + 1
         residual: torch.Tensor | None = None
         for layer in self.layers.op_list:
             x, residual = layer.forward(x, residual, mrope_positions)

@@ -174,7 +174,7 @@ def test_repeated_block_prefill_equals_fresh_prefill():
         reused, ids_b, mm_token_type_ids=mm_b, pixel_values=pv_b, image_grid_thw=grid_b
     )[0].float()
     assert reused.num_tokens == fresh.num_tokens, (reused.num_tokens, fresh.num_tokens)
-    assert reused.mrope_span == fresh.mrope_span
+    assert reused.position_span == fresh.position_span
     assert torch.equal(lr.argmax(), lf.argmax())
     assert torch.allclose(lr, lf, atol=1e-4), f"max|Δ|={ (lr - lf).abs().max().item() }"
 
@@ -206,7 +206,7 @@ def test_contextual_image_prefill_matches_hf():
         block_A, block_B, block_C, block_D = await asyncio.gather(*(llm.create_block() for _ in range(4)))
         await llm.forward(ref["one"]["input_ids"][0].to(torch.int32), mm_token_type_ids=ref["one"]["mm_token_type_ids"][0],
                           pixel_values=ref["one"]["pixel_values"].float(), image_grid_thw=ref["one"]["image_grid_thw"],
-                          cache_view=[block_A], write_to=block_A, return_logits=False);
+                          cache_view=[block_A], write_to=block_A, return_logits=False)
 
         ckpt_1 = await llm.forward(  # stage 1: non-image conditioned on image
             ref['follow_up_1']['input_ids'][0], cache_view=[block_A, block_B], write_to=block_B, return_logits=True)

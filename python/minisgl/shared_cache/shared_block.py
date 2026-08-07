@@ -45,6 +45,7 @@ class CacheBlock:
         # Page-start token slots (multiples of page_size), one per owned page.
         self.page_starts: List[int] = []
         self.num_tokens: int = 0
+        self._position_span: Optional[int] = None  # max position + 1, accounting for MRoPE
         # Host-side copy of the token ids stored in this block, in block order.
         # Kept in sync by whoever writes the block (prefill extends it, the
         # async engine appends decoded tokens); consumers use it for probes and
@@ -68,9 +69,13 @@ class CacheBlock:
         self.linear_conv_state: Dict[int, torch.Tensor] = {}
 
     @property
-    def mrope_span(self) -> int:
-        """Running-mRoPE advance over this block (== num_tokens unless overridden)."""
-        return self.num_tokens if self.mrope_span_override is None else self.mrope_span_override
+    def position_span(self) -> int:
+        return self._position_span if self._position_span is not None else self.num_tokens
+
+    @position_span.setter
+    def position_span(self, value: int):
+        assert isinstance(value, int) and (value >= (self._position_span or 0))
+        self._position_span = value
 
     @property
     def num_pages(self) -> int:
@@ -145,7 +150,7 @@ class CacheBlock:
         pages = list(self.page_starts)
         self.page_starts.clear()
         self.num_tokens = 0
-        self.mrope_span_override = None
+        self._position_span = None
         self.token_ids.clear()
         self.linear_affine.clear()
         self.linear_conv_state.clear()

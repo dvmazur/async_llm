@@ -256,7 +256,7 @@ class SharedCacheAttention:
             # RoPE positions use each block's mRoPE *span* (== num_tokens for text,
             # but compressed for an image-bearing block), so the query rotates at
             # its true mRoPE position.  Identical to `lengths` for text/standard models.
-            mspans = [b.mrope_span + (1 if id(b) in write_set else 0) for b in view]
+            mspans = [b.position_span + (1 if id(b) in write_set else 0) for b in view]
             mtotal = sum(mspans)
 
             n_seg = 0
@@ -287,7 +287,7 @@ class SharedCacheAttention:
                 # The query must still attend to itself: a single-token segment
                 # at distance 0 (query rotated to its own block-relative pos).
                 aux_sub_worker.append(w)
-                aux_sub_loc.append(wt.mrope_span)
+                aux_sub_loc.append(wt.position_span)
                 aux_sub_slot.append(n_seg)
                 aux_kv_slots.append(int(new_token_slots[w].item()))
                 n_seg += 1
@@ -394,7 +394,7 @@ class SharedCacheAttention:
         T = int(self_prefix_len)
         n_ctx = len(context)
         ctx_lens = [b.num_tokens for b in context]  # physical token counts (paging)
-        ctx_spans = [b.mrope_span for b in context]  # running-mRoPE advance (rotation)
+        ctx_spans = [b.position_span for b in context]  # running-mRoPE advance (rotation)
         # Running position of the first new token: past every context block, plus
         # the write block's own prefix (text-only, so span == token count).
         self_offset = sum(ctx_spans) + T
