@@ -106,7 +106,7 @@ class Qwen3_5Attention(BaseOP):
         # applies partial RoPE itself, so pass q/k through un-rotated (mirrors
         # layers.attention.AttentionLayer).  Otherwise use the normal backend.
         sc_op = getattr(ctx.batch.attn_metadata, "shared_cache_op", None)
-        if sc_op is not None and mrope_positions is None:
+        if sc_op is not None:
             if mrope_positions is not None:
                 raise NotImplementedError("MRoPE for shared cache op is underway")
             o = sc_op.forward(

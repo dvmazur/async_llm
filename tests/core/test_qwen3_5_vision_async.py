@@ -216,24 +216,23 @@ def test_contextual_image_prefill_matches_hf():
             ref['follow_up_1']['input_ids'][0], cache_view=[block_C], write_to=block_C, return_logits=True)
         assert block_C.num_tokens == len(ref['follow_up_1']['input_ids'][0])
 
-        # ckpt_2_separate = await llm.forward(  # stage 2: image conditioned on stage 1, write to new block
-        #     ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
-        #     pixel_values=ref["follow_up_2"]["pixel_values"].float(), image_grid_thw=ref["follow_up_2"]["image_grid_thw"],
-        #     cache_view=[block_A, block_B, block_D], write_to=block_D, return_logits=True)
-        #
-        # ckpt_2_appended = await llm.forward(  # stage 2 alternative method: append new KVs to block B
-        #     ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
-        #     pixel_values=ref["follow_up_2"]["pixel_values"].float(), image_grid_thw=ref["follow_up_2"]["image_grid_thw"],
-        #     cache_view=[block_A, block_B], write_to=block_B, return_logits=True)
-        # assert block_B.num_tokens == len(ref['follow_up_1']['input_ids'][0]) + len(ref['follow_up_2']['input_ids'][0])
-        ckpt_2_separate = ckpt_2_appended = ckpt_1_control  # TODO
+        ckpt_2_separate = await llm.forward(  # stage 2: image conditioned on stage 1, write to new block
+            ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
+            pixel_values=ref["follow_up_2"]["pixel_values"].float(), image_grid_thw=ref["follow_up_2"]["image_grid_thw"],
+            cache_view=[block_A, block_B, block_D], write_to=block_D, return_logits=True)
+
+        ckpt_2_appended = await llm.forward(  # stage 2 alternative method: append new KVs to block B
+            ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
+            pixel_values=ref["follow_up_2"]["pixel_values"].float(), image_grid_thw=ref["follow_up_2"]["image_grid_thw"],
+            cache_view=[block_A, block_B], write_to=block_B, return_logits=True)
+        assert block_B.num_tokens == len(ref['follow_up_1']['input_ids'][0]) + len(ref['follow_up_2']['input_ids'][0])
         return [ckpt.logits.float().cpu() for ckpt in (ckpt_1, ckpt_1_control, ckpt_2_separate, ckpt_2_appended)]
 
     ckpt_1_logits, ckpt_1_control_logits, ckpt_2_separate_logits, ckpt_2_appended_logits = asyncio.run(_compute_logits())
     assert F.cosine_similarity(ckpt_1_logits, ref["last_logits_ckpt_1"], dim=0).item() > 0.99
     assert F.cosine_similarity(ckpt_1_control_logits, ref["last_logits_ckpt_1"], dim=0).item() < 0.99
-    # assert F.cosine_similarity(ckpt_2_separate_logits, ref["ckpt_2_last_logits"], dim=0).item() > 0.99
-    # assert F.cosine_similarity(ckpt_2_appended_logits, ref["ckpt_2_last_logits"], dim=0).item() > 0.99
+    assert F.cosine_similarity(ckpt_2_separate_logits, ref["ckpt_2_last_logits"], dim=0).item() > 0.99
+    assert F.cosine_similarity(ckpt_2_appended_logits, ref["ckpt_2_last_logits"], dim=0).item() > 0.99
 
 
 if __name__ == "__main__":
