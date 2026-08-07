@@ -70,10 +70,10 @@ def _make_hf_inputs(processor, num_images: int):
 
 
 def test_get_rope_index_text_only():
-    ids = torch.tensor([5, 6, 7, 8, 9], dtype=torch.long)
-    pos = get_rope_index(ids, mm_token_type_ids=torch.zeros_like(ids), spatial_merge_size=2, image_grid_thw=None)
-    assert tuple(pos.shape) == (3, 5)
-    expected = torch.arange(5).view(1, -1).expand(3, -1)
+    ids = torch.tensor([[5, 6, 7, 8, 9]], dtype=torch.long)
+    pos, _ = get_rope_index(ids, mm_token_type_ids=torch.zeros_like(ids), spatial_merge_size=2, image_grid_thw=None)
+    assert tuple(pos.shape) == (1, 3, 5)
+    expected = torch.arange(5).view(1, 1, -1).expand(1, 3, -1)
     assert torch.equal(pos, expected)  # all 3 axes equal & incrementing
 
 
@@ -84,9 +84,9 @@ def test_get_rope_index_image_compression():
     grid = torch.tensor([[1, 4, 4]], dtype=torch.long)
     pos, _ = get_rope_index(ids, (ids==img).long(), spatial_merge_size=2, image_grid_thw=grid)
     # image occupies llm grid 1x2x2 starting at pos 2; text resumes at 2 + max(4,4)//2 = 4
-    exp_t = torch.tensor([0, 1, 2, 2, 2, 2, 4, 5, 6])
-    exp_h = torch.tensor([0, 1, 2, 2, 3, 3, 4, 5, 6])
-    exp_w = torch.tensor([0, 1, 2, 3, 2, 3, 4, 5, 6])
+    exp_t = torch.tensor([[0, 1, 2, 2, 2, 2, 4, 5, 6]])
+    exp_h = torch.tensor([[0, 1, 2, 2, 3, 3, 4, 5, 6]])
+    exp_w = torch.tensor([[0, 1, 2, 3, 2, 3, 4, 5, 6]])
     assert torch.equal(pos[0], exp_t)
     assert torch.equal(pos[1], exp_h)
     assert torch.equal(pos[2], exp_w)
