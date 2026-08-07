@@ -210,7 +210,7 @@ def test_contextual_image_prefill_matches_hf():
 
         ckpt_1 = await llm.forward(  # stage 1: non-image conditioned on image
             ref['follow_up_1']['input_ids'][0], cache_view=[block_A, block_B], write_to=block_B, return_logits=True)
-        assert block_B.num_tokens == len(ref['follow_up_1']['input_ids'])
+        assert block_B.num_tokens == len(ref['follow_up_1']['input_ids'][0])
 
         ckpt_1_control = await llm.forward(  # stage 1 control group: without condition, should NOT be close enough
             ref['follow_up_1']['input_ids'][0], cache_view=[block_C], write_to=block_C, return_logits=True)
