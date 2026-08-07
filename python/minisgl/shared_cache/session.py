@@ -272,7 +272,7 @@ class SharedCacheSession:
             f"prefill of {seq_len} tokens into a block of {cached_len} exceeds the "
             f"engine's max sequence length ({self.page_table.shape[1]})"
         )
-        page_starts, token_slots = self._alloc_token_storage(seq_len, into=block)
+        page_starts, token_slots = self._alloc_token_storage(seq_len, write_to=block)
         table_idx = self._allocate_table_idx()
 
         try:
@@ -336,7 +336,7 @@ class SharedCacheSession:
         block's own prefix as well as the new tokens."""
         seq_len = len(input_ids)
         cached_len = block.num_tokens
-        page_starts, out_loc = self._alloc_token_storage(seq_len, into=block)
+        page_starts, out_loc = self._alloc_token_storage(seq_len, write_to=block)
         # Self segment reads the block's whole (post-write) page list.
         self_pages = torch.cat([block.page_starts_tensor(), page_starts.to(self.device)])
 
@@ -440,24 +440,24 @@ class SharedCacheSession:
     # ------------------------------------------------------------------
 
     def _alloc_token_storage(
-        self, seq_len: int, into: Optional[CacheBlock] = None
+        self, seq_len: int, write_to: Optional[CacheBlock] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Borrow the pages needed to write ``seq_len`` tokens into *into* and
+        """Borrow the pages needed to write ``seq_len`` tokens into *write_to* and
         return ``(new_page_starts, token_slots)``, where ``token_slots`` are the
         ``seq_len`` write locations in block order.
 
         For a fresh (or absent) block that is ``ceil(seq_len/P)`` pages worth of
-        slots; when *into* is non-empty the free slots of its current last page
+        slots; when *write_to* is non-empty the free slots of its current last page
         are used first, so only ``pages_needed(seq_len)`` new pages are borrowed
         (mirrors how ``append_token`` grows a block during decode)."""
-        free_tail = into.free_tail if into is not None else 0
+        free_tail = write_to.free_tail if write_to is not None else 0
         n_pages = div_ceil(max(0, seq_len - free_tail), self.page_size)
         page_starts = self.page_allocator.alloc_pages(n_pages)
         new_slots = self.page_allocator.pages_to_tokens(page_starts)
         if free_tail == 0:
             return page_starts, new_slots[:seq_len]
-        assert into is not None
-        tail_start = into.page_starts[-1] + into.last_page_len
+        assert write_to is not None
+        tail_start = write_to.page_starts[-1] + write_to.last_page_len
         tail_slots = torch.arange(
             tail_start, tail_start + free_tail, dtype=new_slots.dtype, device=self.device
         )

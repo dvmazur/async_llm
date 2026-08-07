@@ -135,7 +135,7 @@ class AsyncLLM:
         image_grid_thw: Optional[torch.Tensor] = None,
         mm_token_type_ids: Optional[torch.Tensor] = None,
         context: Optional[CacheView] = None,
-        into: Optional[CacheBlock] = None,
+        write_to: Optional[CacheBlock] = None,
         return_logits: bool = False,
     ) -> CausalLMOutput:
         """Prefill a block (created here unless *into* is given) with
@@ -145,10 +145,10 @@ class AsyncLLM:
         it causally.  Pass ``pixel_values`` / ``image_grid_thw`` for a multimodal (image) block."""
         self._ensure_loop()
         assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None), "pass all or none"
-        block = into if into is not None else self.async_engine.create_block()
+        block = write_to if write_to is not None else self.async_engine.create_block()
         future = self.async_engine.submit_prefill(
             _as_token_tensor(input_ids),
-            into=block,
+            write_to=block,
             context=context,
             return_logits=return_logits,
             pixel_values=pixel_values,
@@ -246,7 +246,7 @@ class AsyncLLM:
         assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None), "pass all or none"
         future = self.async_engine.submit_prefill(
             ids,
-            into=write_to,
+            write_to=write_to,
             context=(view[:-1] if in_view else view) or None,
             return_logits=return_logits,
             pixel_values=pixel_values,

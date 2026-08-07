@@ -25,6 +25,8 @@ import torch.nn.functional as F
 from huggingface_hub import snapshot_download
 from minisgl.distributed import DistributedInfo
 from minisgl.engine import Engine, EngineConfig
+from minisgl.llm import AsyncLLM
+from minisgl.scheduler import AsyncCacheEngine
 from minisgl.shared_cache import SharedCacheSession
 from minisgl.models.qwen3_5_mrope import get_rope_index
 from minisgl.shared_cache import WorkerGroup
@@ -64,7 +66,9 @@ def _build_async_engine():
     ref = _make_hf_reference()  # compute reference model after engine is already initialized
     session = SharedCacheSession(engine)
     config = engine_config.model_config
-    return engine, session, ref, config
+    async_engine = AsyncCacheEngine(engine, session=session)
+    llm = AsyncLLM(_MODEL_ID, engine=engine, async_engine=async_engine, dtype=torch.bfloat16)
+    return llm, engine, session, ref, config
 
 
 def _make_synthetic_image_block(config, h: int, w: int, seed: int):
@@ -88,7 +92,7 @@ def _make_synthetic_image_block(config, h: int, w: int, seed: int):
 
 
 def test_ar_image_single_worker_matches_hf_greedy():
-    engine, session, ref, mc = _build_async_engine()
+    _, engine, session, ref, mc = _build_async_engine()
     input_ids = ref["one"]["input_ids"][0].to(torch.int32)
     mm_token_type_ids = ref["one"]["mm_token_type_ids"][0]
     pixel_values = ref["one"]["pixel_values"].float()
@@ -111,7 +115,7 @@ def test_ar_image_single_worker_matches_hf_greedy():
 
 
 def test_ar_image_two_workers_decode():
-    engine, session, ref, mc = _build_async_engine()
+    _, engine, session, ref, mc = _build_async_engine()
     input_ids = ref["one"]["input_ids"][0].to(torch.int32)
     mm_token_type_ids = ref["one"]["mm_token_type_ids"][0]
     pixel_values = ref["one"]["pixel_values"].float()
@@ -133,7 +137,7 @@ def test_repeated_block_prefill_equals_fresh_prefill():
     """Prefill after clear must reproduce a fresh prefill
     of the same content bit-for-bit, including a *different* image size (changing
     token count + mRoPE span).  This is the updatable-image-in-context hook."""
-    engine, session, ref, mc = _build_async_engine()
+    _, engine, session, ref, mc = _build_async_engine()
     ids_a, pv_a, grid_a, mm_a = _make_synthetic_image_block(mc, 8, 8, seed=1)
     ids_b, pv_b, grid_b, mm_b = _make_synthetic_image_block(mc, 12, 8, seed=2)  # different grid
 
@@ -160,15 +164,17 @@ def test_repeated_block_prefill_equals_fresh_prefill():
 def test_two_image_prefill_matches_hf():
     """A prompt with TWO images prefills to the same next-token as HF (multi-image
     path: get_rope_index over 2 grids + vision tower over 2 images + scatter)."""
-    engine, session, ref, mc = _build_async_engine()
+    llm, engine, session, ref, mc = _build_async_engine()
     ids = ref["two"]["input_ids"][0].to(torch.int32)
     mm_token_type_ids = ref["two"]["mm_token_type_ids"][0]
     pv = ref["two"]["pixel_values"].float()
     grid = ref["two"]["image_grid_thw"]  # [2, 3]
     assert grid.shape[0] == 2
-    logits = session.prefill_block(
-        session.create_block(), ids, mm_token_type_ids=mm_token_type_ids, pixel_values=pv, image_grid_thw=grid,
-    )[0].float().cpu()
+    async def _compute_logits():
+        block = await llm.create_block()
+        return await llm.forward(ids, [block], mm_token_type_ids=mm_token_type_ids, pixel_values=pv,
+                                 image_grid_thw=grid, write_to=block)
+    logits = _compute_logits()[0].float().cpu()
     hf = ref["last_logits"]
     assert torch.equal(logits.argmax(), hf.argmax()), (int(logits.argmax()), int(hf.argmax()))
     assert F.cosine_similarity(logits, hf, dim=0).item() > 0.99

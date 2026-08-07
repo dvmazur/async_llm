@@ -85,7 +85,7 @@ class SimpleFuture:
 class PrefillRequest:
     input_ids: torch.Tensor  # 1-D int32 cpu
     context: CacheView  # may be empty
-    into: CacheBlock  # block to fill
+    write_to: CacheBlock  # block to fill
     return_logits: bool  # resolve with last-token logits instead of None
     future: Any  # resolved with logits [vocab] if return_logits else None
     # Multimodal inputs produced by huggingface.transformers.Processor
@@ -148,7 +148,7 @@ class AsyncCacheEngine:
 
     def _block_in_use(self, block: CacheBlock) -> bool:
         for pf in self._prefill_queue:
-            if block is pf.into or any(block is b for b in pf.context):
+            if block is pf.write_to or any(block is b for b in pf.context):
                 return True
         for dec in self._decode_queue:
             if block is dec.context.output_block or any(block is b for b in dec.context.cache_view):
@@ -163,7 +163,7 @@ class AsyncCacheEngine:
         self,
         token_ids: torch.Tensor,
         *,
-        into: CacheBlock,
+        write_to: CacheBlock,
         context: Optional[CacheView] = None,
         return_logits: bool = False,
         pixel_values: Optional[torch.Tensor] = None,
@@ -180,7 +180,7 @@ class AsyncCacheEngine:
             PrefillRequest(
                 input_ids=token_ids,
                 context=list(context or []),
-                into=into,
+                write_to=write_to,
                 return_logits=return_logits,
                 future=future,
                 pixel_values=pixel_values,
@@ -243,7 +243,7 @@ class AsyncCacheEngine:
             kwargs["image_grid_thw"] = req.image_grid_thw
             kwargs["mm_token_type_ids"] = req.mm_token_type_ids
         try:
-            logits = self.session.prefill_block(req.into, req.input_ids, **kwargs)
+            logits = self.session.prefill_block(req.write_to, req.input_ids, **kwargs)
         except Exception as exc:
             req.future.set_exception(exc)
             raise

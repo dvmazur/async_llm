@@ -116,7 +116,7 @@ def stub_engine():
 
 def _prefilled_block(engine: AsyncCacheEngine, ids: List[int]) -> CacheBlock:
     block = engine.create_block()
-    engine.submit_prefill(torch.tensor(ids, dtype=torch.int32), into=block)
+    engine.submit_prefill(torch.tensor(ids, dtype=torch.int32), write_to=block)
     assert engine.tick() == "prefill"
     return block
 
@@ -131,7 +131,7 @@ class TestQueueMechanics:
         engine, session = stub_engine
         block = engine.create_block()
         fut = engine.submit_prefill(
-            torch.tensor([1, 2, 3], dtype=torch.int32), into=block, return_logits=True
+            torch.tensor([1, 2, 3], dtype=torch.int32), write_to=block, return_logits=True
         )
         assert engine.has_work and not fut.done()
         assert engine.tick() == "prefill"
@@ -144,7 +144,7 @@ class TestQueueMechanics:
     def test_prefill_default_resolves_none(self, stub_engine):
         engine, _ = stub_engine
         block = engine.create_block()
-        fut = engine.submit_prefill(torch.tensor([1], dtype=torch.int32), into=block)
+        fut = engine.submit_prefill(torch.tensor([1], dtype=torch.int32), write_to=block)
         engine.tick()
         assert fut.result() is None
         assert block.token_ids == [1]
@@ -155,7 +155,7 @@ class TestQueueMechanics:
         ctx = AsyncContext(cache_view=[block])
         engine.submit_decode(ctx, input_id=7)
         pf_block = engine.create_block()
-        engine.submit_prefill(torch.tensor([4], dtype=torch.int32), into=pf_block)
+        engine.submit_prefill(torch.tensor([4], dtype=torch.int32), write_to=pf_block)
         assert engine.tick() == "prefill"  # prefill jumps the earlier decode
         assert engine.tick() == "decode"
         assert not engine.has_work
@@ -232,7 +232,7 @@ class TestQueueMechanics:
     def test_prefill_appends_to_non_empty_block(self, stub_engine):
         engine, session = stub_engine
         block = _prefilled_block(engine, [1, 2])
-        engine.submit_prefill(torch.tensor([3, 4], dtype=torch.int32), into=block)
+        engine.submit_prefill(torch.tensor([3, 4], dtype=torch.int32), write_to=block)
         assert engine.tick() == "prefill"
         assert block.num_tokens == 4
         assert block.token_ids == [1, 2, 3, 4]
@@ -314,7 +314,7 @@ class TestAsyncCacheEngineE2E:
         # Engine: same chain through submit + tick.
         engine = AsyncCacheEngine(real_engine)
         block = engine.create_block()
-        fut = engine.submit_prefill(prompt_ids, into=block, return_logits=True)
+        fut = engine.submit_prefill(prompt_ids, write_to=block, return_logits=True)
         assert engine.tick() == "prefill"
         tokens = [int(fut.result().argmax())]
         ctx = AsyncContext(cache_view=[block])
@@ -362,7 +362,7 @@ class TestAsyncCacheEngineE2E:
 
         def eng_prefill(ids):
             blk = engine.create_block()
-            engine.submit_prefill(ids, into=blk)
+            engine.submit_prefill(ids, write_to=blk)
             engine.tick()
             return blk
 
@@ -382,7 +382,7 @@ class TestAsyncCacheEngineE2E:
         engine = AsyncCacheEngine(real_engine)
         block = engine.create_block()
         prompt_ids = _encode("The capital of France is")
-        fut = engine.submit_prefill(prompt_ids, into=block, return_logits=True)
+        fut = engine.submit_prefill(prompt_ids, write_to=block, return_logits=True)
         engine.tick()
         logits = fut.result().float()
         top2 = logits.topk(2).indices.tolist()
@@ -399,7 +399,7 @@ class TestAsyncCacheEngineE2E:
 
         # New chain on a fresh block: same input, now with the winner masked.
         block2 = engine.create_block()
-        engine.submit_prefill(prompt_ids, into=block2)
+        engine.submit_prefill(prompt_ids, write_to=block2)
         engine.tick()
         ctx2 = AsyncContext(cache_view=[block2])
         fut = engine.submit_decode(ctx2, input_id=int(top2[0]), forbid_ids=[unmasked])
