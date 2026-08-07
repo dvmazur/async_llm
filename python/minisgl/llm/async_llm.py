@@ -132,12 +132,13 @@ class AsyncLLM:
         self,
         input_ids: TokenIds,
         *,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.Tensor] = None,
+        mm_token_type_ids: Optional[torch.Tensor] = None,
         context: Optional[CacheView] = None,
         into: Optional[CacheBlock] = None,
         capture_affine: bool = True,
         return_logits: bool = False,
-        pixel_values: Optional[torch.Tensor] = None,
-        image_grid_thw: Optional[torch.Tensor] = None,
     ) -> CausalLMOutput:
         """Prefill a block (created here unless *into* is given) with
         *input_ids*, attending to *context*; returns the block, plus the
@@ -145,6 +146,7 @@ class AsyncLLM:
         extended: the tokens are appended to what it already holds and attend to
         it causally.  Pass ``pixel_values`` / ``image_grid_thw`` for a multimodal (image) block."""
         self._ensure_loop()
+        assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None), "pass all or none"
         block = into if into is not None else self.async_engine.create_block()
         future = self.async_engine.submit_prefill(
             _as_token_tensor(input_ids),
@@ -154,6 +156,7 @@ class AsyncLLM:
             return_logits=return_logits,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
         )
         self._work_event.set()
         logits = await future
@@ -164,6 +167,9 @@ class AsyncLLM:
         input_ids: Optional[TokenIds] = None,
         cache_view: "AsyncContext | CacheView | None" = None,
         *,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.Tensor] = None,
+        mm_token_type_ids: Optional[torch.Tensor] = None,
         write_to: Optional[CacheBlock] = None,
         return_logits: bool = True,
         capture_affine: bool = True,
@@ -205,6 +211,7 @@ class AsyncLLM:
                 write_to = view[-1]
 
         if input_ids is None:
+            assert pixel_values is None and image_grid_thw is None and mm_token_type_ids is None, "requires input_ids"
             # Decode mode: the input token is the context's pending one.
             if cache_view is None:
                 raise ValueError("forward needs input_ids and/or cache_view")
@@ -241,12 +248,16 @@ class AsyncLLM:
 
         # (Conditional) prefill / extension: one forward for all tokens.
         self._ensure_loop()
+        assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None), "pass all or none"
         future = self.async_engine.submit_prefill(
             ids,
             into=write_to,
             context=(view[:-1] if in_view else view) or None,
             capture_affine=capture_affine,
             return_logits=return_logits,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
         )
         self._work_event.set()
         return CausalLMOutput(logits=await future, block=write_to)

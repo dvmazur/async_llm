@@ -171,6 +171,7 @@ class AsyncCacheEngine:
         return_logits: bool = False,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
+        mm_token_type_ids: Optional[torch.Tensor] = None,
     ) -> Any:
         """
         Queue a prefill of *into*; returns a future resolved with the last-token
@@ -188,6 +189,7 @@ class AsyncCacheEngine:
                 future=future,
                 pixel_values=pixel_values,
                 image_grid_thw=image_grid_thw,
+                mm_token_type_ids=mm_token_type_ids,
             )
         )
         return future
