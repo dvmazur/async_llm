@@ -90,7 +90,7 @@ def _make_synthetic_image_block(config, h: int, w: int, seed: int):
 def test_ar_image_single_worker_matches_hf_greedy():
     engine, session, ref, mc = _build_async_engine()
     input_ids = ref["one"]["input_ids"][0].to(torch.int32)
-    mm_token_type_ids = ref["one"][0]["mm_token_type_ids"]
+    mm_token_type_ids = ref["one"]["mm_token_type_ids"][0]
     pixel_values = ref["one"]["pixel_values"].float()
     grid = ref["one"]["image_grid_thw"]
 
@@ -140,7 +140,7 @@ def test_repeated_block_prefill_equals_fresh_prefill():
     # Fresh prefill of image B in a clean block.
     fresh = session.create_block()
     lf = session.prefill_block(
-        fresh, ids_b, pixel_values=pv_b, image_grid_thw=grid_b,
+        fresh, ids_b, mm_token_type_ids=mm_b, pixel_values=pv_b, image_grid_thw=grid_b,
     )[0].float()
 
     # Prefill image A, then refresh (clear-prefill) in place to image B.
