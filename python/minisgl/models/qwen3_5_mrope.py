@@ -44,8 +44,7 @@ def get_rope_index(
     Source: https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5/modeling_qwen3_5.py
     """
     device = input_ids.device
-    ids = input_ids.tolist()
-    types = mm_token_type_ids
+    types = mm_token_type_ids.tolist()
     grids = iter(image_grid_thw.tolist()) if image_grid_thw is not None else iter(())
 
     parts = []
