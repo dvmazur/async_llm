@@ -1,6 +1,5 @@
 """
-Asyncio frontend for the async-cache engine (Phase 2 of
-docs/async_sched_impl_plan.md; user API of ASYNC_SCHED_DESIGN.md).
+Asyncio frontend for the async-cache engine
 
 ``AsyncLLM`` lets per-agent coroutines drive shared-cache inference
 concurrently; batching is handled by the engine tick, which runs as a task in
@@ -175,9 +174,8 @@ class AsyncLLM:
         capture_affine: bool = True,
     ) -> CausalLMOutput:
         """Run a single forward pass on the LM with the specified cache view,
-        adding the new KVs to *write_to* — the unified method of
-        ASYNC_SCHED_DESIGN.md, covering (conditional) prefill, action choice
-        and custom generate.  The mode depends on the provided arguments:
+        adding the new KVs to *write_to* — the unified async forward, covering (conditional) prefill,
+        action choice and custom generate.  The mode depends on the provided arguments:
 
         * ``forward(input_ids, write_to=block)`` — **prefill**: fill the fresh
           block *write_to* with *input_ids*.

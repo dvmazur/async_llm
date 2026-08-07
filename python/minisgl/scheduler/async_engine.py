@@ -1,6 +1,5 @@
 """
-Queue-based scheduling core for async cache requests (see ASYNC_SCHED_DESIGN.md
-and docs/async_sched_impl_plan.md, Phase 1).
+Queue-based scheduling core for async cache requests
 
 ``AsyncCacheEngine`` owns two request queues and drains them one forward per
 ``tick()``:

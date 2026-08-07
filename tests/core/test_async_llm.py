@@ -208,7 +208,7 @@ def test_tick_failure_recovers():
 
 
 # =============================================================================
-# Unit tests — the unified ``forward`` method (ASYNC_SCHED_DESIGN.md)
+# Unit tests — the unified ``forward`` method
 # =============================================================================
 
 
