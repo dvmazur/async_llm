@@ -82,7 +82,7 @@ def test_get_rope_index_image_compression():
     # 2 text, then a 1x4x4 image (4 llm tokens after 2x2 merge), then 3 text
     ids = torch.tensor([1, 1] + [img] * 4 + [2, 2, 2], dtype=torch.long)
     grid = torch.tensor([1, 4, 4], dtype=torch.long)
-    pos, _ = get_rope_index(ids, (ids==img).long(), spatial_merge_size=2, image_grid_thw=grid)
+    pos = get_rope_index(ids, (ids==img).long(), spatial_merge_size=2, image_grid_thw=grid)
     # image occupies llm grid 1x2x2 starting at pos 2; text resumes at 2 + max(4,4)//2 = 4
     exp_t = torch.tensor([0, 1, 2, 2, 2, 2, 4, 5, 6])
     exp_h = torch.tensor([0, 1, 2, 2, 3, 3, 4, 5, 6])
@@ -115,7 +115,7 @@ def test_get_rope_index_matches_hf(num_images: int):
             mm_token_type_ids=hf_inputs["mm_token_type_ids"],
             attention_mask=hf_inputs.get("attention_mask"),
         )
-    assert torch.equal(got.long().cpu(), expected.long().cpu())
+    assert torch.equal(got.long().cpu(), expected[0].long().cpu())
 
 def test_vision_tower_matches_hf():
     model, processor = _make_hf_model()
