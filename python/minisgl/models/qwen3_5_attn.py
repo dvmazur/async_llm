@@ -87,7 +87,7 @@ class Qwen3_5Attention(BaseOP):
         return torch.cat((x_rot, x_pass), dim=-1)
 
     @nvtx_annotate("FullAttn")
-    def forward(self, x: torch.Tensor, mrope: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mrope_positions: torch.Tensor | None = None) -> torch.Tensor:
         ctx = get_global_ctx()
         qkv = self.qkv_proj.forward(x)
         del x
@@ -111,9 +111,9 @@ class Qwen3_5Attention(BaseOP):
                 q.reshape(-1, self.qo_dim), k.reshape(-1, self.kv_dim), v, self._kv_idx, ctx.batch
             )
         else:
-            if mrope is not None:
-                q = self._apply_mrope(q, mrope)
-                k = self._apply_mrope(k, mrope)
+            if mrope_positions is not None:
+                q = self._apply_mrope(q, mrope_positions)
+                k = self._apply_mrope(k, mrope_positions)
             else:
                 q = self._apply_rope(q, ctx.batch.positions)
                 k = self._apply_rope(k, ctx.batch.positions)

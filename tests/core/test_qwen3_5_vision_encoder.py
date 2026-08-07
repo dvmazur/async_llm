@@ -82,7 +82,7 @@ def test_get_rope_index_image_compression():
     # 2 text, then a 1x4x4 image (4 llm tokens after 2x2 merge), then 3 text
     ids = torch.tensor([1, 1] + [img] * 4 + [2, 2, 2], dtype=torch.long)
     grid = torch.tensor([[1, 4, 4]], dtype=torch.long)
-    pos = get_rope_index(ids, (ids==img).long(), spatial_merge_size=2, image_grid_thw=grid)
+    pos, _ = get_rope_index(ids, (ids==img).long(), spatial_merge_size=2, image_grid_thw=grid)
     # image occupies llm grid 1x2x2 starting at pos 2; text resumes at 2 + max(4,4)//2 = 4
     exp_t = torch.tensor([0, 1, 2, 2, 2, 2, 4, 5, 6])
     exp_h = torch.tensor([0, 1, 2, 2, 3, 3, 4, 5, 6])
@@ -101,21 +101,22 @@ def test_get_rope_index_matches_hf(num_images: int):
     inputs = _make_hf_inputs(processor, num_images)
     grid = inputs["image_grid_thw"]
     assert grid.shape[0] == num_images
-    got = get_rope_index(
-        inputs["input_ids"][0],
-        mm_token_type_ids=torch.eq(inputs["input_ids"][0], model.config.image_token_id).long(),
+    got_positions, got_deltas = get_rope_index(
+        inputs["input_ids"],
+        mm_token_type_ids=torch.eq(inputs["input_ids"], model.config.image_token_id).long(),
         spatial_merge_size=2,
         image_grid_thw=grid,
     )
     hf_inputs = inputs.to(_DEVICE)
     with torch.no_grad():
-        expected, _ = model.model.get_rope_index(
+        expected_positions, expected_deltas = model.model.get_rope_index(
             hf_inputs["input_ids"],
             image_grid_thw=hf_inputs["image_grid_thw"],
             mm_token_type_ids=hf_inputs["mm_token_type_ids"],
             attention_mask=hf_inputs.get("attention_mask"),
         )
-    assert torch.equal(got, expected[:, 0].long().cpu())
+    assert torch.equal(got_positions.long().cpu(), expected_positions.long().cpu()).all()
+    assert torch.equal(got_deltas.long().cpu(), got_deltas.long().cpu()).all()
 
 def test_vision_tower_matches_hf():
     model, processor = _make_hf_model()

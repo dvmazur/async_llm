@@ -36,13 +36,13 @@ class Qwen3_5DecoderLayer(BaseOP):
 
     @nvtx_annotate("Layer_{}", layer_id_field="_layer_id")
     def forward(
-        self, x: torch.Tensor, residual: torch.Tensor | None = None, mrope: torch.Tensor | None = None
+        self, x: torch.Tensor, residual: torch.Tensor | None = None, mrope_positions: torch.Tensor | None = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         x, residual = self.input_layernorm.forward(x, residual)
         if self._is_linear:
             x = self.linear_attn.forward(x)
         else:
-            x = self.self_attn.forward(x, mrope)
+            x = self.self_attn.forward(x, mrope_positions)
         x, residual = self.post_attention_layernorm.forward(x, residual)
         x = self.mlp.forward(x)
         return x, residual
@@ -83,17 +83,18 @@ class Qwen3_5Model(BaseOP):
     ) -> torch.Tensor:
         x = self.embed_tokens.forward(input_ids)
         assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None)
-        mrope: torch.Tensor | None = None
+        mrope_positions: torch.Tensor | None = None
         if pixel_values is not None:
+            assert mm_token_type_ids is not None
             image_embeds = self.visual.forward(pixel_values, image_grid_thw)  # (n_img, hidden)
             image_mask = mm_token_type_ids == 1  # 0 - text, 1 - image, 2 - video, etc
             x = x.clone()
             x[image_mask] = image_embeds.to(x.dtype)
             spatial_merge_size = self.config.vision_config.spatial_merge_size
-            mrope = get_rope_index(input_ids, mm_token_type_ids, spatial_merge_size, image_grid_thw)
+            mrope_positions, _ = get_rope_index(input_ids, mm_token_type_ids, spatial_merge_size, image_grid_thw, None, None)
         residual: torch.Tensor | None = None
         for layer in self.layers.op_list:
-            x, residual = layer.forward(x, residual, mrope)
+            x, residual = layer.forward(x, residual, mrope_positions)
         return self.norm.forward(x, residual)[0]
 
 
