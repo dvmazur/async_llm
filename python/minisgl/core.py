@@ -85,6 +85,7 @@ class Batch:
     pixel_values: "torch.Tensor | None" = field(default=None, init=False)
     image_grid_thw: "torch.Tensor | None" = field(default=None, init=False)
     mm_token_type_ids: "torch.Tensor | None" = field(default=None, init=False)
+    mrope_span_override: int | None = field(default=None, init=False)
 
     @property
     def is_prefill(self) -> bool:

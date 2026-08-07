@@ -327,8 +327,9 @@ class SharedCacheSession:
 
             block.grow_pages(page_starts, seq_len)
             block.token_ids.extend(input_ids.tolist())
-            if pixel_values is not None:
-                assert block.mrope_span_override is not None, "forward with images should set mrope_span_override"
+            assert (batch.mrope_span_override is None) == (pixel_values is None), "vlm forward must set mrope override"
+            if batch.mrope_span_override is not None:
+                block.mrope_span_override = block.mrope_span_override
 
             # NOTE: ParallelLMHead.forward already extracts last-token logits
             # for prefill batches, so logits has shape [bs, vocab].
