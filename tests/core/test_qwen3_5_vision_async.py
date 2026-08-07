@@ -59,7 +59,7 @@ def _make_hf_reference():
 def _build_async_engine():
     engine_config = EngineConfig(
         model_path=snapshot_download(_MODEL_ID), tp_info=DistributedInfo(0, 1),
-        dtype=torch.float32, max_running_req=4, num_page_override=4096, max_seq_len_override=4096,
+        dtype=torch.bfloat16, max_running_req=4, num_page_override=4096, max_seq_len_override=4096,
     )
 
     engine = Engine(engine_config)  # Engine asserts that cuda is not initialized, so it is created first
