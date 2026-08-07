@@ -149,7 +149,7 @@ def test_repeated_block_prefill_equals_fresh_prefill():
 
     session.free_block(reused)  # clear() (keeps the object) + return pages
     lr = session.prefill_block(
-        reused, ids_b, mm_token_type_ids=mm_a, pixel_values=pv_b, image_grid_thw=grid_b
+        reused, ids_b, mm_token_type_ids=mm_b, pixel_values=pv_b, image_grid_thw=grid_b
     )[0].float()
     assert reused.num_tokens == fresh.num_tokens, (reused.num_tokens, fresh.num_tokens)
     assert reused.mrope_span == fresh.mrope_span
@@ -162,7 +162,7 @@ def test_two_image_prefill_matches_hf():
     path: get_rope_index over 2 grids + vision tower over 2 images + scatter)."""
     engine, session, ref, mc = _build_async_engine()
     ids = ref["two"]["input_ids"][0].to(torch.int32)
-    mm_token_type_ids = ref["two"][0]["mm_token_type_ids"]
+    mm_token_type_ids = ref["two"]["mm_token_type_ids"][0]
     pv = ref["two"]["pixel_values"].float()
     grid = ref["two"]["image_grid_thw"]  # [2, 3]
     assert grid.shape[0] == 2
