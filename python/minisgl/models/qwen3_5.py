@@ -86,15 +86,15 @@ class Qwen3_5Model(BaseOP):
         mrope_positions: torch.Tensor | None = None
         if pixel_values is not None:
             assert mm_token_type_ids is not None
+            batch = get_global_ctx().batch
+            assert batch.size == 1, "batching multimodal prefills is not implemented yet"
             image_embeds = self.visual.forward(pixel_values, image_grid_thw)  # (n_img, hidden)
             image_mask = mm_token_type_ids == 1  # 0 - text, 1 - image, 2 - video, etc
             x = x.clone()
             x[image_mask] = image_embeds.to(x.dtype)
             spatial_merge_size = self.config.vision_config.spatial_merge_size
-            # TODO[jheuristic] proper batching support
-            # TODO[jheuristic] post-update block positions override
             mrope_positions = get_rope_index(input_ids, mm_token_type_ids, spatial_merge_size, image_grid_thw)
-            get_global_ctx().batch.mrope_span_override = int(mrope_positions.max().item()) + 1
+            batch.mrope_span_override = int(mrope_positions.max().item()) + 1
         residual: torch.Tensor | None = None
         for layer in self.layers.op_list:
             x, residual = layer.forward(x, residual, mrope_positions)
