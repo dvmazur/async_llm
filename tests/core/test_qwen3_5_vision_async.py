@@ -176,8 +176,8 @@ def test_two_image_prefill_matches_hf():
                                  image_grid_thw=grid, write_to=block)
     logits = asyncio.run(_compute_logits()).logits.float().cpu()
     hf = ref["last_logits"]
-    assert F.cosine_similarity(logits, hf, dim=0).item() > 0.99
     assert torch.equal(logits.argmax(), hf.argmax()), (int(logits.argmax()), int(hf.argmax()))
+    assert F.cosine_similarity(logits, hf, dim=0).item() > 0.99
 
 
 if __name__ == "__main__":
