@@ -16,6 +16,7 @@ Run::
 
 from __future__ import annotations
 
+import asyncio
 import functools
 
 import pytest
@@ -169,11 +170,11 @@ def test_two_image_prefill_matches_hf():
     pv = ref["two"]["pixel_values"].float()
     grid = ref["two"]["image_grid_thw"]  # [2, 3]
     assert grid.shape[0] == 2
-    async def _compute_logits():
+    async def _compute_logits() -> torch.Tensor:
         block = await llm.create_block()
-        return await llm.forward(ids, [block], mm_token_type_ids=mm_token_type_ids, pixel_values=pv,
-                                 image_grid_thw=grid, write_to=block)
-    logits = _compute_logits()[0].float().cpu()
+        return (await llm.forward(ids, [block], mm_token_type_ids=mm_token_type_ids, pixel_values=pv,
+                                  image_grid_thw=grid, write_to=block)).logits
+    logits = asyncio.run(_compute_logits())[0].float().cpu()
     hf = ref["last_logits"]
     assert torch.equal(logits.argmax(), hf.argmax()), (int(logits.argmax()), int(hf.argmax()))
     assert F.cosine_similarity(logits, hf, dim=0).item() > 0.99
