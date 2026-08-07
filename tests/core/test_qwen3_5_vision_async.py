@@ -166,9 +166,8 @@ def test_two_image_prefill_matches_hf():
     pv = ref["two"]["pixel_values"].float()
     grid = ref["two"]["image_grid_thw"]  # [2, 3]
     assert grid.shape[0] == 2
-    mrope = get_rope_index(ids.long(), mm_token_type_ids, mc.vision_config.spatial_merge_size, grid)
     logits = session.prefill_block(
-        session.create_block(), ids, pixel_values=pv, image_grid_thw=grid, mrope_positions=mrope
+        session.create_block(), ids, mm_token_type_ids=mm_token_type_ids, pixel_values=pv, image_grid_thw=grid,
     )[0].float().cpu()
     hf = ref["last_logits"]
     assert torch.equal(logits.argmax(), hf.argmax()), (int(logits.argmax()), int(hf.argmax()))
