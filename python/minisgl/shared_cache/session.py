@@ -256,17 +256,8 @@ class SharedCacheSession:
                 "it (its own tokens are attended to by the self segment)"
             )
         if context:
-            if pixel_values is not None:
-                # A mid-sequence image block would need 3D block-relative mRoPE key
-                # rotation in the context-prefill op (query/key positions become the
-                # image grid, not a scalar) -- not implemented.  Prefill an image
-                # block standalone (context=None, root or placed after other blocks
-                # in the decode view) instead; only text blocks context-prefill today.
-                raise NotImplementedError(
-                    "image (pixel_values) in a context prefill is unsupported; "
-                    "prefill image blocks standalone (context=None)"
-                )
-            return self._prefill_block_in_context(block, input_ids, context)
+            return self._prefill_block_in_context(
+                block, input_ids, context, pixel_values, image_grid_thw, mm_token_type_ids)
 
         assert cached_len + seq_len <= self.page_table.shape[1], (
             f"prefill of {seq_len} tokens into a block of {cached_len} exceeds the "
@@ -328,6 +319,9 @@ class SharedCacheSession:
         block: CacheBlock,
         input_ids: torch.Tensor,
         context: List[CacheBlock],
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.Tensor] = None,
+        mm_token_type_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Prefill *block* while attending to *context* blocks (all non-empty).
 
@@ -360,6 +354,10 @@ class SharedCacheSession:
         batch.attn_metadata = self.sc_attn.prepare_context_prefill(
             context, self_pages, seq_len, self_prefix_len=cached_len
         )
+        if pixel_values is not None:
+            batch.pixel_values = pixel_values.to(self.device)
+            batch.image_grid_thw = image_grid_thw.to(self.device)
+            batch.mm_token_type_ids = mm_token_type_ids.to(self.device)
 
         logits = self._forward(batch, cache_structure=[[*context, block]], write_to=[block])
 
