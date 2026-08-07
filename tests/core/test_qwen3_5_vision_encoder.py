@@ -71,7 +71,7 @@ def _make_hf_inputs(processor, num_images: int):
 
 def test_get_rope_index_text_only():
     ids = torch.tensor([5, 6, 7, 8, 9], dtype=torch.long)
-    pos = get_rope_index(ids, image_token_id=999, spatial_merge_size=2, image_grid_thw=None)
+    pos = get_rope_index(ids, mm_token_type_ids=torch.zeros_like(ids), spatial_merge_size=2, image_grid_thw=None)
     assert tuple(pos.shape) == (3, 5)
     expected = torch.arange(5).view(1, -1).expand(3, -1)
     assert torch.equal(pos, expected)  # all 3 axes equal & incrementing
