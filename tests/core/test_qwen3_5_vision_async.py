@@ -163,7 +163,7 @@ def test_two_image_prefill_matches_hf():
     path: get_rope_index over 2 grids + vision tower over 2 images + scatter)."""
     engine, session, ref, mc = _build_async_engine()
     ids = ref["two"]["input_ids"][0].to(torch.int32)
-    mm_token_type_ids = ref["two"]["mm_token_type_ids"]
+    mm_token_type_ids = ref["two"][0]["mm_token_type_ids"]
     pv = ref["two"]["pixel_values"].float()
     grid = ref["two"]["image_grid_thw"]  # [2, 3]
     assert grid.shape[0] == 2

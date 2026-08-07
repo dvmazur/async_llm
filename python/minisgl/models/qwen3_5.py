@@ -93,7 +93,7 @@ class Qwen3_5Model(BaseOP):
             spatial_merge_size = self.config.vision_config.spatial_merge_size
             # TODO[jheuristic] proper batching support
             # TODO[jheuristic] post-update block positions override
-            mrope_positions = get_rope_index(input_ids[0], mm_token_type_ids[0], spatial_merge_size, image_grid_thw)
+            mrope_positions = get_rope_index(input_ids, mm_token_type_ids, spatial_merge_size, image_grid_thw)
         residual: torch.Tensor | None = None
         for layer in self.layers.op_list:
             x, residual = layer.forward(x, residual, mrope_positions)
