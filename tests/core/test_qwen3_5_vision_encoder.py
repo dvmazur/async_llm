@@ -82,7 +82,7 @@ def test_get_rope_index_image_compression():
     # 2 text, then a 1x4x4 image (4 llm tokens after 2x2 merge), then 3 text
     ids = torch.tensor([1, 1] + [img] * 4 + [2, 2, 2], dtype=torch.long)
     grid = torch.tensor([[1, 4, 4]], dtype=torch.long)
-    pos = get_rope_index(ids, image_token_id=img, spatial_merge_size=2, image_grid_thw=grid)
+    pos = get_rope_index(ids, (ids==img).long(), spatial_merge_size=2, image_grid_thw=grid)
     # image occupies llm grid 1x2x2 starting at pos 2; text resumes at 2 + max(4,4)//2 = 4
     exp_t = torch.tensor([0, 1, 2, 2, 2, 2, 4, 5, 6])
     exp_h = torch.tensor([0, 1, 2, 2, 3, 3, 4, 5, 6])
@@ -103,7 +103,7 @@ def test_get_rope_index_matches_hf(num_images: int):
     assert grid.shape[0] == num_images
     got = get_rope_index(
         inputs["input_ids"][0],
-        image_token_id=model.config.image_token_id,
+        mm_token_type_ids=torch.eq(inputs["input_ids"][0], model.config.image_token_id).long(),
         spatial_merge_size=2,
         image_grid_thw=grid,
     )
