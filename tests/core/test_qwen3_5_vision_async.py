@@ -62,17 +62,9 @@ def _build_async_engine():
 
     engine = Engine(engine_config)  # Engine asserts that cuda is not initialized, so it is created first
     ref = _make_hf_reference()  # compute reference model after engine is already initialized
-    input_ids = ref["one"]["input_ids"][0].to(torch.int32)
-    pixel_values = ref["one"]["pixel_values"].float()
-    mm_token_type_ids = ref["one"]["mm_token_type_ids"]
-    grid = ref["one"]["image_grid_thw"]
-
     session = SharedCacheSession(engine)
     config = engine_config.model_config
-    mrope = get_rope_index(
-        input_ids.long(), mm_token_type_ids, config.vision_config.spatial_merge_size, grid
-    )
-    return engine, session, input_ids, pixel_values, grid, mrope, ref, config
+    return engine, session, ref, config
 
 
 def _make_synthetic_image_block(config, h: int, w: int, seed: int):
@@ -97,12 +89,17 @@ def _make_synthetic_image_block(config, h: int, w: int, seed: int):
 
 
 def test_ar_image_single_worker_matches_hf_greedy():
-    engine, session, input_ids, pixel_values, grid, mrope, ref, mc = _build_async_engine()
+    engine, session, ref, mc = _build_async_engine()
+    input_ids = ref["one"]["input_ids"][0].to(torch.int32)
+    pixel_values = ref["one"]["pixel_values"].float()
+    mm_token_type_ids = ref["one"]["mm_token_type_ids"]
+    grid = ref["one"]["image_grid_thw"]
+
     hf_greedy_ids = ref["greedy_ids"]
     N = len(hf_greedy_ids)
     prompt = session.create_block()
     first = int(session.prefill_block(
-        prompt, input_ids, pixel_values=pixel_values, image_grid_thw=grid, mrope_positions=mrope,
+        prompt, input_ids, mm_token_type_ids=mm_token_type_ids, pixel_values=pixel_values, image_grid_thw=grid,
     )[0].argmax().item())
     gen = session.create_block()
     group = WorkerGroup(cache_structure=[[prompt, gen]], write_to=[gen])
@@ -115,10 +112,14 @@ def test_ar_image_single_worker_matches_hf_greedy():
 
 
 def test_ar_image_two_workers_decode():
-    engine, session, input_ids, pixel_values, grid, mrope, ref, mc = _build_async_engine()
+    engine, session, ref, mc = _build_async_engine()
+    input_ids = ref["one"]["input_ids"][0].to(torch.int32)
+    pixel_values = ref["one"]["pixel_values"].float()
+    mm_token_type_ids = ref["one"]["mm_token_type_ids"]
+    grid = ref["one"]["image_grid_thw"]
     prompt = session.create_block()
     pl = session.prefill_block(
-        prompt, input_ids, pixel_values=pixel_values, image_grid_thw=grid, mrope_positions=mrope,
+        prompt, input_ids, mm_token_type_ids=mm_token_type_ids, pixel_values=pixel_values, image_grid_thw=grid,
     )
     top2 = torch.topk(pl[0], 2).indices.to(torch.int32)
     w1, w2 = session.create_block(), session.create_block()
@@ -133,7 +134,7 @@ def test_repeated_block_prefill_equals_fresh_prefill():
     """Prefill after clear must reproduce a fresh prefill
     of the same content bit-for-bit, including a *different* image size (changing
     token count + mRoPE span).  This is the updatable-image-in-context hook."""
-    engine, session, input_ids, pixel_values, grid, mrope, ref, mc = _build_async_engine()
+    engine, session, ref, mc = _build_async_engine()
     ids_a, pv_a, grid_a, mr_a = _make_synthetic_image_block(mc, 8, 8, seed=1)
     ids_b, pv_b, grid_b, mr_b = _make_synthetic_image_block(mc, 12, 8, seed=2)  # different grid
 
@@ -160,7 +161,7 @@ def test_repeated_block_prefill_equals_fresh_prefill():
 def test_two_image_prefill_matches_hf():
     """A prompt with TWO images prefills to the same next-token as HF (multi-image
     path: get_rope_index over 2 grids + vision tower over 2 images + scatter)."""
-    engine, session, input_ids, pixel_values, grid, mrope, ref, mc = _build_async_engine()
+    engine, session, ref, mc = _build_async_engine()
     ids = ref["two"]["input_ids"][0].to(torch.int32)
     mm_token_type_ids = ref["two"]["mm_token_type_ids"]
     pv = ref["two"]["pixel_values"].float()
