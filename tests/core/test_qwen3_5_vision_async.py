@@ -84,15 +84,14 @@ def _make_synthetic_image_block(config, h: int, w: int, seed: int):
         dtype=torch.int32,
     )
     mm_token_type_ids = torch.where(ids.long() == config.image_token_id, 1, 0)  # 0 = text, 1 = image, 2 = ...
-    mrope = get_rope_index(ids.long(), mm_token_type_ids, merge, grid)
-    return ids, pixel_values, grid, mrope
+    return ids, pixel_values, grid, mm_token_type_ids
 
 
 def test_ar_image_single_worker_matches_hf_greedy():
     engine, session, ref, mc = _build_async_engine()
     input_ids = ref["one"]["input_ids"][0].to(torch.int32)
+    mm_token_type_ids = ref["one"][0]["mm_token_type_ids"]
     pixel_values = ref["one"]["pixel_values"].float()
-    mm_token_type_ids = ref["one"]["mm_token_type_ids"]
     grid = ref["one"]["image_grid_thw"]
 
     hf_greedy_ids = ref["greedy_ids"]
@@ -114,8 +113,8 @@ def test_ar_image_single_worker_matches_hf_greedy():
 def test_ar_image_two_workers_decode():
     engine, session, ref, mc = _build_async_engine()
     input_ids = ref["one"]["input_ids"][0].to(torch.int32)
+    mm_token_type_ids = ref["one"]["mm_token_type_ids"][0]
     pixel_values = ref["one"]["pixel_values"].float()
-    mm_token_type_ids = ref["one"]["mm_token_type_ids"]
     grid = ref["one"]["image_grid_thw"]
     prompt = session.create_block()
     pl = session.prefill_block(
@@ -135,22 +134,22 @@ def test_repeated_block_prefill_equals_fresh_prefill():
     of the same content bit-for-bit, including a *different* image size (changing
     token count + mRoPE span).  This is the updatable-image-in-context hook."""
     engine, session, ref, mc = _build_async_engine()
-    ids_a, pv_a, grid_a, mr_a = _make_synthetic_image_block(mc, 8, 8, seed=1)
-    ids_b, pv_b, grid_b, mr_b = _make_synthetic_image_block(mc, 12, 8, seed=2)  # different grid
+    ids_a, pv_a, grid_a, mm_a = _make_synthetic_image_block(mc, 8, 8, seed=1)
+    ids_b, pv_b, grid_b, mm_b = _make_synthetic_image_block(mc, 12, 8, seed=2)  # different grid
 
     # Fresh prefill of image B in a clean block.
     fresh = session.create_block()
     lf = session.prefill_block(
-        fresh, ids_b, pixel_values=pv_b, image_grid_thw=grid_b, mrope_positions=mr_b
+        fresh, ids_b, pixel_values=pv_b, image_grid_thw=grid_b,
     )[0].float()
 
     # Prefill image A, then refresh (clear-prefill) in place to image B.
     reused = session.create_block()
-    session.prefill_block(reused, ids_a, pixel_values=pv_a, image_grid_thw=grid_a, mrope_positions=mr_a)
+    session.prefill_block(reused, ids_a, mm_token_type_ids=mm_a, pixel_values=pv_a, image_grid_thw=grid_a)
 
     session.free_block(reused)  # clear() (keeps the object) + return pages
     lr = session.prefill_block(
-        reused, ids_b, pixel_values=pv_b, image_grid_thw=grid_b, mrope_positions=mr_b
+        reused, ids_b, mm_token_type_ids=mm_a, pixel_values=pv_b, image_grid_thw=grid_b
     )[0].float()
     assert reused.num_tokens == fresh.num_tokens, (reused.num_tokens, fresh.num_tokens)
     assert reused.mrope_span == fresh.mrope_span
