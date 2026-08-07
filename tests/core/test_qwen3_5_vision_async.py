@@ -49,20 +49,24 @@ def _make_hf_reference():
     """
     model, processor = _make_hf_model()
     one, two = _make_hf_inputs(processor, 1), _make_hf_inputs(processor, 2)
-    follow_up_1 = _make_hf_inputs(processor, 1, text="Wait for the second image", add_generation_prompt=False)
+    follow_up_1 = processor.apply_chat_template(
+        [{"role": "user", "content": "How many unique colours are there on the previous image?"}],
+        add_generation_prompt=False, tokenize=True, return_dict=True, return_tensors="pt",
+    )
     follow_up_2 = _make_hf_inputs(processor, 1, text="What is the difference?", add_generation_prompt=True)
-    follow_up_1.pop("attention_mask"); follow_up_2.pop("attention_mask")
+    follow_up_1.pop("attention_mask"); follow_up_2.pop("attention_mask")  # attention_mask confuses HF with cache
     with torch.no_grad():
         greedy = model.generate(**one.to(_DEVICE), max_new_tokens=_GREEDY_TOKENS, do_sample=False)
         last_logits_two_images = model(**two.to(_DEVICE)).logits[0, -1].float().cpu()
 
+        # incremental conditional forward testing scenario: image+text -> text-only -> another image+text
         cache = transformers.DynamicCache(config=model.config)
         model(**one, use_cache=True, past_key_values=cache).logits[0, -1].float().cpu()
         last_logits_ckpt_1 = model(**follow_up_1.to(_DEVICE), use_cache=True, past_key_values=cache
                                    ).logits[0, -1].float().cpu()
         last_logits_ckpt_2 = model(**follow_up_2.to(_DEVICE), use_cache=True, past_key_values=cache
                                    ).logits[0, -1].float().cpu()
-    return dict(one=one, two=two,
+    return dict(processor=processor, one=one, two=two,
                 greedy_ids=greedy[0, one["input_ids"].shape[-1] :].tolist(),
                 last_logits_two_images=last_logits_two_images,
                 follow_up_1=follow_up_1, follow_up_2=follow_up_2,
@@ -194,37 +198,42 @@ def test_two_image_prefill_matches_hf():
     assert F.cosine_similarity(logits, hf, dim=0).item() > 0.99
 
 
-@pytest.mark.skip(reason="not yet supported")
 def test_contextual_image_prefill_matches_hf():
     """Encode several conversation turns in consecutive blocks and via append, check against incremental HF forward"""
     llm, engine, session, ref, mc = _build_async_engine()
     async def _compute_logits():
-        block_A, block_B, block_C = await asyncio.gather(llm.create_block(), llm.create_block(), llm.create_block())
+        # stage 0: encode the common prompt; it is not tested directly, but it affects all subsequent checkpoints
+        block_A, block_B, block_C, block_D = await asyncio.gather(*(llm.create_block() for _ in range(4)))
         await llm.forward(ref["one"]["input_ids"][0].to(torch.int32), mm_token_type_ids=ref["one"]["mm_token_type_ids"][0],
                           pixel_values=ref["one"]["pixel_values"].float(), image_grid_thw=ref["one"]["image_grid_thw"],
                           cache_view=[block_A], write_to=block_A, return_logits=False);
-        ckpt_1 = await llm.forward(
-            ref['follow_up_1']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
-            pixel_values=ref["follow_up_1"]["pixel_values"].float(), image_grid_thw=ref["follow_up_1"]["image_grid_thw"],
-            cache_view=[block_A, block_B], write_to=block_B, return_logits=True);
+
+        ckpt_1 = await llm.forward(  # stage 1: non-image conditioned on image
+            ref['follow_up_1']['input_ids'][0], cache_view=[block_A, block_B], write_to=block_B, return_logits=True)
         assert block_B.num_tokens == len(ref['follow_up_1']['input_ids'])
 
-        ckpt_2_separate = await llm.forward(
-            ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
-            pixel_values=ref["follow_up_2"]["pixel_values"].float(), image_grid_thw=ref["follow_up_2"]["image_grid_thw"],
-            cache_view=[block_A, block_B, block_C], write_to=block_C, return_logits=True)
+        ckpt_1_control = await llm.forward(  # stage 1 control group: without condition, should NOT be close enough
+            ref['follow_up_1']['input_ids'][0], cache_view=[block_C], write_to=block_C, return_logits=True)
+        assert block_C.num_tokens == len(ref['follow_up_1']['input_ids'])
 
-        ckpt_2_appended = await llm.forward(
-            ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
-            pixel_values=ref["follow_up_2"]["pixel_values"].float(), image_grid_thw=ref["follow_up_2"]["image_grid_thw"],
-            cache_view=[block_A, block_B], write_to=block_B, return_logits=True)
-        assert block_B.num_tokens == len(ref['follow_up_1']['input_ids'][0]) + len(ref['follow_up_2']['input_ids'][0])
-        return [ckpt.logits.float().cpu() for ckpt in (ckpt_1, ckpt_2_separate, ckpt_2_appended)]
+        # ckpt_2_separate = await llm.forward(  # stage 2: image conditioned on stage 1, write to new block
+        #     ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
+        #     pixel_values=ref["follow_up_2"]["pixel_values"].float(), image_grid_thw=ref["follow_up_2"]["image_grid_thw"],
+        #     cache_view=[block_A, block_B, block_D], write_to=block_D, return_logits=True)
+        #
+        # ckpt_2_appended = await llm.forward(  # stage 2 alternative method: append new KVs to block B
+        #     ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
+        #     pixel_values=ref["follow_up_2"]["pixel_values"].float(), image_grid_thw=ref["follow_up_2"]["image_grid_thw"],
+        #     cache_view=[block_A, block_B], write_to=block_B, return_logits=True)
+        # assert block_B.num_tokens == len(ref['follow_up_1']['input_ids'][0]) + len(ref['follow_up_2']['input_ids'][0])
+        ckpt_2_separate = ckpt_2_appended = ckpt_1_control  # TODO
+        return [ckpt.logits.float().cpu() for ckpt in (ckpt_1, ckpt_1_control, ckpt_2_separate, ckpt_2_appended)]
 
-    ckpt_1_logits, ckpt_2_separate_logits, ckpt_2_appended_logits = asyncio.run(_compute_logits())
+    ckpt_1_logits, ckpt_1_control_logits, ckpt_2_separate_logits, ckpt_2_appended_logits = asyncio.run(_compute_logits())
     assert F.cosine_similarity(ckpt_1_logits, ref["last_logits_ckpt_1"], dim=0).item() > 0.99
-    assert F.cosine_similarity(ckpt_2_separate_logits, ref["last_logits_ckpt_2"], dim=0).item() > 0.99
-    assert F.cosine_similarity(ckpt_2_appended_logits, ref["last_logits_ckpt_2"], dim=0).item() > 0.99
+    assert F.cosine_similarity(ckpt_1_logits, ref["last_logits_ckpt_1"], dim=0).item() < 0.99
+    # assert F.cosine_similarity(ckpt_2_separate_logits, ref["ckpt_2_last_logits"], dim=0).item() > 0.99
+    # assert F.cosine_similarity(ckpt_2_appended_logits, ref["ckpt_2_last_logits"], dim=0).item() > 0.99
 
 
 if __name__ == "__main__":
