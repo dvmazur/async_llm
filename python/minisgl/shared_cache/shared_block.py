@@ -139,6 +139,11 @@ class CacheBlock:
         else:
             assert self.has_capacity, "append_token needs a new page but none was given"
         self.num_tokens += 1
+        if self.mrope_span_override is not None:
+            # A decoded token is text: it advances the mRoPE frame by one, exactly
+            # like the token count.  Tracked explicitly because an image earlier in
+            # the block has decoupled the span from ``num_tokens``.
+            self.mrope_span_override += 1
 
     def clear(self) -> List[int]:
         """Reset the block and return the page-start slots the caller should free."""
