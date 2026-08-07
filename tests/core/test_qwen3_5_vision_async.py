@@ -22,6 +22,7 @@ import functools
 import pytest
 import torch
 import torch.nn.functional as F
+import transformers
 
 from huggingface_hub import snapshot_download
 from minisgl.distributed import DistributedInfo
@@ -29,7 +30,6 @@ from minisgl.engine import Engine, EngineConfig
 from minisgl.llm import AsyncLLM
 from minisgl.scheduler import AsyncCacheEngine
 from minisgl.shared_cache import SharedCacheSession
-from minisgl.models.qwen3_5_mrope import get_rope_index
 from minisgl.shared_cache import WorkerGroup
 
 from test_qwen3_5_vision_encoder import _make_hf_model, _make_hf_inputs, _DEVICE
@@ -42,17 +42,31 @@ _GREEDY_TOKENS = 10
 @functools.lru_cache(maxsize=1)
 def _make_hf_reference():
     """HF ground truth: one- and two-image prompts, a greedy continuation of the
-    single-image prompt, and HF's last-token logits for the two-image prompt.
+    single-image prompt, HF's last-token logits for the two-image prompt and incremental encoding.
 
     Returns CPU tensors; the reference model is released before we return so its
     fp32 weights are not resident when the engine sizes its KV pool.
     """
     model, processor = _make_hf_model()
     one, two = _make_hf_inputs(processor, 1), _make_hf_inputs(processor, 2)
+    follow_up_1 = _make_hf_inputs(processor, 1, text="Wait for the second image", add_generation_prompt=False)
+    follow_up_2 = _make_hf_inputs(processor, 1, text="What is the difference?", add_generation_prompt=True)
+    follow_up_1.pop("attention_mask"); follow_up_2.pop("attention_mask")
     with torch.no_grad():
         greedy = model.generate(**one.to(_DEVICE), max_new_tokens=_GREEDY_TOKENS, do_sample=False)
-        last_logits = model(**two.to(_DEVICE)).logits[0, -1].float().cpu()
-    return dict(one=one, two=two, greedy_ids=greedy[0, one["input_ids"].shape[-1] :].tolist(), last_logits=last_logits)
+        last_logits_two_images = model(**two.to(_DEVICE)).logits[0, -1].float().cpu()
+
+        cache = transformers.DynamicCache(config=model.config)
+        model(**one, use_cache=True, past_key_values=cache).logits[0, -1].float().cpu()
+        last_logits_ckpt_1 = model(**follow_up_1.to(_DEVICE), use_cache=True, past_key_values=cache
+                                   ).logits[0, -1].float().cpu()
+        last_logits_ckpt_2 = model(**follow_up_2.to(_DEVICE), use_cache=True, past_key_values=cache
+                                   ).logits[0, -1].float().cpu()
+    return dict(one=one, two=two,
+                greedy_ids=greedy[0, one["input_ids"].shape[-1] :].tolist(),
+                last_logits_two_images=last_logits_two_images,
+                follow_up_1=follow_up_1, follow_up_2=follow_up_2,
+                last_logits_ckpt_1=last_logits_ckpt_1, last_logits_ckpt_2=last_logits_ckpt_2)
 
 
 @functools.lru_cache(maxsize=1)
@@ -175,9 +189,42 @@ def test_two_image_prefill_matches_hf():
         return await llm.forward(ids, [block], mm_token_type_ids=mm_token_type_ids, pixel_values=pv,
                                  image_grid_thw=grid, write_to=block)
     logits = asyncio.run(_compute_logits()).logits.float().cpu()
-    hf = ref["last_logits"]
+    hf = ref["last_logits_two"]
     assert torch.equal(logits.argmax(), hf.argmax()), (int(logits.argmax()), int(hf.argmax()))
     assert F.cosine_similarity(logits, hf, dim=0).item() > 0.99
+
+
+@pytest.mark.skip(reason="not yet supported")
+def test_contextual_image_prefill_matches_hf():
+    """Encode several conversation turns in consecutive blocks and via append, check against incremental HF forward"""
+    llm, engine, session, ref, mc = _build_async_engine()
+    async def _compute_logits():
+        block_A, block_B, block_C = await asyncio.gather(llm.create_block(), llm.create_block(), llm.create_block())
+        await llm.forward(ref["one"]["input_ids"][0].to(torch.int32), mm_token_type_ids=ref["one"]["mm_token_type_ids"][0],
+                          pixel_values=ref["one"]["pixel_values"].float(), image_grid_thw=ref["one"]["image_grid_thw"],
+                          cache_view=[block_A], write_to=block_A, return_logits=False);
+        ckpt_1 = await llm.forward(
+            ref['follow_up_1']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
+            pixel_values=ref["follow_up_1"]["pixel_values"].float(), image_grid_thw=ref["follow_up_1"]["image_grid_thw"],
+            cache_view=[block_A, block_B], write_to=block_B, return_logits=True);
+        assert block_B.num_tokens == len(ref['follow_up_1']['input_ids'])
+
+        ckpt_2_separate = await llm.forward(
+            ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
+            pixel_values=ref["follow_up_2"]["pixel_values"].float(), image_grid_thw=ref["follow_up_2"]["image_grid_thw"],
+            cache_view=[block_A, block_B, block_C], write_to=block_C, return_logits=True)
+
+        ckpt_2_appended = await llm.forward(
+            ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
+            pixel_values=ref["follow_up_2"]["pixel_values"].float(), image_grid_thw=ref["follow_up_2"]["image_grid_thw"],
+            cache_view=[block_A, block_B], write_to=block_B, return_logits=True)
+        assert block_B.num_tokens == len(ref['follow_up_1']['input_ids'][0]) + len(ref['follow_up_2']['input_ids'][0])
+        return [ckpt.logits.float().cpu() for ckpt in (ckpt_1, ckpt_2_separate, ckpt_2_appended)]
+
+    ckpt_1_logits, ckpt_2_separate_logits, ckpt_2_appended_logits = asyncio.run(_compute_logits())
+    assert F.cosine_similarity(ckpt_1_logits, ref["last_logits_ckpt_1"], dim=0).item() > 0.99
+    assert F.cosine_similarity(ckpt_2_separate_logits, ref["last_logits_ckpt_2"], dim=0).item() > 0.99
+    assert F.cosine_similarity(ckpt_2_appended_logits, ref["last_logits_ckpt_2"], dim=0).item() > 0.99
 
 
 if __name__ == "__main__":

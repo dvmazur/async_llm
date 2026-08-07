@@ -47,7 +47,7 @@ def _make_hf_model():
     return model, AutoProcessor.from_pretrained(_MODEL_ID)
 
 
-def _make_hf_inputs(processor, num_images: int):
+def _make_hf_inputs(processor, num_images: int, text: str = "Describe the image.", add_generation_prompt=True):
     """Processor output for a prompt with ``num_images`` deterministic images."""
 
     rng = np.random.default_rng(42)
@@ -56,10 +56,10 @@ def _make_hf_inputs(processor, num_images: int):
         np.broadcast_to(np.stack([255 * x, 255 * (1 - x), 255 * x], axis=-1).astype(np.uint8), (64, 96, 3))
     ] + [rng.integers(0, 256, (64, 96, 3), dtype=np.uint8) for _ in range(num_images - 1)]
     content = [{"type": "image", "image": Image.fromarray(images[i])} for i in range(0, num_images)]
-    content.append({"type": "text", "text": "Describe the image."})
+    content.append({"type": "text", "text": text})
     return processor.apply_chat_template(
         [{"role": "user", "content": content}],
-        add_generation_prompt=True,
+        add_generation_prompt=add_generation_prompt,
         tokenize=True,
         return_dict=True,
         return_tensors="pt",
