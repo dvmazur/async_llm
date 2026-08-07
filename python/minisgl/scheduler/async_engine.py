@@ -86,7 +86,6 @@ class PrefillRequest:
     input_ids: torch.Tensor  # 1-D int32 cpu
     context: CacheView  # may be empty
     into: CacheBlock  # block to fill
-    capture_affine: bool
     return_logits: bool  # resolve with last-token logits instead of None
     future: Any  # resolved with logits [vocab] if return_logits else None
     # Multimodal inputs produced by huggingface.transformers.Processor
@@ -166,7 +165,6 @@ class AsyncCacheEngine:
         *,
         into: CacheBlock,
         context: Optional[CacheView] = None,
-        capture_affine: bool = True,
         return_logits: bool = False,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
@@ -183,7 +181,6 @@ class AsyncCacheEngine:
                 input_ids=token_ids,
                 context=list(context or []),
                 into=into,
-                capture_affine=capture_affine,
                 return_logits=return_logits,
                 future=future,
                 pixel_values=pixel_values,
@@ -238,7 +235,7 @@ class AsyncCacheEngine:
         return None
 
     def _run_prefill(self, req: PrefillRequest) -> None:
-        kwargs: dict[str, Any] = {"context": req.context or None, "capture_affine": req.capture_affine}
+        kwargs: dict[str, Any] = {"context": req.context or None}
         # Only forward image kwargs for multimodal blocks, so the text path keeps the
         # original prefill_block signature (stub/non-vision sessions stay compatible).
         if req.pixel_values is not None:

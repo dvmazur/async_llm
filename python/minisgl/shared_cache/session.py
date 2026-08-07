@@ -209,7 +209,6 @@ class SharedCacheSession:
         block: CacheBlock,
         input_ids: torch.Tensor,
         context: Optional[List[CacheBlock]] = None,
-        capture_affine: bool = True,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
         mm_token_type_ids: Optional[torch.Tensor] = None,
@@ -229,13 +228,6 @@ class SharedCacheSession:
         the blocks were concatenated ``[ctx_0, ..., block]`` (mirrors the
         reference's ``prefill_cache_block(text, [ctx..., new])``); the stored
         KV stays block-relative either way.  Empty context blocks are skipped.
-
-        ``capture_affine`` only applies to hybrid (Qwen3.5) models with no
-        context.  Set it ``False`` for throwaway prefills whose block is read
-        once and freed (e.g. the mode-switching probe): the GDN layers then skip
-        the O(seq) affine capture (a large, otherwise-wasted cost) and take the
-        numerically-identical from-zero path.  Ignored for standard models, and
-        for an extension (which must continue the block's captured state).
         """
         input_ids = input_ids.to(dtype=torch.int32).flatten().cpu()
         seq_len = len(input_ids)
@@ -317,13 +309,7 @@ class SharedCacheSession:
                 batch.pixel_values = pixel_values.to(self.device)
                 batch.image_grid_thw = image_grid_thw.to(self.device)
                 batch.mm_token_type_ids = mm_token_type_ids.to(self.device)
-            # Throwaway prefills (capture_affine=False) skip the AR path so the
-            # GDN layers don't pay the O(seq) affine capture; a from-zero
-            # standalone prefill is identical to composing an empty chain.  An
-            # extension always takes the AR path: it must start from -- and carry
-            # on -- the block's captured GDN state.
-            cs = [[block]] if (capture_affine or cached_len) else None
-            logits = self._forward(batch, cache_structure=cs, write_to=[block])
+            logits = self._forward(batch, cache_structure=[[block]], write_to=[block])
 
             block.grow_pages(page_starts, seq_len)
             block.token_ids.extend(input_ids.tolist())

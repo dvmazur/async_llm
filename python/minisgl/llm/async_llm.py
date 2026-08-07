@@ -136,7 +136,6 @@ class AsyncLLM:
         mm_token_type_ids: Optional[torch.Tensor] = None,
         context: Optional[CacheView] = None,
         into: Optional[CacheBlock] = None,
-        capture_affine: bool = True,
         return_logits: bool = False,
     ) -> CausalLMOutput:
         """Prefill a block (created here unless *into* is given) with
@@ -151,7 +150,6 @@ class AsyncLLM:
             _as_token_tensor(input_ids),
             into=block,
             context=context,
-            capture_affine=capture_affine,
             return_logits=return_logits,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
@@ -171,7 +169,6 @@ class AsyncLLM:
         mm_token_type_ids: Optional[torch.Tensor] = None,
         write_to: Optional[CacheBlock] = None,
         return_logits: bool = True,
-        capture_affine: bool = True,
     ) -> CausalLMOutput:
         """Run a single forward pass on the LM with the specified cache view,
         adding the new KVs to *write_to* — the unified async forward, covering (conditional) prefill,
@@ -251,7 +248,6 @@ class AsyncLLM:
             ids,
             into=write_to,
             context=(view[:-1] if in_view else view) or None,
-            capture_affine=capture_affine,
             return_logits=return_logits,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,

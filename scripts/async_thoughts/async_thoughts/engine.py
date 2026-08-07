@@ -96,11 +96,6 @@ class ModeSwitchProbe:
       prefills the growing thinker/writer tail in context of it (``forward``'s
       conditional-prefill mode).
 
-    Hybrid (Qwen3.5) models keep the flat, from-scratch prefill: an in-context
-    prefill always pays the O(tail) GDN affine capture — the dominant
-    per-probe cost that ``capture_affine=False`` exists to skip — so prefix-KV
-    reuse there would cost more than the prefix forward it saves.
-
     Call ``close()`` when done to release the cached prefix block.
     """
 
@@ -150,7 +145,7 @@ class ModeSwitchProbe:
         try:
             # The probe block is read once then freed, so skip the GDN affine
             # capture on the flat (hybrid) path; ignored with a context.
-            out = await self.llm.forward(ids, context, write_to=block, capture_affine=False)
+            out = await self.llm.forward(ids, context, write_to=block)
             logits = out.logits.float().cpu()
             yes_logit = float(logits[self.yes_id])
             no_logit = float(logits[self.no_id])

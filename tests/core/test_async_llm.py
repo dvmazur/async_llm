@@ -481,7 +481,7 @@ def test_two_streams_match_lockstep_group(real_engine):
                 out.append(tok)
 
         async def probe():
-            res = await llm.prefill_block(probe_ids, capture_affine=False, return_logits=True)
+            res = await llm.prefill_block(probe_ids, return_logits=True)
             assert res.logits.numel() > 0
             await llm.free_block(res.block)
 
@@ -550,7 +550,7 @@ def test_forward_streams_match_lockstep_group(real_engine):
 
         async def probe():
             blk = await llm.create_block()
-            res = await llm.forward(probe_ids, write_to=blk, capture_affine=False)
+            res = await llm.forward(probe_ids, write_to=blk)
             assert res.logits.numel() > 0
             await llm.free_block(blk)
 

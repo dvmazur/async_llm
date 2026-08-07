@@ -73,15 +73,12 @@ class StubSession:
         block: CacheBlock,
         input_ids: torch.Tensor,
         context: Optional[CacheView] = None,
-        capture_affine: bool = True,
     ) -> torch.Tensor:
         if self.fail_next is not None:
             exc, self.fail_next = self.fail_next, None
             raise exc
         ids = input_ids.tolist()
-        self.prefill_calls.append(
-            {"block": block, "ids": ids, "context": context, "capture_affine": capture_affine}
-        )
+        self.prefill_calls.append({"block": block, "ids": ids, "context": context})
         block.grow_pages(self._pages(len(ids)), len(ids))
         block.token_ids.extend(ids)
         logits = torch.zeros(1, VOCAB)
@@ -143,7 +140,6 @@ class TestQueueMechanics:
         assert logits.shape == (VOCAB,)
         assert int(logits.argmax()) == 5  # decoy of last token 3
         assert block.token_ids == [1, 2, 3]
-        assert session.prefill_calls[0]["capture_affine"] is True
 
     def test_prefill_default_resolves_none(self, stub_engine):
         engine, _ = stub_engine
