@@ -82,18 +82,24 @@ class Qwen3_5Model(BaseOP):
     ) -> torch.Tensor:
         x = self.embed_tokens.forward(input_ids)
         assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None)
-        mrope_positions: torch.Tensor | None = None
+        batch = get_global_ctx().batch
+        # The caller (SharedCacheSession) may have precomputed the positions in the
+        # write block's frame -- they are then already offset past whatever the block
+        # held, which zero-based ``get_rope_index`` output cannot express.
+        mrope_positions: torch.Tensor | None = batch.mrope_positions
         if pixel_values is not None:
             assert mm_token_type_ids is not None
-            batch = get_global_ctx().batch
             assert batch.size == 1, "batching multimodal prefills is not implemented yet"
             image_embeds = self.visual.forward(pixel_values, image_grid_thw)  # (n_img, hidden)
             image_mask = mm_token_type_ids == 1  # 0 - text, 1 - image, 2 - video, etc
             x = x.clone()
             x[image_mask] = image_embeds.to(x.dtype)
-            spatial_merge_size = self.config.vision_config.spatial_merge_size
-            mrope_positions = get_rope_index(input_ids, mm_token_type_ids, spatial_merge_size, image_grid_thw)
-            batch.mrope_span_override = int(mrope_positions.max().item()) + 1
+            if mrope_positions is None:
+                spatial_merge_size = self.config.vision_config.spatial_merge_size
+                mrope_positions = get_rope_index(
+                    input_ids, mm_token_type_ids, spatial_merge_size, image_grid_thw
+                )
+                batch.mrope_span_override = int(mrope_positions.max().item()) + 1
         residual: torch.Tensor | None = None
         for layer in self.layers.op_list:
             x, residual = layer.forward(x, residual, mrope_positions)

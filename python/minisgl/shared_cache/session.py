@@ -128,6 +128,9 @@ class SharedCacheSession:
         )
 
         self._is_hybrid = _is_hybrid_model(engine)
+        # ModelConfig of the loaded model (Qwen3.5 exposes it on the inner module);
+        # only used for the vision tower's spatial_merge_size.
+        self._model_config = getattr(engine.model.model, "config", None)
 
         # Query-rotation attention op for decode (arXiv:2512.10931).  Hybrid
         # (Qwen3.5) models use partial RoPE and a custom full-attention module;
@@ -234,16 +237,15 @@ class SharedCacheSession:
         assert seq_len > 0
 
         cached_len = block.num_tokens
-        if cached_len > 0 and (pixel_values is not None or block.mrope_span_override is not None):
-            # Continuing past an image needs 3-D block-relative mRoPE (the running
-            # position is the image's compressed span, not the token count), and an
-            # image appended mid-block would need its grid positions offset into an
-            # existing block frame -- neither is implemented.  Prefill image blocks
-            # fresh (they are the root of a view) instead.
-            raise NotImplementedError(
-                "extending an image-bearing block, or appending an image to a "
-                "non-empty block, is unsupported; prefill image blocks fresh"
-            )
+        # Zero-based interleaved-mRoPE positions of the new tokens (None => text,
+        # position == index).  They are offset into *block*'s own frame below, so
+        # an image may be appended to a non-empty block and a block that already
+        # holds an image may be extended.
+        mrope_rel = (
+            self._mrope_rel(input_ids, mm_token_type_ids, image_grid_thw)
+            if pixel_values is not None
+            else None
+        )
 
         context = [b for b in (context or []) if b.num_tokens > 0]
         if any(b is block for b in context):
@@ -257,7 +259,8 @@ class SharedCacheSession:
             )
         if context:
             return self._prefill_block_in_context(
-                block, input_ids, context, pixel_values, image_grid_thw, mm_token_type_ids)
+                block, input_ids, context, pixel_values, image_grid_thw, mm_token_type_ids,
+                mrope_rel)
 
         assert cached_len + seq_len <= self.page_table.shape[1], (
             f"prefill of {seq_len} tokens into a block of {cached_len} exceeds the "
@@ -300,13 +303,12 @@ class SharedCacheSession:
                 batch.pixel_values = pixel_values.to(self.device)
                 batch.image_grid_thw = image_grid_thw.to(self.device)
                 batch.mm_token_type_ids = mm_token_type_ids.to(self.device)
+            new_span = self._attach_mrope_positions(batch, block, seq_len, mrope_rel)
             logits = self._forward(batch, cache_structure=[[block]], write_to=[block])
 
             block.grow_pages(page_starts, seq_len)
             block.token_ids.extend(input_ids.tolist())
-            assert (batch.mrope_span_override is None) == (pixel_values is None), "vlm forward must set mrope override"
-            if batch.mrope_span_override is not None:
-                block.mrope_span_override = block.mrope_span_override
+            self._commit_mrope_span(block, new_span)
 
             # NOTE: ParallelLMHead.forward already extracts last-token logits
             # for prefill batches, so logits has shape [bs, vocab].
@@ -322,14 +324,17 @@ class SharedCacheSession:
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
         mm_token_type_ids: Optional[torch.Tensor] = None,
+        mrope_rel: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Prefill *block* while attending to *context* blocks (all non-empty).
 
         A non-empty *block* is extended: the new tokens sit at block-relative
         positions ``cached_len ...`` and the causal self segment spans the
-        block's own prefix as well as the new tokens."""
+        block's own prefix as well as the new tokens.  *mrope_rel* carries the new
+        tokens' zero-based 3-D mRoPE positions when they contain an image."""
         seq_len = len(input_ids)
         cached_len = block.num_tokens
+        cached_span = block.mrope_span
         page_starts, out_loc = self._alloc_token_storage(seq_len, write_to=block)
         # Self segment reads the block's whole (post-write) page list.
         self_pages = torch.cat([block.page_starts_tensor(), page_starts.to(self.device)])
@@ -352,18 +357,86 @@ class SharedCacheSession:
         batch.input_ids = input_ids.to(self.device)
         batch.out_loc = out_loc
         batch.attn_metadata = self.sc_attn.prepare_context_prefill(
-            context, self_pages, seq_len, self_prefix_len=cached_len
+            context,
+            self_pages,
+            seq_len,
+            self_prefix_len=cached_len,
+            self_prefix_span=cached_span,
+            mrope_rel=mrope_rel,
         )
         if pixel_values is not None:
             batch.pixel_values = pixel_values.to(self.device)
             batch.image_grid_thw = image_grid_thw.to(self.device)
             batch.mm_token_type_ids = mm_token_type_ids.to(self.device)
+        new_span = self._attach_mrope_positions(batch, block, seq_len, mrope_rel)
 
         logits = self._forward(batch, cache_structure=[[*context, block]], write_to=[block])
 
         block.grow_pages(page_starts, seq_len)
         block.token_ids.extend(input_ids.tolist())
+        self._commit_mrope_span(block, new_span)
         return logits[:1]
+
+    # ------------------------------------------------------------------
+    # Interleaved mRoPE (Qwen3.5 multimodal)
+    # ------------------------------------------------------------------
+
+    def _mrope_rel(
+        self,
+        input_ids: torch.Tensor,
+        mm_token_type_ids: Optional[torch.Tensor],
+        image_grid_thw: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Zero-based interleaved-mRoPE positions ``[3, S]`` of the new tokens.
+
+        Kept on the CPU: the values feed both the query-rotation plan and the
+        key-rotation positions, and the sequence is short.
+        """
+        from minisgl.models.qwen3_5_mrope import get_rope_index
+
+        assert mm_token_type_ids is not None and image_grid_thw is not None
+        assert self._model_config is not None and self._model_config.is_multimodal, (
+            "multimodal prefill on a model without a vision config"
+        )
+        return get_rope_index(
+            input_ids.cpu(),
+            mm_token_type_ids.cpu(),
+            self._model_config.vision_config.spatial_merge_size,
+            image_grid_thw.cpu(),
+        )
+
+    def _attach_mrope_positions(
+        self,
+        batch: Batch,
+        block: CacheBlock,
+        seq_len: int,
+        mrope_rel: Optional[torch.Tensor],
+    ) -> int:
+        """Put the new tokens' mRoPE positions, shifted into *block*'s own frame,
+        on *batch* and return the block's post-write mRoPE span.
+
+        Keys are stored block-relative, so an image prefilled into a non-empty
+        block -- or any token following one -- must be rotated at
+        ``block.mrope_span + rel``, not at its zero-based grid position.  The
+        positions are only attached when they actually differ from
+        ``batch.positions`` (an image now, or an image already in the block), so
+        text-only prefills keep the plain 1-D RoPE path.
+        """
+        span_advance = seq_len if mrope_rel is None else int(mrope_rel.max()) + 1
+        offset = block.mrope_span
+        if mrope_rel is not None or block.mrope_span_override is not None:
+            rel = mrope_rel
+            if rel is None:
+                rel = torch.arange(seq_len, dtype=torch.int64).view(1, -1).expand(3, -1)
+            batch.mrope_positions = (rel.to(torch.int64) + offset).to(self.device)
+        return offset + span_advance
+
+    @staticmethod
+    def _commit_mrope_span(block: CacheBlock, new_span: int) -> None:
+        """Record the block's mRoPE span after a write (no-op while it tracks the
+        token count, i.e. for every text-only block)."""
+        if new_span != block.num_tokens or block.mrope_span_override is not None:
+            block.mrope_span_override = new_span
 
     @torch.inference_mode()
     def decode_step(
@@ -470,7 +543,9 @@ class SharedCacheSession:
         Returns ``(new_page_for_block, new_token_slots, write_pos)`` where
         ``new_page_for_block`` maps ``id(block)`` -> page-start slot (or None),
         ``new_token_slots`` is ``[num_workers]`` int32 destination slots, and
-        ``write_pos`` is the per-worker block-relative RoPE position.
+        ``write_pos`` is the per-worker block-relative RoPE position -- the
+        block's mRoPE *span*, which equals its token count unless the block holds
+        an image (whose compressed positions advance the frame by less).
         """
         new_page_for_block: Dict[int, Optional[int]] = {}
         blocks_needing_page: List[CacheBlock] = []
@@ -495,7 +570,7 @@ class SharedCacheSession:
             new_page = new_page_for_block[id(wt)]
             page_start = new_page if new_page is not None else wt.page_starts[-1]
             out_loc.append(page_start + (t % self.page_size))
-            write_pos.append(t)
+            write_pos.append(wt.mrope_span)
 
         new_token_slots = torch.tensor(out_loc, dtype=torch.int32, device=self.device)
         return new_page_for_block, new_token_slots, write_pos

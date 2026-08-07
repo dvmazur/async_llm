@@ -70,7 +70,7 @@ def _make_hf_reference():
                 greedy_ids=greedy[0, one["input_ids"].shape[-1] :].tolist(),
                 last_logits_two_images=last_logits_two_images,
                 follow_up_1=follow_up_1, follow_up_2=follow_up_2,
-                last_logits_ckpt_1=last_logits_ckpt_1, last_logits_ckpt_2=last_logits_ckpt_2)
+                last_logits_ckpt_1=last_logits_ckpt_1, ckpt_2_last_logits=last_logits_ckpt_2)
 
 
 @functools.lru_cache(maxsize=1)
@@ -130,6 +130,30 @@ def test_ar_image_single_worker_matches_hf_greedy():
         cur = session.decode_step(group, cur).argmax(-1).to(torch.int32)
         ar_greedy_ids.append(int(cur[0]))
     assert ar_greedy_ids == hf_greedy_ids, f"AR {ar_greedy_ids}\nHF {hf_greedy_ids}"
+
+
+def test_ar_image_decode_into_image_block_matches_hf_greedy():
+    """Same greedy continuation, but decoding *into* the image block itself: the
+    block's mRoPE span (compressed by the image, so != num_tokens) has to advance
+    by one per decoded token, or every step would rotate at the same position."""
+    _, engine, session, ref, mc = _build_async_engine()
+    prompt = session.create_block()
+    first = int(session.prefill_block(
+        prompt, ref["one"]["input_ids"][0].to(torch.int32),
+        mm_token_type_ids=ref["one"]["mm_token_type_ids"][0],
+        pixel_values=ref["one"]["pixel_values"].float(), image_grid_thw=ref["one"]["image_grid_thw"],
+    )[0].argmax().item())
+    span_after_prefill = prompt.mrope_span
+    assert span_after_prefill < prompt.num_tokens, "the image must compress the mRoPE frame"
+
+    group = WorkerGroup(cache_structure=[[prompt]], write_to=[prompt])
+    ar_greedy_ids = [first]
+    cur = torch.tensor([first], dtype=torch.int32)
+    for _ in range(len(ref["greedy_ids"]) - 1):
+        cur = session.decode_step(group, cur).argmax(-1).to(torch.int32)
+        ar_greedy_ids.append(int(cur[0]))
+    assert ar_greedy_ids == ref["greedy_ids"], f"AR {ar_greedy_ids}\nHF {ref['greedy_ids']}"
+    assert prompt.mrope_span == span_after_prefill + len(ref["greedy_ids"]) - 1
 
 
 def test_ar_image_two_workers_decode():

@@ -69,7 +69,10 @@ class SharedCacheAttnMetadata(BaseAttnMetadata):
     # (worker, segment).  For context prefill: S rows (one per new token) per
     # sub-request.
     sub_worker: torch.Tensor  # int64 — source q-row per sub-request row
-    sub_loc: torch.Tensor  # int64 — query RoPE position per sub-request row
+    # int64 query RoPE position per sub-request row: ``[N_sub]`` for 1-D RoPE (and
+    # for text mRoPE rows, where all three axes coincide), or ``[3, N_sub]`` when
+    # the rows carry genuine 3-D mRoPE positions (image tokens in a prefill).
+    sub_loc: torch.Tensor
     pad_slot: torch.Tensor  # [N_sub] int64 — scatter index into [W * max_segments]
     num_workers: int  # number of output rows (workers for decode, tokens for prefill)
     max_segments: int
@@ -185,13 +188,15 @@ class SharedCacheAttention:
     def _rope_mrope(self, x: torch.Tensor, corrections: torch.Tensor) -> torch.Tensor:
         """Interleaved-mRoPE partial rotation of ``x [N, heads, head_dim]``.
 
-        ``corrections [N]`` are the tokens' mRoPE positions (block-relative for keys,
-        segment-relative for query copies).  Decode tokens are text, so the position
-        is the same on all three axes; the interleaved freq-slot layout still matches
-        image keys stored 3-D during prefill, so cross scores are exact.
+        ``corrections`` are the tokens' mRoPE positions (block-relative for keys,
+        segment-relative for query copies), either ``[N]`` -- a text token, whose
+        position is the same on all three axes -- or ``[3, N]`` for genuine 3-D
+        (image) positions.  Because a whole block is shifted by one scalar on all
+        three axes, subtracting a segment's mRoPE prefix from a 3-D position stays
+        exact, and text rows broadcast against image keys stored 3-D.
         """
-        pos = corrections.to(self.device).float()  # [N]
-        pos3 = pos[None, :].expand(3, -1)  # (3, N) all-axes-equal
+        pos = corrections.to(self.device).float()  # [N] or [3, N]
+        pos3 = pos if pos.dim() == 2 else pos[None, :].expand(3, -1)  # (3, N)
         freqs3 = pos3[:, :, None] * self._mrope_inv_freq[None, None, :]  # (3, N, rd/2)
         freqs = freqs3[0].clone()
         for dim, offset in ((1, 1), (2, 2)):
@@ -373,6 +378,8 @@ class SharedCacheAttention:
         self_page_starts: torch.Tensor,
         num_new: int,
         self_prefix_len: int = 0,
+        self_prefix_span: Optional[int] = None,
+        mrope_rel: Optional[torch.Tensor] = None,
     ) -> SharedCacheAttnMetadata:
         """
         Plan one prefill of ``num_new`` new tokens that attend causally to
@@ -384,7 +391,13 @@ class SharedCacheAttention:
         a fresh block (new tokens stored block-relative at 0..num_new-1) and
         ``block.num_tokens`` when the block is being *extended* -- the new tokens
         then sit at block-relative ``self_prefix_len ...`` and the causal self
-        segment covers the prefix too.
+        segment covers the prefix too.  ``self_prefix_span`` is that prefix's
+        mRoPE advance (defaults to ``self_prefix_len``; they differ once the write
+        block itself holds an image).
+
+        ``mrope_rel`` is the new tokens' zero-based interleaved-mRoPE positions
+        ``[3, S]`` when they contain an image; ``None`` means text (position ==
+        index), which is what every non-multimodal model passes.
 
         Mirrors the reference's ``prefill_cache_block(text, [ctx..., new])``.
         """
@@ -392,32 +405,46 @@ class SharedCacheAttention:
         P = self.page_size
         S = int(num_new)
         T = int(self_prefix_len)
+        T_span = T if self_prefix_span is None else int(self_prefix_span)
         n_ctx = len(context)
         ctx_lens = [b.num_tokens for b in context]  # physical token counts (paging)
         ctx_spans = [b.mrope_span for b in context]  # running-mRoPE advance (rotation)
         # Running position of the first new token: past every context block, plus
-        # the write block's own prefix (text-only, so span == token count).
-        self_offset = sum(ctx_spans) + T
+        # the write block's own prefix (measured in mRoPE advance, not tokens).
+        self_offset = sum(ctx_spans) + T_span
 
         # q-row gather + per-row rotation positions: for context block j whose
         # cumulative mRoPE prefix span is P_j, new token i (at mRoPE position
-        # ``self_offset + i``) is rotated to ``(self_offset + i) - P_j``; the self
-        # segment rotates to its block-relative position ``T + i``.  Spans equal
-        # token counts for text/standard models, but an image context block
-        # compresses positions -- rotation must use the span, not num_tokens, so the
-        # new (text) tokens sit at their true mRoPE offset past the image.  The self
-        # segment assumes the new block is text (block-relative pos == index),
-        # which holds: images live in the re-prefilled root, never a context
-        # prefill.
+        # ``self_offset + rel_i``) is rotated to ``(self_offset + rel_i) - P_j``;
+        # the self segment rotates to its block-relative position ``T_span + rel_i``.
+        # ``rel_i`` is just ``i`` for text, and the 3-D grid position for an image
+        # token.  Spans equal token counts for text/standard models, but an image
+        # compresses positions -- rotation must use the span, not num_tokens, so
+        # tokens past an image sit at their true mRoPE offset.  A whole block shifts
+        # by one scalar on all three axes, so subtracting P_j from a 3-D position is
+        # exactly what ``get_rope_index`` over the concatenation would produce.
         sub_gather: List[int] = []
-        sub_loc: List[int] = []
-        prefix = 0
-        for span in ctx_spans:
+        for _ in range(n_ctx + 1):
             sub_gather.extend(range(S))
-            sub_loc.extend(self_offset + i - prefix for i in range(S))
-            prefix += span
-        sub_gather.extend(range(S))
-        sub_loc.extend(T + i for i in range(S))
+        if mrope_rel is None:
+            sub_loc_parts: List[torch.Tensor] = []
+            rel_1d = torch.arange(S, dtype=torch.int64)
+            prefix = 0
+            for span in ctx_spans:
+                sub_loc_parts.append(rel_1d + (self_offset - prefix))
+                prefix += span
+            sub_loc_parts.append(rel_1d + T_span)
+            sub_loc_t = torch.cat(sub_loc_parts)  # [ (n_ctx + 1) * S ]
+        else:
+            rel = mrope_rel.to(dtype=torch.int64, device="cpu")  # [3, S]
+            assert rel.shape == (3, S), f"mrope_rel must be [3, {S}], got {tuple(rel.shape)}"
+            sub_loc_parts = []
+            prefix = 0
+            for span in ctx_spans:
+                sub_loc_parts.append(rel + (self_offset - prefix))
+                prefix += span
+            sub_loc_parts.append(rel + T_span)
+            sub_loc_t = torch.cat(sub_loc_parts, dim=1)  # [3, (n_ctx + 1) * S]
 
         CPU_KWARGS = {"device": "cpu", "dtype": torch.int32, "pin_memory": True}
 
@@ -479,7 +506,7 @@ class SharedCacheAttention:
         meta = SharedCacheAttnMetadata(
             shared_cache_op=self,
             sub_worker=torch.tensor(sub_gather, dtype=torch.int64, device=self.device),
-            sub_loc=torch.tensor(sub_loc, dtype=torch.int64, device=self.device),
+            sub_loc=sub_loc_t.to(self.device),
             pad_slot=torch.empty(0, dtype=torch.int64, device=self.device),  # unused
             num_workers=S,
             max_segments=n_ctx + 1,
@@ -508,6 +535,10 @@ class SharedCacheAttention:
             k: ``[num_workers, num_kv_heads * head_dim]`` — unrotated keys.
             v: ``[num_workers, num_kv_heads * head_dim]``.
             batch.positions: block-relative write positions per worker.
+            batch.mrope_positions: ``[3, num_workers]`` block-relative mRoPE
+                positions, when the write does not sit at ``batch.positions`` on
+                all three axes (an image among the new tokens, or a write block
+                whose mRoPE span already differs from its token count).
 
         Returns ``[num_workers, num_qo_heads * head_dim]``.
         """
@@ -516,7 +547,8 @@ class SharedCacheAttention:
         W, Hq, D = meta.num_workers, self.num_qo_heads, self.head_dim
 
         # Store the new token's KV with block-relative key rotation.
-        k_rot = self._rope(k.reshape(W, self.num_kv_heads, D), batch.positions)
+        key_pos = batch.positions if batch.mrope_positions is None else batch.mrope_positions
+        k_rot = self._rope(k.reshape(W, self.num_kv_heads, D), key_pos)
         # k_rot is freshly materialized (contiguous); the store kernel needs
         # v in the same layout, so detach v from its strided qkv slice too.
         self.kv_cache.store_kv(k_rot.reshape(W, -1), v.contiguous(), batch.out_loc, layer_id)
