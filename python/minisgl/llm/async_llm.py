@@ -244,6 +244,8 @@ class AsyncLLM:
         # (Conditional) prefill / extension: one forward for all tokens.
         self._ensure_loop()
         assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None), "pass all or none"
+        if pixel_values is not None:
+            assert mm_token_type_ids.shape
         future = self.async_engine.submit_prefill(
             ids,
             write_to=write_to,

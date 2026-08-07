@@ -217,12 +217,12 @@ def test_contextual_image_prefill_matches_hf():
         assert block_C.num_tokens == len(ref['follow_up_1']['input_ids'][0])
 
         ckpt_2_separate = await llm.forward(  # stage 2: image conditioned on stage 1, write to new block
-            ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
+            ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_2"]["mm_token_type_ids"][0],
             pixel_values=ref["follow_up_2"]["pixel_values"].float(), image_grid_thw=ref["follow_up_2"]["image_grid_thw"],
             cache_view=[block_A, block_B, block_D], write_to=block_D, return_logits=True)
 
         ckpt_2_appended = await llm.forward(  # stage 2 alternative method: append new KVs to block B
-            ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
+            ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_2"]["mm_token_type_ids"][0],
             pixel_values=ref["follow_up_2"]["pixel_values"].float(), image_grid_thw=ref["follow_up_2"]["image_grid_thw"],
             cache_view=[block_A, block_B], write_to=block_B, return_logits=True)
         assert block_B.num_tokens == len(ref['follow_up_1']['input_ids'][0]) + len(ref['follow_up_2']['input_ids'][0])
