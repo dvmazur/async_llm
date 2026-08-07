@@ -130,7 +130,7 @@ class AsyncLLM:
 
     async def prefill_block(
         self,
-        token_ids: TokenIds,
+        input_ids: TokenIds,
         *,
         context: Optional[CacheView] = None,
         into: Optional[CacheBlock] = None,
@@ -138,25 +138,22 @@ class AsyncLLM:
         return_logits: bool = False,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
-        mrope_positions: Optional[torch.Tensor] = None,
     ) -> CausalLMOutput:
         """Prefill a block (created here unless *into* is given) with
-        *token_ids*, attending to *context*; returns the block, plus the
+        *input_ids*, attending to *context*; returns the block, plus the
         last-token logits when *return_logits* is set.  A non-empty *into* is
         extended: the tokens are appended to what it already holds and attend to
-        it causally.  Pass ``pixel_values`` / ``image_grid_thw`` /
-        ``mrope_positions`` for a multimodal (image) block."""
+        it causally.  Pass ``pixel_values`` / ``image_grid_thw`` for a multimodal (image) block."""
         self._ensure_loop()
         block = into if into is not None else self.async_engine.create_block()
         future = self.async_engine.submit_prefill(
-            _as_token_tensor(token_ids),
+            _as_token_tensor(input_ids),
             into=block,
             context=context,
             capture_affine=capture_affine,
             return_logits=return_logits,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
-            mrope_positions=mrope_positions,
         )
         self._work_event.set()
         logits = await future

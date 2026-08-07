@@ -212,7 +212,7 @@ class SharedCacheSession:
         capture_affine: bool = True,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
-        mrope_positions: Optional[torch.Tensor] = None,
+        mm_token_type_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Prefill a single ``CacheBlock`` with *input_ids* and return logits.
@@ -316,8 +316,7 @@ class SharedCacheSession:
             if pixel_values is not None:
                 batch.pixel_values = pixel_values.to(self.device)
                 batch.image_grid_thw = image_grid_thw.to(self.device)
-            if mrope_positions is not None:
-                batch.mrope_positions = mrope_positions.to(self.device)
+                batch.mm_token_type_ids = mm_token_type_ids.to(self.device)
             # Throwaway prefills (capture_affine=False) skip the AR path so the
             # GDN layers don't pay the O(seq) affine capture; a from-zero
             # standalone prefill is identical to composing an empty chain.  An
@@ -328,10 +327,8 @@ class SharedCacheSession:
 
             block.grow_pages(page_starts, seq_len)
             block.token_ids.extend(input_ids.tolist())
-            if mrope_positions is not None:
-                # image tokens compress positions: record the block's mRoPE span so
-                # later decode queries rotate at their true (continued) mRoPE position.
-                block.mrope_span_override = int(mrope_positions.max().item()) + 1
+            if pixel_values is not None:
+                assert block.mrope_span_override is not None, "forward with images should set mrope_span_override"
 
             # NOTE: ParallelLMHead.forward already extracts last-token logits
             # for prefill batches, so logits has shape [bs, vocab].

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 from typing import TYPE_CHECKING, Tuple
 
 import torch
@@ -10,6 +11,7 @@ from minisgl.utils import nvtx_annotate
 from .base import BaseLLMModel
 from .qwen3_5_attn import Qwen3_5Attention
 from .qwen3_5_delta import Qwen3_5GatedDeltaNet
+from .qwen3_5_mrope import get_rope_index
 from .utils import GatedMLP
 
 if TYPE_CHECKING:
@@ -34,11 +36,13 @@ class Qwen3_5DecoderLayer(BaseOP):
 
     @nvtx_annotate("Layer_{}", layer_id_field="_layer_id")
     def forward(
-        self, x: torch.Tensor, residual: torch.Tensor | None = None
+        self, x: torch.Tensor, residual: torch.Tensor | None = None, mrope: torch.Tensor | None = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         x, residual = self.input_layernorm.forward(x, residual)
-        mixer = self.linear_attn if self._is_linear else self.self_attn
-        x = mixer.forward(x)
+        if self._is_linear:
+            x = self.linear_attn.forward(x)
+        else:
+            x = self.self_attn.forward(x, mrope)
         x, residual = self.post_attention_layernorm.forward(x, residual)
         x = self.mlp.forward(x)
         return x, residual
@@ -47,11 +51,11 @@ class Qwen3_5DecoderLayer(BaseOP):
 class Qwen3_5Model(BaseOP):
     def __init__(self, config: ModelConfig):
         assert config.layer_types is not None
+        self.config = config
         self.embed_tokens = VocabParallelEmbedding(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
         )
-        self._image_token_id = config.image_token_id
         if config.is_multimodal:
             from .qwen3_5_vision import Qwen3_5VisionModel
 
@@ -75,16 +79,21 @@ class Qwen3_5Model(BaseOP):
         input_ids: torch.Tensor,
         pixel_values: torch.Tensor | None = None,
         image_grid_thw: torch.Tensor | None = None,
+        mm_token_type_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         x = self.embed_tokens.forward(input_ids)
+        assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None)
+        mrope: torch.Tensor | None = None
         if pixel_values is not None:
             image_embeds = self.visual.forward(pixel_values, image_grid_thw)  # (n_img, hidden)
-            mask = input_ids == self._image_token_id
+            image_mask = mm_token_type_ids == 1  # 0 - text, 1 - image, 2 - video, etc
             x = x.clone()
-            x[mask] = image_embeds.to(x.dtype)
+            x[image_mask] = image_embeds.to(x.dtype)
+            spatial_merge_size = self.config.vision_config.spatial_merge_size
+            mrope = get_rope_index(input_ids, mm_token_type_ids, spatial_merge_size, image_grid_thw)
         residual: torch.Tensor | None = None
         for layer in self.layers.op_list:
-            x, residual = layer.forward(x, residual)
+            x, residual = layer.forward(x, residual, mrope)
         return self.norm.forward(x, residual)[0]
 
 
@@ -105,6 +114,7 @@ class Qwen3_5ForCausalLM(BaseLLMModel):
             batch.input_ids,
             pixel_values=batch.pixel_values,
             image_grid_thw=batch.image_grid_thw,
+            mm_token_type_ids=batch.mm_token_type_ids,
         )
         logits = self.lm_head.forward(output)
         return logits

@@ -64,12 +64,13 @@ def _build_async_engine():
     ref = _make_hf_reference()  # compute reference model after engine is already initialized
     input_ids = ref["one"]["input_ids"][0].to(torch.int32)
     pixel_values = ref["one"]["pixel_values"].float()
+    mm_token_type_ids = ref["one"]["mm_token_type_ids"]
     grid = ref["one"]["image_grid_thw"]
 
     session = SharedCacheSession(engine)
     config = engine_config.model_config
     mrope = get_rope_index(
-        input_ids.long(), config.image_token_id, config.vision_config.spatial_merge_size, grid
+        input_ids.long(), mm_token_type_ids, config.vision_config.spatial_merge_size, grid
     )
     return engine, session, input_ids, pixel_values, grid, mrope, ref, config
 
@@ -90,7 +91,8 @@ def _make_synthetic_image_block(config, h: int, w: int, seed: int):
         + [config.vision_end_token_id],
         dtype=torch.int32,
     )
-    mrope = get_rope_index(ids.long(), config.image_token_id, merge, grid)
+    mm_token_type_ids = torch.where(ids.long() == config.image_token_id, 1, 0)  # 0 = text, 1 = image, 2 = ...
+    mrope = get_rope_index(ids.long(), mm_token_type_ids, merge, grid)
     return ids, pixel_values, grid, mrope
 
 
@@ -160,10 +162,11 @@ def test_two_image_prefill_matches_hf():
     path: get_rope_index over 2 grids + vision tower over 2 images + scatter)."""
     engine, session, input_ids, pixel_values, grid, mrope, ref, mc = _build_async_engine()
     ids = ref["two"]["input_ids"][0].to(torch.int32)
+    mm_token_type_ids = ref["two"]["mm_token_type_ids"]
     pv = ref["two"]["pixel_values"].float()
     grid = ref["two"]["image_grid_thw"]  # [2, 3]
     assert grid.shape[0] == 2
-    mrope = get_rope_index(ids.long(), mc.image_token_id, mc.vision_config.spatial_merge_size, grid)
+    mrope = get_rope_index(ids.long(), mm_token_type_ids, mc.vision_config.spatial_merge_size, grid)
     logits = session.prefill_block(
         session.create_block(), ids, pixel_values=pv, image_grid_thw=grid, mrope_positions=mrope
     )[0].float().cpu()
