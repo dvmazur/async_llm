@@ -19,7 +19,10 @@ import torch
 def _vision_position_ids_3d(
     start: int, t: int, h: int, w: int, merge: int, device
 ) -> torch.Tensor:
-    """(3, t*h/merge*w/merge) temporal/height/width positions for one image, offset by `start`."""
+    """
+    (3, t*h/merge*w/merge) temporal/height/width positions for one image, offset by `start`.
+    Source: https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5/modeling_qwen3_5.py
+    """
     lt, lh, lw = t, h // merge, w // merge
     pt = torch.arange(lt, device=device)  # time_interval = 1
     pw = torch.arange(lw, device=device) + start
@@ -36,7 +39,10 @@ def get_rope_index(
     spatial_merge_size: int,
     image_grid_thw: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Compute interleaved-mRoPE positions ``[3, T]`` for a single sequence ``input_ids [T]``."""
+    """
+    Compute interleaved-mRoPE positions ``[3, T]`` for a single sequence ``input_ids [T]``.
+    Source: https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5/modeling_qwen3_5.py
+    """
     device = input_ids.device
     ids = input_ids.tolist()
     types = [1 if i == image_token_id else 0 for i in ids]
