@@ -12,7 +12,7 @@ Cache layout (mirrors AsyncReasoning's AsyncReasoningCache):
                         standalone gives the writer prefix the wrong attention
                         outputs at deeper layers).
 
-Concurrency (the ASYNC_SCHED_DESIGN.md user API): everything below is custom
+Concurrency: everything below is custom
 scaffolding over the unified ``AsyncLLM.forward`` method — conditional
 prefill for the block setup, a decode-mode custom-generate loop per stream
 (client-side greedy pick over the raw logits), and a throwaway prefill for

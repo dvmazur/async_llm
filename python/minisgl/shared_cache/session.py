@@ -209,10 +209,9 @@ class SharedCacheSession:
         block: CacheBlock,
         input_ids: torch.Tensor,
         context: Optional[List[CacheBlock]] = None,
-        capture_affine: bool = True,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
-        mrope_positions: Optional[torch.Tensor] = None,
+        mm_token_type_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Prefill a single ``CacheBlock`` with *input_ids* and return logits.
@@ -229,13 +228,6 @@ class SharedCacheSession:
         the blocks were concatenated ``[ctx_0, ..., block]`` (mirrors the
         reference's ``prefill_cache_block(text, [ctx..., new])``); the stored
         KV stays block-relative either way.  Empty context blocks are skipped.
-
-        ``capture_affine`` only applies to hybrid (Qwen3.5) models with no
-        context.  Set it ``False`` for throwaway prefills whose block is read
-        once and freed (e.g. the mode-switching probe): the GDN layers then skip
-        the O(seq) affine capture (a large, otherwise-wasted cost) and take the
-        numerically-identical from-zero path.  Ignored for standard models, and
-        for an extension (which must continue the block's captured state).
         """
         input_ids = input_ids.to(dtype=torch.int32).flatten().cpu()
         seq_len = len(input_ids)
@@ -264,23 +256,14 @@ class SharedCacheSession:
                 "it (its own tokens are attended to by the self segment)"
             )
         if context:
-            if pixel_values is not None:
-                # A mid-sequence image block would need 3D block-relative mRoPE key
-                # rotation in the context-prefill op (query/key positions become the
-                # image grid, not a scalar) -- not implemented.  Prefill an image
-                # block standalone (context=None, root or placed after other blocks
-                # in the decode view) instead; only text blocks context-prefill today.
-                raise NotImplementedError(
-                    "image (pixel_values) in a context prefill is unsupported; "
-                    "prefill image blocks standalone (context=None)"
-                )
-            return self._prefill_block_in_context(block, input_ids, context)
+            return self._prefill_block_in_context(
+                block, input_ids, context, pixel_values, image_grid_thw, mm_token_type_ids)
 
         assert cached_len + seq_len <= self.page_table.shape[1], (
             f"prefill of {seq_len} tokens into a block of {cached_len} exceeds the "
             f"engine's max sequence length ({self.page_table.shape[1]})"
         )
-        page_starts, token_slots = self._alloc_token_storage(seq_len, into=block)
+        page_starts, token_slots = self._alloc_token_storage(seq_len, write_to=block)
         table_idx = self._allocate_table_idx()
 
         try:
@@ -316,22 +299,14 @@ class SharedCacheSession:
             if pixel_values is not None:
                 batch.pixel_values = pixel_values.to(self.device)
                 batch.image_grid_thw = image_grid_thw.to(self.device)
-            if mrope_positions is not None:
-                batch.mrope_positions = mrope_positions.to(self.device)
-            # Throwaway prefills (capture_affine=False) skip the AR path so the
-            # GDN layers don't pay the O(seq) affine capture; a from-zero
-            # standalone prefill is identical to composing an empty chain.  An
-            # extension always takes the AR path: it must start from -- and carry
-            # on -- the block's captured GDN state.
-            cs = [[block]] if (capture_affine or cached_len) else None
-            logits = self._forward(batch, cache_structure=cs, write_to=[block])
+                batch.mm_token_type_ids = mm_token_type_ids.to(self.device)
+            logits = self._forward(batch, cache_structure=[[block]], write_to=[block])
 
             block.grow_pages(page_starts, seq_len)
             block.token_ids.extend(input_ids.tolist())
-            if mrope_positions is not None:
-                # image tokens compress positions: record the block's mRoPE span so
-                # later decode queries rotate at their true (continued) mRoPE position.
-                block.mrope_span_override = int(mrope_positions.max().item()) + 1
+            assert (batch.mrope_span_override is None) == (pixel_values is None), "vlm forward must set mrope override"
+            if batch.mrope_span_override is not None:
+                block.mrope_span_override = block.mrope_span_override
 
             # NOTE: ParallelLMHead.forward already extracts last-token logits
             # for prefill batches, so logits has shape [bs, vocab].
@@ -344,6 +319,9 @@ class SharedCacheSession:
         block: CacheBlock,
         input_ids: torch.Tensor,
         context: List[CacheBlock],
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.Tensor] = None,
+        mm_token_type_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Prefill *block* while attending to *context* blocks (all non-empty).
 
@@ -352,7 +330,7 @@ class SharedCacheSession:
         block's own prefix as well as the new tokens."""
         seq_len = len(input_ids)
         cached_len = block.num_tokens
-        page_starts, out_loc = self._alloc_token_storage(seq_len, into=block)
+        page_starts, out_loc = self._alloc_token_storage(seq_len, write_to=block)
         # Self segment reads the block's whole (post-write) page list.
         self_pages = torch.cat([block.page_starts_tensor(), page_starts.to(self.device)])
 
@@ -376,6 +354,10 @@ class SharedCacheSession:
         batch.attn_metadata = self.sc_attn.prepare_context_prefill(
             context, self_pages, seq_len, self_prefix_len=cached_len
         )
+        if pixel_values is not None:
+            batch.pixel_values = pixel_values.to(self.device)
+            batch.image_grid_thw = image_grid_thw.to(self.device)
+            batch.mm_token_type_ids = mm_token_type_ids.to(self.device)
 
         logits = self._forward(batch, cache_structure=[[*context, block]], write_to=[block])
 
@@ -456,24 +438,24 @@ class SharedCacheSession:
     # ------------------------------------------------------------------
 
     def _alloc_token_storage(
-        self, seq_len: int, into: Optional[CacheBlock] = None
+        self, seq_len: int, write_to: Optional[CacheBlock] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Borrow the pages needed to write ``seq_len`` tokens into *into* and
+        """Borrow the pages needed to write ``seq_len`` tokens into *write_to* and
         return ``(new_page_starts, token_slots)``, where ``token_slots`` are the
         ``seq_len`` write locations in block order.
 
         For a fresh (or absent) block that is ``ceil(seq_len/P)`` pages worth of
-        slots; when *into* is non-empty the free slots of its current last page
+        slots; when *write_to* is non-empty the free slots of its current last page
         are used first, so only ``pages_needed(seq_len)`` new pages are borrowed
         (mirrors how ``append_token`` grows a block during decode)."""
-        free_tail = into.free_tail if into is not None else 0
+        free_tail = write_to.free_tail if write_to is not None else 0
         n_pages = div_ceil(max(0, seq_len - free_tail), self.page_size)
         page_starts = self.page_allocator.alloc_pages(n_pages)
         new_slots = self.page_allocator.pages_to_tokens(page_starts)
         if free_tail == 0:
             return page_starts, new_slots[:seq_len]
-        assert into is not None
-        tail_start = into.page_starts[-1] + into.last_page_len
+        assert write_to is not None
+        tail_start = write_to.page_starts[-1] + write_to.last_page_len
         tail_slots = torch.arange(
             tail_start, tail_start + free_tail, dtype=new_slots.dtype, device=self.device
         )

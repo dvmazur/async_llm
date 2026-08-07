@@ -1,5 +1,5 @@
 """
-Unit tests for the async-cache primitives (see ASYNC_SCHED_DESIGN.md):
+Unit tests for the async-cache primitives:
 ``CacheBlock`` / ``CacheView`` / ``AsyncContext`` and the context-based
 ``WorkerGroup``.  Pure Python/torch — no model or GPU needed::
 

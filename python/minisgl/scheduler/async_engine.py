@@ -1,6 +1,5 @@
 """
-Queue-based scheduling core for async cache requests (see ASYNC_SCHED_DESIGN.md
-and docs/async_sched_impl_plan.md, Phase 1).
+Queue-based scheduling core for async cache requests
 
 ``AsyncCacheEngine`` owns two request queues and drains them one forward per
 ``tick()``:
@@ -84,16 +83,15 @@ class SimpleFuture:
 
 @dataclass
 class PrefillRequest:
-    token_ids: torch.Tensor  # 1-D int32 cpu
+    input_ids: torch.Tensor  # 1-D int32 cpu
     context: CacheView  # may be empty
-    into: CacheBlock  # block to fill
-    capture_affine: bool
+    write_to: CacheBlock  # block to fill
     return_logits: bool  # resolve with last-token logits instead of None
     future: Any  # resolved with logits [vocab] if return_logits else None
-    # Multimodal (Qwen3.5 vision): the vision tower + interleaved mRoPE run when set.
+    # Multimodal inputs produced by huggingface.transformers.Processor
     pixel_values: Optional[torch.Tensor] = None
     image_grid_thw: Optional[torch.Tensor] = None
-    mrope_positions: Optional[torch.Tensor] = None
+    mm_token_type_ids: Optional[torch.tensor] = None
 
 
 @dataclass
@@ -150,7 +148,7 @@ class AsyncCacheEngine:
 
     def _block_in_use(self, block: CacheBlock) -> bool:
         for pf in self._prefill_queue:
-            if block is pf.into or any(block is b for b in pf.context):
+            if block is pf.write_to or any(block is b for b in pf.context):
                 return True
         for dec in self._decode_queue:
             if block is dec.context.output_block or any(block is b for b in dec.context.cache_view):
@@ -165,31 +163,29 @@ class AsyncCacheEngine:
         self,
         token_ids: torch.Tensor,
         *,
-        into: CacheBlock,
+        write_to: CacheBlock,
         context: Optional[CacheView] = None,
-        capture_affine: bool = True,
         return_logits: bool = False,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
-        mrope_positions: Optional[torch.Tensor] = None,
+        mm_token_type_ids: Optional[torch.Tensor] = None,
     ) -> Any:
         """
         Queue a prefill of *into*; returns a future resolved with the last-token
         logits ``[vocab]`` if *return_logits* else None.  Pass ``pixel_values`` /
-        ``image_grid_thw`` / ``mrope_positions`` for a multimodal (image) block.
+        ``image_grid_thw`` for a multimodal (image) block.
         """
         future = self.future_factory()
         self._prefill_queue.append(
             PrefillRequest(
-                token_ids=token_ids,
+                input_ids=token_ids,
                 context=list(context or []),
-                into=into,
-                capture_affine=capture_affine,
+                write_to=write_to,
                 return_logits=return_logits,
                 future=future,
                 pixel_values=pixel_values,
                 image_grid_thw=image_grid_thw,
-                mrope_positions=mrope_positions,
+                mm_token_type_ids=mm_token_type_ids,
             )
         )
         return future
@@ -239,15 +235,15 @@ class AsyncCacheEngine:
         return None
 
     def _run_prefill(self, req: PrefillRequest) -> None:
-        kwargs = {"context": req.context or None, "capture_affine": req.capture_affine}
+        kwargs: dict[str, Any] = {"context": req.context or None}
         # Only forward image kwargs for multimodal blocks, so the text path keeps the
         # original prefill_block signature (stub/non-vision sessions stay compatible).
         if req.pixel_values is not None:
             kwargs["pixel_values"] = req.pixel_values
             kwargs["image_grid_thw"] = req.image_grid_thw
-            kwargs["mrope_positions"] = req.mrope_positions
+            kwargs["mm_token_type_ids"] = req.mm_token_type_ids
         try:
-            logits = self.session.prefill_block(req.into, req.token_ids, **kwargs)
+            logits = self.session.prefill_block(req.write_to, req.input_ids, **kwargs)
         except Exception as exc:
             req.future.set_exception(exc)
             raise

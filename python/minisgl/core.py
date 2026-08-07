@@ -81,10 +81,11 @@ class Batch:
     # this field should be set by attention backend
     attn_metadata: BaseAttnMetadata = field(init=False)
     # Multimodal (Qwen3.5 vision): pixel_values [N, C*T*P*P] + image_grid_thw [n,3] feed the
-    # vision tower; mrope_positions [3, T] drives interleaved mRoPE. None for text-only.
+    # vision tower; mm_token_type_ids [T] 0 - text, 1 - image, 2 - video. None for text-only.
     pixel_values: "torch.Tensor | None" = field(default=None, init=False)
     image_grid_thw: "torch.Tensor | None" = field(default=None, init=False)
-    mrope_positions: "torch.Tensor | None" = field(default=None, init=False)
+    mm_token_type_ids: "torch.Tensor | None" = field(default=None, init=False)
+    mrope_span_override: int | None = field(default=None, init=False)
 
     @property
     def is_prefill(self) -> bool:

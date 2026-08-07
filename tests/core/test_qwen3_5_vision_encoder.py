@@ -47,7 +47,7 @@ def _make_hf_model():
     return model, AutoProcessor.from_pretrained(_MODEL_ID)
 
 
-def _make_hf_inputs(processor, num_images: int):
+def _make_hf_inputs(processor, num_images: int, text: str = "Describe the image.", add_generation_prompt=True):
     """Processor output for a prompt with ``num_images`` deterministic images."""
 
     rng = np.random.default_rng(42)
@@ -56,10 +56,10 @@ def _make_hf_inputs(processor, num_images: int):
         np.broadcast_to(np.stack([255 * x, 255 * (1 - x), 255 * x], axis=-1).astype(np.uint8), (64, 96, 3))
     ] + [rng.integers(0, 256, (64, 96, 3), dtype=np.uint8) for _ in range(num_images - 1)]
     content = [{"type": "image", "image": Image.fromarray(images[i])} for i in range(0, num_images)]
-    content.append({"type": "text", "text": "Describe the image."})
+    content.append({"type": "text", "text": text})
     return processor.apply_chat_template(
         [{"role": "user", "content": content}],
-        add_generation_prompt=True,
+        add_generation_prompt=add_generation_prompt,
         tokenize=True,
         return_dict=True,
         return_tensors="pt",
@@ -71,7 +71,7 @@ def _make_hf_inputs(processor, num_images: int):
 
 def test_get_rope_index_text_only():
     ids = torch.tensor([5, 6, 7, 8, 9], dtype=torch.long)
-    pos = get_rope_index(ids, image_token_id=999, spatial_merge_size=2, image_grid_thw=None)
+    pos = get_rope_index(ids, mm_token_type_ids=torch.zeros_like(ids), spatial_merge_size=2, image_grid_thw=None)
     assert tuple(pos.shape) == (3, 5)
     expected = torch.arange(5).view(1, -1).expand(3, -1)
     assert torch.equal(pos, expected)  # all 3 axes equal & incrementing
@@ -82,7 +82,7 @@ def test_get_rope_index_image_compression():
     # 2 text, then a 1x4x4 image (4 llm tokens after 2x2 merge), then 3 text
     ids = torch.tensor([1, 1] + [img] * 4 + [2, 2, 2], dtype=torch.long)
     grid = torch.tensor([[1, 4, 4]], dtype=torch.long)
-    pos = get_rope_index(ids, image_token_id=img, spatial_merge_size=2, image_grid_thw=grid)
+    pos = get_rope_index(ids, (ids==img).long(), spatial_merge_size=2, image_grid_thw=grid)
     # image occupies llm grid 1x2x2 starting at pos 2; text resumes at 2 + max(4,4)//2 = 4
     exp_t = torch.tensor([0, 1, 2, 2, 2, 2, 4, 5, 6])
     exp_h = torch.tensor([0, 1, 2, 2, 3, 3, 4, 5, 6])
@@ -103,7 +103,7 @@ def test_get_rope_index_matches_hf(num_images: int):
     assert grid.shape[0] == num_images
     got = get_rope_index(
         inputs["input_ids"][0],
-        image_token_id=model.config.image_token_id,
+        mm_token_type_ids=torch.eq(inputs["input_ids"][0], model.config.image_token_id).long(),
         spatial_merge_size=2,
         image_grid_thw=grid,
     )

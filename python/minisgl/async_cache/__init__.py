@@ -1,5 +1,5 @@
 """
-Async cache primitives (see ASYNC_SCHED_DESIGN.md).
+Async cache primitives.
 
 This is the user-facing import point for the async-cache request model; the
 implementations live next to the attention mechanism in

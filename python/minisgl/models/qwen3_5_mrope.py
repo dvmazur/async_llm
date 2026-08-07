@@ -19,7 +19,10 @@ import torch
 def _vision_position_ids_3d(
     start: int, t: int, h: int, w: int, merge: int, device
 ) -> torch.Tensor:
-    """(3, t*h/merge*w/merge) temporal/height/width positions for one image, offset by `start`."""
+    """
+    (3, t*h/merge*w/merge) temporal/height/width positions for one image, offset by `start`.
+    Source: https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5/modeling_qwen3_5.py
+    """
     lt, lh, lw = t, h // merge, w // merge
     pt = torch.arange(lt, device=device)  # time_interval = 1
     pw = torch.arange(lw, device=device) + start
@@ -32,14 +35,16 @@ def _vision_position_ids_3d(
 
 def get_rope_index(
     input_ids: torch.Tensor,
-    image_token_id: int,
+    mm_token_type_ids: torch.Tensor,
     spatial_merge_size: int,
     image_grid_thw: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Compute interleaved-mRoPE positions ``[3, T]`` for a single sequence ``input_ids [T]``."""
+    """
+    Compute interleaved-mRoPE positions ``[3, T]`` for a single sequence ``input_ids [T]``.
+    Source: https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5/modeling_qwen3_5.py
+    """
     device = input_ids.device
-    ids = input_ids.tolist()
-    types = [1 if i == image_token_id else 0 for i in ids]
+    types = mm_token_type_ids.tolist()
     grids = iter(image_grid_thw.tolist()) if image_grid_thw is not None else iter(())
 
     parts = []
@@ -50,10 +55,12 @@ def get_rope_index(
         if key == 0:  # text
             parts.append(torch.arange(n, device=device).view(1, -1).expand(3, -1) + cur)
             cur += n
-        else:  # image
+        elif key in (1, 2):  # 1 = image, 2 = video
             t, h, w = (int(v) for v in next(grids))
             parts.append(_vision_position_ids_3d(cur, t, h, w, spatial_merge_size, device))
             cur += max(h, w) // spatial_merge_size
+        else:
+            raise NotImplementedError(f"Unexpected mm_token_type_ids entry == {key}")
     return torch.cat(parts, dim=1).reshape(3, -1)
 
 
