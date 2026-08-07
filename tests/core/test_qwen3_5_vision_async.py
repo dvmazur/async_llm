@@ -214,7 +214,7 @@ def test_contextual_image_prefill_matches_hf():
 
         ckpt_1_control = await llm.forward(  # stage 1 control group: without condition, should NOT be close enough
             ref['follow_up_1']['input_ids'][0], cache_view=[block_C], write_to=block_C, return_logits=True)
-        assert block_C.num_tokens == len(ref['follow_up_1']['input_ids'])
+        assert block_C.num_tokens == len(ref['follow_up_1']['input_ids'][0])
 
         # ckpt_2_separate = await llm.forward(  # stage 2: image conditioned on stage 1, write to new block
         #     ref['follow_up_2']['input_ids'][0], mm_token_type_ids=ref["follow_up_1"]["mm_token_type_ids"][0],
@@ -231,7 +231,7 @@ def test_contextual_image_prefill_matches_hf():
 
     ckpt_1_logits, ckpt_1_control_logits, ckpt_2_separate_logits, ckpt_2_appended_logits = asyncio.run(_compute_logits())
     assert F.cosine_similarity(ckpt_1_logits, ref["last_logits_ckpt_1"], dim=0).item() > 0.99
-    assert F.cosine_similarity(ckpt_1_logits, ref["last_logits_ckpt_1"], dim=0).item() < 0.99
+    assert F.cosine_similarity(ckpt_1_control_logits, ref["last_logits_ckpt_1"], dim=0).item() < 0.99
     # assert F.cosine_similarity(ckpt_2_separate_logits, ref["ckpt_2_last_logits"], dim=0).item() > 0.99
     # assert F.cosine_similarity(ckpt_2_appended_logits, ref["ckpt_2_last_logits"], dim=0).item() > 0.99
 
