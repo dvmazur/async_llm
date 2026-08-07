@@ -6,7 +6,7 @@ Port of yandex-research/AsyncReasoning's
 [`notebooks/demo_async_thoughts.ipynb`](https://github.com/yandex-research/AsyncReasoning/blob/main/notebooks/demo_async_thoughts.ipynb)
 to a standalone, installable package driven by minisgl's in-process async
 cache API — no HTTP server, no notebook.  All inference goes through the
-unified `AsyncLLM.forward` method (see `ASYNC_SCHED_DESIGN.md`): conditional
+unified `AsyncLLM.forward` method: conditional
 prefill for the cache-block setup, decode-mode custom-generate loops for the
 two streams, and a throwaway prefill for the probe.
 
