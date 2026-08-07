@@ -94,6 +94,7 @@ class Qwen3_5Model(BaseOP):
             # TODO[jheuristic] proper batching support
             # TODO[jheuristic] post-update block positions override
             mrope_positions = get_rope_index(input_ids, mm_token_type_ids, spatial_merge_size, image_grid_thw)
+            get_global_ctx().batch.mrope_span_override = int(mrope_positions.max().item()) + 1
         residual: torch.Tensor | None = None
         for layer in self.layers.op_list:
             x, residual = layer.forward(x, residual, mrope_positions)
