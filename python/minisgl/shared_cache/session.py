@@ -33,7 +33,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import torch
-from minisgl.core import Batch, Req, SamplingParams
+from minisgl.core import Batch, Req
 from minisgl.utils import div_ceil
 
 from .attention import SharedCacheAttention
@@ -43,8 +43,6 @@ from .worker_group import WorkerGroup
 
 if TYPE_CHECKING:
     from minisgl.engine import Engine
-
-_DEFAULT_SAMPLING = SamplingParams(temperature=0.0, max_tokens=1)
 
 
 def extract_cos_sin_cache(engine: Engine) -> torch.Tensor:
@@ -293,7 +291,7 @@ class SharedCacheSession:
                 cached_len=cached_len,
                 output_len=1,
                 uid=-1,
-                sampling_params=_DEFAULT_SAMPLING,
+                sampling_params=self.engine.config.get_default_sampling_params(),
                 cache_handle=NULL_CACHE_HANDLE,
             )
             batch = self._build_batch([req], phase="prefill")
@@ -345,7 +343,7 @@ class SharedCacheSession:
             cached_len=0,
             output_len=1,
             uid=-1,
-            sampling_params=_DEFAULT_SAMPLING,
+            sampling_params=self.engine.config.get_default_sampling_params(),
             cache_handle=NULL_CACHE_HANDLE,
         )
         batch = Batch(reqs=[req], phase="prefill")
@@ -483,7 +481,7 @@ class SharedCacheSession:
                     cached_len=cached_len,
                     output_len=1,
                     uid=-(wi + 1),
-                    sampling_params=_DEFAULT_SAMPLING,
+                    sampling_params=self.engine.config.get_default_sampling_params(),
                     cache_handle=NULL_CACHE_HANDLE,
                 )
             )

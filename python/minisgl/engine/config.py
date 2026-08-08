@@ -5,11 +5,12 @@ from functools import cached_property
 from typing import TYPE_CHECKING, List
 
 import torch
+from transformers import GenerationConfig
+
+from minisgl.core import SamplingParams
 from minisgl.distributed import DistributedInfo
 from minisgl.utils import cached_load_hf_config
-
-if TYPE_CHECKING:
-    from minisgl.models import ModelConfig
+from minisgl.models import ModelConfig
 
 
 @dataclass(frozen=True)
@@ -35,9 +36,17 @@ class EngineConfig:
         return cached_load_hf_config(self.model_path)
 
     @cached_property
-    def model_config(self) -> ModelConfig:
-        from minisgl.models import ModelConfig
+    def generation_config(self):
+        try:
+            return GenerationConfig.from_pretrained(self.model_path)
+        except OSError:  # missing file
+            return GenerationConfig()
 
+    def get_default_sampling_params(self):  # not a property to avoid accidental in-place changes
+        return SamplingParams.from_hf(self.generation_config)
+
+    @cached_property
+    def model_config(self) -> ModelConfig:
         return ModelConfig.from_hf(self.hf_config)
 
     @property

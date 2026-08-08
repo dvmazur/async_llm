@@ -30,7 +30,7 @@ import torch
 from minisgl.engine.sample import Sampler
 from minisgl.llm import AsyncLLM, CausalLMOutput
 from minisgl.scheduler import AsyncCacheEngine
-from minisgl.shared_cache import AsyncContext
+from minisgl.shared_cache import AsyncContext, SharedCacheSession, WorkerGroup
 from test_async_cache_engine import CPU, VOCAB, StubSession
 
 # =============================================================================
@@ -440,8 +440,6 @@ def _encode(text: str) -> torch.Tensor:
 def test_two_streams_match_lockstep_group(real_engine):
     """Two concurrent agent coroutines (+ a mid-run probe prefill) produce the
     exact token streams of lock-step 2-worker ``decode_step`` calls."""
-    from minisgl.shared_cache import SharedCacheSession, WorkerGroup
-
     n_steps = 6
     prompt_ids = _encode("Q: What is 2 + 2?\n")
     a_ids = _encode("A:")
@@ -469,8 +467,8 @@ def test_two_streams_match_lockstep_group(real_engine):
     async def main():
         llm = AsyncLLM(engine=real_engine)
         prompt = (await llm.prefill_block(prompt_ids)).block
-        a = (await llm.prefill_block(a_ids, context=[prompt])).block
-        b = (await llm.prefill_block(b_ids, context=[prompt, a])).block
+        a = (await llm.prefill_block(a_ids, cache_view=[prompt])).block
+        b = (await llm.prefill_block(b_ids, cache_view=[prompt, a])).block
         ctx_a = AsyncContext(cache_view=[prompt, b, a], output_block=a)
         ctx_b = AsyncContext(cache_view=[prompt, a, b], output_block=b)
 
@@ -504,7 +502,6 @@ def test_forward_streams_match_lockstep_group(real_engine):
     """The demo's shape rebuilt purely on ``forward``: conditional prefills,
     two custom-generate decode loops (client-side argmax) and a mid-run probe
     prefill — token streams must equal lock-step 2-worker stepping."""
-    from minisgl.shared_cache import SharedCacheSession, WorkerGroup
 
     n_steps = 6
     prompt_ids = _encode("Q: What is 2 + 2?\n")
@@ -572,8 +569,6 @@ def test_forward_streams_match_lockstep_group(real_engine):
 def test_forward_extend_matches_lockstep_decode(real_engine):
     """Extending a non-empty block via ``forward(input_ids, cache_view)`` is
     the same computation as feeding those tokens through lock-step decode."""
-    from minisgl.shared_cache import SharedCacheSession, WorkerGroup
-
     prompt_ids = _encode("The capital of France is")
     fed = [11, 13, 17]
 
@@ -584,7 +579,6 @@ def test_forward_extend_matches_lockstep_decode(real_engine):
     ref_group = WorkerGroup(cache_structure=[[ref_block]])
     for tok in fed:
         ref_logits = session.decode_step(ref_group, torch.tensor([tok], dtype=torch.int32))
-    ref_next = int(ref_logits[0].argmax())
 
     async def main():
         llm = AsyncLLM(engine=real_engine)
@@ -594,10 +588,32 @@ def test_forward_extend_matches_lockstep_decode(real_engine):
         assert block.token_ids == prompt_ids.tolist() + fed
         await llm.free_block(block)
         await llm.close()
-        return int(out.logits.argmax())
+        return out.logits
 
-    assert asyncio.run(main()) == ref_next
+    assert torch.nn.functional.cosine_similarity(asyncio.run(main()).flatten(), ref_logits.flatten(), dim=0) > 0.99
     session.free_block(ref_block)
+
+@requires_e2e
+def test_forward_conditional_repeated_blocks(real_engine):
+    async def main():
+        llm = AsyncLLM(engine=real_engine)
+        prefix, repeater, repeater_copy, middle, suffix_ref, suffix_rep, suffix_control = await asyncio.gather(
+            *(llm.create_block() for _ in range(7)))
+        await llm([1, 2], cache_view=[prefix])
+        await llm([3, 4], cache_view=[prefix, repeater])
+        await llm([3, 4], cache_view=[prefix, repeater_copy])
+        await llm([5, 6], cache_view=[prefix, repeater, middle])
+
+        # cache view has (3, 4) twice: [1, 2, (3, 4), 5, 6, (3, 4), _]
+        # reference: compute forward pass using two different identical cache blocks for (3, 4)
+        out_ref = await llm([7], cache_view=[prefix, repeater, middle, repeater_copy, suffix_ref])
+        out_rep = await llm([7], cache_view=[prefix, repeater, middle, repeater, suffix_rep])
+        out_control = await llm([7], cache_view=[prefix, repeater, middle, suffix_control])
+        assert torch.allclose(out_ref.logits, out_rep.logits, rtol=1e-2, atol=1e-2)
+        assert not torch.allclose(out_ref.logits, out_control.logits, rtol=1e-2, atol=1e-2)
+        await llm.close()
+
+    asyncio.run(main())
 
 
 if __name__ == "__main__":

@@ -29,13 +29,18 @@ visibility, exactly like the lock-step ``SharedCacheSession`` API.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import dataclasses
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, AsyncIterator, Optional, Sequence, Union
 
 import torch
+
 from minisgl.scheduler.async_engine import AsyncCacheEngine
+from minisgl.distributed import DistributedInfo
+from minisgl.engine import Engine, EngineConfig
 from minisgl.shared_cache import AsyncContext, CacheBlock, CacheView
-from minisgl.utils import init_logger
+from minisgl.utils import init_logger, load_tokenizer
+from minisgl.utils.hf import load_processor
 
 if TYPE_CHECKING:
     from minisgl.core import SamplingParams
@@ -59,12 +64,6 @@ class CausalLMOutput:
 
     logits: Optional[torch.Tensor]
     block: CacheBlock
-
-
-def _as_token_tensor(token_ids: TokenIds) -> torch.Tensor:
-    if isinstance(token_ids, torch.Tensor):
-        return token_ids.to(dtype=torch.int32).flatten().cpu()
-    return torch.tensor(list(token_ids), dtype=torch.int32)
 
 
 class AsyncLLM:
@@ -92,8 +91,6 @@ class AsyncLLM:
                 assert model_path is not None, (
                     "AsyncLLM needs a model_path, an engine, or an async_engine"
                 )
-                from minisgl.distributed import DistributedInfo
-                from minisgl.engine import Engine, EngineConfig
 
                 engine = Engine(
                     EngineConfig(
@@ -107,11 +104,13 @@ class AsyncLLM:
             async_engine = AsyncCacheEngine(engine)
         self.engine = engine
         self.async_engine = async_engine
-        self.tokenizer = None
+        self.processor = self.tokenizer = None
         if model_path is not None:
-            from minisgl.utils import load_tokenizer
-
-            self.tokenizer = load_tokenizer(model_path)
+            if engine.config.model_config.is_multimodal:
+                self.processor = load_processor(model_path)
+                self.tokenizer = self.processor.tokenizer
+            else:
+                self.tokenizer = load_tokenizer(model_path)
 
         self._loop_task: Optional[asyncio.Task] = None
         self._work_event = asyncio.Event()
@@ -120,6 +119,10 @@ class AsyncLLM:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @property
+    def config(self) -> EngineConfig:
+        return self.engine.config
 
     async def create_block(self) -> CacheBlock:
         return self.async_engine.create_block()
@@ -134,7 +137,7 @@ class AsyncLLM:
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
         mm_token_type_ids: Optional[torch.Tensor] = None,
-        context: Optional[CacheView] = None,
+        cache_view: Optional[CacheView] = None,
         write_to: Optional[CacheBlock] = None,
         return_logits: bool = False,
     ) -> CausalLMOutput:
@@ -147,17 +150,21 @@ class AsyncLLM:
         assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None), "pass all or none"
         block = write_to if write_to is not None else self.async_engine.create_block()
         future = self.async_engine.submit_prefill(
-            _as_token_tensor(input_ids),
+            torch.as_tensor(input_ids).flatten(),
             write_to=block,
-            context=context,
+            cache_view=cache_view,
             return_logits=return_logits,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
-            mm_token_type_ids=mm_token_type_ids,
+            mm_token_type_ids=mm_token_type_ids.flatten() if mm_token_type_ids is not None else None,
         )
         self._work_event.set()
         logits = await future
         return CausalLMOutput(logits=logits, block=block)
+
+    async def __call__(self, *args, **kwargs):
+        """Alias for AsyncLLM.forward"""
+        return await self.forward(*args, **kwargs)
 
     async def forward(
         self,
@@ -168,6 +175,7 @@ class AsyncLLM:
         image_grid_thw: Optional[torch.Tensor] = None,
         mm_token_type_ids: Optional[torch.Tensor] = None,
         write_to: Optional[CacheBlock] = None,
+        attention_mask: Optional[torch.Tensor] = None,
         return_logits: bool = True,
     ) -> CausalLMOutput:
         """Run a single forward pass on the LM with the specified cache view,
@@ -224,9 +232,19 @@ class AsyncLLM:
             ctx.next_input_id = None  # consumed: its KV now lives in write_to
             return CausalLMOutput(logits=logits, block=write_to)
 
-        ids = _as_token_tensor(input_ids)
-        if ids.numel() == 0:
-            raise ValueError("forward got empty input_ids")
+        input_ids = torch.as_tensor(input_ids)
+        if input_ids.numel() == 0:
+            raise ValueError("empty input_ids")
+        assert input_ids.ndim in (0, 1, 2) and input_ids.shape[-1] == input_ids.numel()
+        assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None), "pass all or none"
+        assert mm_token_type_ids is None or mm_token_type_ids.shape == input_ids.shape
+        assert pixel_values is None or (isinstance(pixel_values, torch.Tensor) and pixel_values.ndim == 2)
+        assert image_grid_thw is None or (image_grid_thw.shape == (len(image_grid_thw), 3))
+        assert attention_mask is None or torch.all(torch.as_tensor(attention_mask)), "attention masking not supported"
+        input_ids = input_ids.flatten()
+        if mm_token_type_ids is not None:
+            mm_token_type_ids = torch.as_tensor(mm_token_type_ids).flatten()
+
         if ctx is not None and ctx.next_input_id is not None:
             raise ValueError(
                 "cache_view has a pending next_input_id and input_ids were also given; "
@@ -243,13 +261,10 @@ class AsyncLLM:
 
         # (Conditional) prefill / extension: one forward for all tokens.
         self._ensure_loop()
-        assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None), "pass all or none"
-        if pixel_values is not None:
-            assert mm_token_type_ids.shape
         future = self.async_engine.submit_prefill(
-            ids,
+            input_ids,
             write_to=write_to,
-            context=(view[:-1] if in_view else view) or None,
+            cache_view=(view[:-1] if in_view else view) or None,
             return_logits=return_logits,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
@@ -314,6 +329,13 @@ class AsyncLLM:
             context.next_input_id = token
             steps += 1
             yield result
+
+    async def sample(self, logits: torch.Tensor | CausalLMOutput, **param_overrides) -> torch.IntTensor:
+        """sample with logits, use model's default generation config with optional user overrides"""
+        logits = logits.logits if isinstance(logits, CausalLMOutput) else logits
+        params = replace(self.engine.config.get_default_sampling_params(), **param_overrides)
+        batch_params = self.engine.sampler.prepare_params([params])
+        return self.engine.sampler.sample(logits.view(1, -1), batch_params).view(logits.shape[:-1])
 
     async def close(self) -> None:
         """Stop the engine-tick task (call after all streams are finished)."""

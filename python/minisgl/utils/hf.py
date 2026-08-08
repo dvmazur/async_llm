@@ -5,7 +5,7 @@ from typing import Any
 
 from huggingface_hub import hf_hub_download, snapshot_download
 from tqdm.asyncio import tqdm
-from transformers import AutoConfig, AutoTokenizer, PretrainedConfig, PreTrainedTokenizerBase
+from transformers import AutoConfig, AutoTokenizer, PretrainedConfig, PreTrainedTokenizerBase, AutoProcessor
 
 
 class DisabledTqdm(tqdm):
@@ -15,8 +15,7 @@ class DisabledTqdm(tqdm):
         super().__init__(*args, **kwargs)
 
 
-def load_tokenizer(model_path: str) -> PreTrainedTokenizerBase:
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+def _check_chat_template_inplace(tokenizer: PreTrainedTokenizerBase, model_path):
     # Some Mistral models store chat_template in a separate JSON file
     if not getattr(tokenizer, "chat_template", None):
         try:
@@ -26,6 +25,16 @@ def load_tokenizer(model_path: str) -> PreTrainedTokenizerBase:
         except Exception:
             pass
     return tokenizer
+
+def load_tokenizer(model_path: str) -> PreTrainedTokenizerBase:
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    _check_chat_template_inplace(tokenizer, model_path)
+    return tokenizer
+
+def load_processor(model_path: str):
+    processor = AutoProcessor.from_pretrained(model_path)
+    _check_chat_template_inplace(processor.tokenizer, model_path)
+    return processor
 
 
 class _RawConfig:

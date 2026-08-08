@@ -32,6 +32,7 @@ class Engine:
         set_tp_info(rank=config.tp_info.rank, size=config.tp_info.size)
         _adjust_config(config)
 
+        self.config = config
         self.device = torch.device(f"cuda:{config.tp_info.rank}")
         torch.cuda.set_device(self.device)
         torch.manual_seed(42)

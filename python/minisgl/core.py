@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Literal
 
 import torch
+from transformers import GenerationConfig
 
 if TYPE_CHECKING:
     from minisgl.attention import BaseAttnBackend, BaseAttnMetadata
@@ -24,6 +25,14 @@ class SamplingParams:
     @property
     def is_greedy(self) -> bool:
         return (self.temperature <= 0.0 or self.top_k == 1) and self.top_p == 1.0
+
+    @classmethod
+    def from_hf(cls, generation_config: GenerationConfig):
+        temperature = getattr(generation_config, "temperature", 1)
+        return cls(temperature=temperature if getattr(generation_config, "do_sample", True) else 0.0,
+                   top_k=getattr(generation_config, "top_k", -1),
+                   top_p=getattr(generation_config, "top_p", 1.0),
+                   ignore_eos=bool(getattr(generation_config, "eos_token_id", None)))
 
 
 @dataclass(eq=False)

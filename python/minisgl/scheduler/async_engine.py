@@ -164,7 +164,7 @@ class AsyncCacheEngine:
         token_ids: torch.Tensor,
         *,
         write_to: CacheBlock,
-        context: Optional[CacheView] = None,
+        cache_view: Optional[CacheView] = None,
         return_logits: bool = False,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
@@ -179,7 +179,7 @@ class AsyncCacheEngine:
         self._prefill_queue.append(
             PrefillRequest(
                 input_ids=token_ids,
-                context=list(context or []),
+                context=list(cache_view or []),
                 write_to=write_to,
                 return_logits=return_logits,
                 future=future,
