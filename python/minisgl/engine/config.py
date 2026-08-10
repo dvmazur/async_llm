@@ -31,6 +31,7 @@ class EngineConfig:
     max_seq_len_override: int | None = None
     num_page_override: int | None = None  # if not None, will override the number of pages
     generation_config: GenerationConfig = None
+    distributed_addr: str = "tcp://127.0.0.1:2333"
 
     @cached_property
     def hf_config(self):
@@ -58,7 +59,3 @@ class EngineConfig:
     @property
     def max_forward_len(self) -> int:
         return self.max_seq_len
-
-    @property
-    def distributed_addr(self) -> str:
-        return "tcp://127.0.0.1:2333"
