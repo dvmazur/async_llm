@@ -615,6 +615,15 @@ def test_forward_conditional_repeated_blocks(real_engine):
 
     asyncio.run(main())
 
+@requires_e2e
+def test_sample_works(real_engine):
+    async def main():
+        llm = AsyncLLM(engine=real_engine, model_path=E2E_MODEL_PATH)
+        next_token_id = await llm.sample(await llm([1, 2], cache_view=[await llm.create_block()]))
+        assert torch.as_tensor(next_token_id).shape == ()
+        assert 0 <= next_token_id.item() < llm.tokenizer.vocab_size
+    asyncio.run(main())
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

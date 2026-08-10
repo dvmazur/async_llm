@@ -29,9 +29,11 @@ class SamplingParams:
     @classmethod
     def from_hf(cls, generation_config: GenerationConfig):
         temperature = getattr(generation_config, "temperature", 1)
+        top_k = getattr(generation_config, "top_k", None)
+        top_p = getattr(generation_config, "top_p", None)
         return cls(temperature=temperature if getattr(generation_config, "do_sample", True) else 0.0,
-                   top_k=getattr(generation_config, "top_k", -1),
-                   top_p=getattr(generation_config, "top_p", 1.0),
+                   top_k=top_k if top_k is not None else -1,
+                   top_p=top_p if top_p is not None else 1.0,
                    ignore_eos=bool(getattr(generation_config, "eos_token_id", None)))
 
 
