@@ -30,20 +30,20 @@ class EngineConfig:
     use_pynccl: bool = True
     max_seq_len_override: int | None = None
     num_page_override: int | None = None  # if not None, will override the number of pages
+    generation_config: GenerationConfig = None
 
     @cached_property
     def hf_config(self):
         return cached_load_hf_config(self.model_path)
 
-    @cached_property
-    def generation_config(self):
-        try:
-            return GenerationConfig.from_pretrained(self.model_path)
-        except OSError:  # missing file
-            return GenerationConfig()
-
     def get_default_sampling_params(self):  # not a property to avoid accidental in-place changes
-        return SamplingParams.from_hf(self.generation_config)
+        generation_config = self.generation_config
+        if generation_config is None:
+            try:
+                generation_config = GenerationConfig.from_pretrained(self.model_path)
+            except OSError:  # missing file
+                generation_config = GenerationConfig()
+        return SamplingParams.from_hf(generation_config)
 
     @cached_property
     def model_config(self) -> ModelConfig:

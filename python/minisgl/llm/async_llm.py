@@ -29,11 +29,11 @@ visibility, exactly like the lock-step ``SharedCacheSession`` API.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, AsyncIterator, Optional, Sequence, Union
 
 import torch
+import transformers
 
 from minisgl.scheduler.async_engine import AsyncCacheEngine
 from minisgl.distributed import DistributedInfo
@@ -91,6 +91,11 @@ class AsyncLLM:
                 assert model_path is not None, (
                     "AsyncLLM needs a model_path, an engine, or an async_engine"
                 )
+                if "generation_config" not in engine_kwargs:
+                    try:
+                        engine_kwargs["generation_config"] = transformers.GenerationConfig.from_pretrained(model_path)
+                    except OSError:  # missing file
+                        logger.warning(f"Model {model_path} has no generation_config, using model-agnostic defaults.")
 
                 engine = Engine(
                     EngineConfig(
