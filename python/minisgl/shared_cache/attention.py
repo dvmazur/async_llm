@@ -646,7 +646,7 @@ class SharedCacheAttention:
 
         M = meta.max_segments
         v_pad = q.new_zeros(W * M, Hq, D)
-        # finite "minus infinity": exp(pad - max) underflows to 0 for any real lse
+        # Zero-weight filler; see ``_forward_prefill_batch`` for why this value.
         s_pad = torch.full((W * M, Hq), -5.0e4, dtype=torch.float32, device=self.device)
         v_pad[meta.pad_slot] = out
         s_pad[meta.pad_slot] = lse
@@ -679,7 +679,11 @@ class SharedCacheAttention:
         # [N, max_segments] grid (as decode does) instead of a fixed reshape.
         M = meta.max_segments
         v_pad = q_sub.new_zeros(N * M, Hq, D)
-        # finite "minus infinity": exp(pad - max) underflows to 0 for any real lse
+        # Rows with fewer than M segments leave slots unwritten; they must carry
+        # no weight, and the merge's ``exp(s - s_max)`` underflows to an exact 0
+        # this far down.  -5e4 rather than -inf: it is what FlashInfer's own merge
+        # kernel seeds its accumulator with (``triton/kernels/cascade.py``), and
+        # staying finite keeps an all-padding row from going NaN.
         s_pad = torch.full((N * M, Hq), -5.0e4, dtype=torch.float32, device=self.device)
         v_pad[meta.pad_slot] = torch.cat([out_ctx, out_self], dim=0)
         s_pad[meta.pad_slot] = torch.cat([lse_ctx, lse_self], dim=0)
