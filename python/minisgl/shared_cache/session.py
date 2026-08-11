@@ -30,37 +30,20 @@ Usage::
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import torch
 from minisgl.core import Batch, Req
 from minisgl.utils import div_ceil
 
-from .attention import PrefillSpec, SharedCacheAttention
+from .attention import SharedCacheAttention
 from .gdn import SharedCacheGDN
+from .gdn_affine import compose_gdn_affines
 from .shared_block import NULL_CACHE_HANDLE, CacheBlock
 from .worker_group import WorkerGroup
 
 if TYPE_CHECKING:
     from minisgl.engine import Engine
-
-
-@dataclass
-class PrefillJob:
-    """One prefill to run inside a :meth:`SharedCacheSession.prefill_batch`.
-
-    The fields mirror :meth:`SharedCacheSession.prefill_block`'s arguments:
-    *input_ids* are appended to *block* (a non-empty block is extended) and
-    attend to *context* in view order.
-    """
-
-    block: CacheBlock
-    input_ids: torch.Tensor
-    context: List[CacheBlock] = field(default_factory=list)
-    pixel_values: Optional[torch.Tensor] = None
-    image_grid_thw: Optional[torch.Tensor] = None
-    mm_token_type_ids: Optional[torch.Tensor] = None
 
 
 def extract_cos_sin_cache(engine: Engine) -> torch.Tensor:
@@ -223,6 +206,110 @@ class SharedCacheSession:
             )
 
     @torch.inference_mode()
+    def merge_blocks(self, left: CacheBlock, right: CacheBlock) -> CacheBlock:
+        """Return a new block equivalent to the logical view [left, right].
+
+        The input blocks are left unchanged. Full-attention KV is copied into
+        compact fresh pages; right keys are RoPE/mRoPE-shifted by
+        left.mrope_span so the result uses one block-relative coordinate
+        frame. Qwen3.5 GDN affine summaries are composed in left-to-right
+        order, and the final causal-convolution state comes from right.
+        """
+        if left.device != self.device or right.device != self.device:
+            raise ValueError("both blocks must belong to this session's device")
+        if left.page_size != self.page_size or right.page_size != self.page_size:
+            raise ValueError("both blocks must use this session's page size")
+
+        merged = self.create_block()
+        total_tokens = left.num_tokens + right.num_tokens
+        if total_tokens:
+            page_starts, _ = self._alloc_token_storage(total_tokens, write_to=merged)
+            merged.grow_pages(page_starts, total_tokens)
+
+        if total_tokens:
+            dst = merged.token_slots_tensor().to(torch.int64)
+            left_dst = dst[: left.num_tokens]
+            right_dst = dst[left.num_tokens :]
+            left_src = left.token_slots_tensor().to(torch.int64)
+            right_src = right.token_slots_tensor().to(torch.int64)
+
+            for layer_idx in range(self.kv_cache.num_layers):
+                k_cache = self.kv_cache.k_cache(layer_idx)
+                v_cache = self.kv_cache.v_cache(layer_idx)
+                k_flat = k_cache.reshape(-1, *k_cache.shape[2:])
+                v_flat = v_cache.reshape(-1, *v_cache.shape[2:])
+
+                if left.num_tokens:
+                    k_flat.index_copy_(0, left_dst, k_flat.index_select(0, left_src))
+                    v_flat.index_copy_(0, left_dst, v_flat.index_select(0, left_src))
+
+                if right.num_tokens:
+                    right_keys = k_flat.index_select(0, right_src)
+                    if left.mrope_span:
+                        shift = torch.full(
+                            (right.num_tokens,),
+                            left.mrope_span,
+                            dtype=torch.int64,
+                            device=self.device,
+                        )
+                        if right.mrope_span == right.num_tokens:
+                            # Text positions are known exactly. Undo their local
+                            # rotation in fp32, then apply the final absolute
+                            # position once; this avoids composing a new phase
+                            # directly onto already-rounded bf16 keys.
+                            local_pos = torch.arange(
+                                right.num_tokens, dtype=torch.int64, device=self.device
+                            )
+                            right_keys = self.sc_attn._rope(right_keys.float(), -local_pos)
+                            right_keys = self.sc_attn._rope(
+                                right_keys, local_pos + shift
+                            ).to(k_flat.dtype)
+                        else:
+                            # Exact per-token 3-D positions are not retained for
+                            # multimodal blocks, so apply the algebraic block shift.
+                            right_keys = self.sc_attn._rope(right_keys, shift)
+                    k_flat.index_copy_(0, right_dst, right_keys)
+                    v_flat.index_copy_(0, right_dst, v_flat.index_select(0, right_src))
+
+        merged.token_ids = [*left.token_ids, *right.token_ids]
+        merged_span = left.mrope_span + right.mrope_span
+        if merged_span != total_tokens:
+            merged.mrope_span_override = merged_span
+
+        affine_layers = left.linear_affine.keys() | right.linear_affine.keys()
+        for layer_idx in affine_layers:
+            left_pair = left.linear_affine.get(layer_idx)
+            right_pair = right.linear_affine.get(layer_idx)
+            if left_pair is None:
+                assert right_pair is not None
+                merged.linear_affine[layer_idx] = (
+                    right_pair[0].clone(),
+                    right_pair[1].clone(),
+                )
+            elif right_pair is None:
+                merged.linear_affine[layer_idx] = (
+                    left_pair[0].clone(),
+                    left_pair[1].clone(),
+                )
+            else:
+                merged.linear_affine[layer_idx] = compose_gdn_affines(
+                    A_first=left_pair[0],
+                    B_first=left_pair[1],
+                    A_second=right_pair[0],
+                    B_second=right_pair[1],
+                )
+
+        conv_layers = left.linear_conv_state.keys() | right.linear_conv_state.keys()
+        for layer_idx in conv_layers:
+            state = right.linear_conv_state.get(
+                layer_idx, left.linear_conv_state.get(layer_idx)
+            )
+            assert state is not None
+            merged.linear_conv_state[layer_idx] = state.clone()
+
+        return merged
+
+    @torch.inference_mode()
     def prefill_block(
         self,
         block: CacheBlock,
@@ -274,22 +361,9 @@ class SharedCacheSession:
                 "it (its own tokens are attended to by the self segment)"
             )
         if context:
-            # An in-context prefill is just a one-request batch: ``prefill_batch``
-            # plans exactly the same two wrappers for a single spec (bit-identical
-            # results, and the extra scatter-merge is lost in the noise), so there
-            # is no separate single-request implementation to keep in step.
-            return self._prefill_batch_fused(
-                [
-                    PrefillJob(
-                        block=block,
-                        input_ids=input_ids,
-                        context=context,
-                        pixel_values=pixel_values,
-                        image_grid_thw=image_grid_thw,
-                        mm_token_type_ids=mm_token_type_ids,
-                    )
-                ]
-            )[0]
+            return self._prefill_block_in_context(
+                block, input_ids, context, pixel_values, image_grid_thw, mm_token_type_ids,
+                mrope_rel)
 
         assert cached_len + seq_len <= self.page_table.shape[1], (
             f"prefill of {seq_len} tokens into a block of {cached_len} exceeds the "
@@ -345,189 +419,66 @@ class SharedCacheSession:
         finally:
             self._free_table_idx(table_idx)
 
-    @torch.inference_mode()
-    def prefill_batch(self, jobs: Sequence[PrefillJob]) -> List[torch.Tensor]:
-        """
-        Run several prefills in a **single forward** and return each one's
-        last-token logits ``[1, vocab]``, in request order.
+    def _prefill_block_in_context(
+        self,
+        block: CacheBlock,
+        input_ids: torch.Tensor,
+        context: List[CacheBlock],
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.Tensor] = None,
+        mm_token_type_ids: Optional[torch.Tensor] = None,
+        mrope_rel: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Prefill *block* while attending to *context* blocks (all non-empty).
 
-        Each job behaves exactly as the equivalent :meth:`prefill_block` call —
-        same write semantics (a non-empty block is extended), same context
-        handling, same multimodal inputs — the requests just share one batch.
-        A single job is delegated to :meth:`prefill_block` unchanged.
+        A non-empty *block* is extended: the new tokens sit at block-relative
+        positions ``cached_len ...`` and the causal self segment spans the
+        block's own prefix as well as the new tokens.  *mrope_rel* carries the new
+        tokens' zero-based 3-D mRoPE positions when they contain an image."""
+        seq_len = len(input_ids)
+        cached_len = block.num_tokens
+        cached_span = block.mrope_span
+        page_starts, out_loc = self._alloc_token_storage(seq_len, write_to=block)
+        # Self segment reads the block's whole (post-write) page list.
+        self_pages = torch.cat([block.page_starts_tensor(), page_starts.to(self.device)])
 
-        The jobs must be mutually independent: no two may write the same block,
-        and no job's context may name another job's write block.  Such a job
-        would have to read KV this very forward produces, which the batch does
-        not expose (context segments are sized pre-write), so it is rejected
-        rather than silently answered from stale KV — run it in a later batch.
-        """
-        jobs = list(jobs)
-        assert jobs, "prefill_batch needs at least one request"
-        if len(jobs) == 1:
-            job = jobs[0]
-            return [
-                self.prefill_block(
-                    job.block,
-                    job.input_ids,
-                    context=list(job.context) or None,
-                    pixel_values=job.pixel_values,
-                    image_grid_thw=job.image_grid_thw,
-                    mm_token_type_ids=job.mm_token_type_ids,
-                )
-            ]
-        return self._prefill_batch_fused(jobs)
-
-    @torch.inference_mode()
-    def _prefill_batch_fused(self, jobs: Sequence[PrefillJob]) -> List[torch.Tensor]:
-        """The one-forward implementation behind :meth:`prefill_batch`.
-
-        Works for any number of requests, including one — a single job is
-        normally routed to :meth:`prefill_block` instead (same result, but it
-        keeps the well-trodden page-table path for the common case), so this is
-        called directly only by the batched path and by tests isolating it.
-        """
-        jobs = list(jobs)
-        write_ids = {id(job.block) for job in jobs}
-        assert len(write_ids) == len(jobs), "two prefills write the same block in one batch"
-
-        specs: List[PrefillSpec] = []
-        chains: List[List[CacheBlock]] = []
-        ids_list: List[torch.Tensor] = []
-        positions: List[torch.Tensor] = []
-        out_locs: List[torch.Tensor] = []
-        new_pages: List[torch.Tensor] = []
-        mrope_parts: List[torch.Tensor] = []
-        new_spans: List[int] = []
-        mm_type_parts: List[torch.Tensor] = []
-        pixel_parts: List[torch.Tensor] = []
-        grid_parts: List[torch.Tensor] = []
-        need_mrope = False
-
-        for job in jobs:
-            block = job.block
-            input_ids = job.input_ids.to(dtype=torch.int32).flatten().cpu()
-            seq_len = len(input_ids)
-            assert seq_len > 0
-            cached_len = block.num_tokens
-            assert cached_len + seq_len <= self.page_table.shape[1], (
-                f"prefill of {seq_len} tokens into a block of {cached_len} exceeds the "
-                f"engine's max sequence length ({self.page_table.shape[1]})"
-            )
-
-            if any(b is block for b in (job.context or [])):
-                raise ValueError(
-                    "the write block must not appear in context: pass the blocks before "
-                    "it (its own tokens are attended to by the self segment)"
-                )
-            # Checked before the empty-block filter: naming a block another
-            # request fills this very step is an ordering dependency whether or
-            # not it happens to be empty right now.
-            if any(id(b) in write_ids for b in (job.context or [])):
-                raise ValueError(
-                    "a batched prefill's context names another request's write block; "
-                    "run it in a later batch so it can see that block's new tokens"
-                )
-            context = [b for b in (job.context or []) if b.num_tokens > 0]
-
-            mrope_rel = (
-                self._mrope_rel(input_ids, job.mm_token_type_ids, job.image_grid_thw)
-                if job.pixel_values is not None
-                else None
-            )
-            page_starts, token_slots = self._alloc_token_storage(seq_len, write_to=block)
-            # The self segment reads the block's whole post-write page list.
-            self_pages = torch.cat([block.page_starts_tensor(), page_starts.to(self.device)])
-            specs.append(
-                PrefillSpec(
-                    context=context,
-                    self_page_starts=self_pages,
-                    num_new=seq_len,
-                    self_prefix_len=cached_len,
-                    self_prefix_span=block.mrope_span,
-                    mrope_rel=mrope_rel,
-                )
-            )
-            chains.append([*context, block])
-            ids_list.append(input_ids)
-            new_pages.append(page_starts)
-            out_locs.append(token_slots)
-            # Keys are stored block-relative, continuing the block's own frame.
-            positions.append(
-                torch.arange(
-                    cached_len, cached_len + seq_len, dtype=torch.int64, device=self.device
-                )
-            )
-
-            # mRoPE bookkeeping, per request, in the block's own frame — same
-            # rule as ``_attach_mrope_positions`` applies to a single prefill.
-            offset = block.mrope_span
-            rel = mrope_rel
-            if rel is None:
-                rel = torch.arange(seq_len, dtype=torch.int64).view(1, -1).expand(3, -1)
-            else:
-                need_mrope = True
-            need_mrope |= block.mrope_span_override is not None
-            mrope_parts.append(rel.to(torch.int64) + offset)
-            span_advance = seq_len if mrope_rel is None else int(mrope_rel.max()) + 1
-            new_spans.append(offset + span_advance)
-
-            if job.pixel_values is not None:
-                pixel_parts.append(job.pixel_values.to(self.device))
-                grid_parts.append(job.image_grid_thw.to(self.device))
-                # Normalized to int64: a text-only request contributes a zero
-                # filler and the whole batch's type ids must concatenate.
-                mm_type_parts.append(
-                    job.mm_token_type_ids.flatten().to(dtype=torch.int64, device=self.device)
-                )
-            else:
-                mm_type_parts.append(torch.zeros(seq_len, dtype=torch.int64, device=self.device))
-
-        # Reqs are bookkeeping only (batch size for the LM head); the page table
-        # is bypassed, so they point at the engine's dummy row.
-        dummy_table_idx = self.page_table.shape[0] - 1
-        reqs = [
-            Req(
-                input_ids=ids,
-                table_idx=dummy_table_idx,
-                cached_len=0,
-                output_len=1,
-                uid=-1,
-                sampling_params=self.engine.config.get_default_sampling_params(),
-                cache_handle=NULL_CACHE_HANDLE,
-            )
-            for ids in ids_list
-        ]
-        batch = Batch(reqs=reqs, phase="prefill")
-        batch.padded_reqs = reqs
-        batch.input_ids = torch.cat(ids_list).to(self.device)
-        batch.positions = torch.cat(positions)
-        batch.out_loc = torch.cat(out_locs)
-        batch.attn_metadata = self.sc_attn.prepare_prefill_batch(specs)
-        if need_mrope:
-            batch.mrope_positions = torch.cat(mrope_parts, dim=1).to(self.device)
-        if pixel_parts:
-            # The vision tower embeds every image of the batch in one go and the
-            # embeddings are scattered into the image-token positions in order,
-            # so plain concatenation is the batched form of a single request.
-            batch.pixel_values = torch.cat(pixel_parts)
-            batch.image_grid_thw = torch.cat(grid_parts)
-            batch.mm_token_type_ids = torch.cat(mm_type_parts)
-
-        logits = self._forward(
-            batch,
-            cache_structure=chains,
-            write_to=[job.block for job in jobs],
-            prefill_segments=[len(ids) for ids in ids_list],
+        req = Req(
+            input_ids=input_ids,
+            table_idx=self.page_table.shape[0] - 1,  # dummy row; page table bypassed
+            cached_len=0,
+            output_len=1,
+            uid=-1,
+            sampling_params=self.engine.config.get_default_sampling_params(),
+            cache_handle=NULL_CACHE_HANDLE,
         )
+        batch = Batch(reqs=[req], phase="prefill")
+        batch.padded_reqs = [req]
+        # block-relative RoPE positions for the stored keys
+        batch.positions = torch.arange(
+            cached_len, cached_len + seq_len, dtype=torch.int64, device=self.device
+        )
+        batch.input_ids = input_ids.to(self.device)
+        batch.out_loc = out_loc
+        batch.attn_metadata = self.sc_attn.prepare_context_prefill(
+            context,
+            self_pages,
+            seq_len,
+            self_prefix_len=cached_len,
+            self_prefix_span=cached_span,
+            mrope_rel=mrope_rel,
+        )
+        if pixel_values is not None:
+            batch.pixel_values = pixel_values.to(self.device)
+            batch.image_grid_thw = image_grid_thw.to(self.device)
+            batch.mm_token_type_ids = mm_token_type_ids.to(self.device)
+        new_span = self._attach_mrope_positions(batch, block, seq_len, mrope_rel)
 
-        for job, ids, pages, span in zip(jobs, ids_list, new_pages, new_spans):
-            job.block.grow_pages(pages, len(ids))
-            job.block.token_ids.extend(ids.tolist())
-            self._commit_mrope_span(job.block, span)
+        logits = self._forward(batch, cache_structure=[[*context, block]], write_to=[block])
 
-        # ParallelLMHead already extracted the per-request last-token rows.
-        return [logits[i : i + 1] for i in range(len(jobs))]
+        block.grow_pages(page_starts, seq_len)
+        block.token_ids.extend(input_ids.tolist())
+        self._commit_mrope_span(block, new_span)
+        return logits[:1]
 
     # ------------------------------------------------------------------
     # Interleaved mRoPE (Qwen3.5 multimodal)
@@ -767,20 +718,13 @@ class SharedCacheSession:
         batch: Batch,
         cache_structure: "List[List[CacheBlock]] | None" = None,
         write_to: "List[CacheBlock] | None" = None,
-        prefill_segments: "List[int] | None" = None,
     ) -> torch.Tensor:
         ctx = self.engine.ctx
         # For hybrid (Qwen3.5) models, hand the GDN layers the worker chains so
         # they can compose the initial recurrent state and capture per-token
-        # affine updates.  ``prefill_segments`` splits a batched prefill's rows
-        # per request, since a GDN chain is inherently sequential and each
-        # request runs its own scan.  No-op for standard models (sc_gdn is None).
+        # affine updates.  No-op for standard models (sc_gdn is None).
         if self.sc_gdn is not None and cache_structure is not None:
-            self.sc_gdn.set_context(
-                cache_structure,
-                write_to or [c[-1] for c in cache_structure],
-                prefill_segments=prefill_segments,
-            )
+            self.sc_gdn.set_context(cache_structure, write_to or [c[-1] for c in cache_structure])
             ctx.gdn_ar = self.sc_gdn
         try:
             with ctx.forward_batch(batch):

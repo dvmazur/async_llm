@@ -23,8 +23,7 @@ Everything runs single-threaded: the GPU forward blocks the loop for one tick,
 then every consumer woken by that tick gets to enqueue its next request before
 the following batch is formed (one ``sleep(0)`` round).  Concurrent agents
 therefore decode in the same ``WorkerGroup`` step, with same-step cross-worker
-visibility, exactly like the lock-step ``SharedCacheSession`` API — and their
-prefill-mode requests likewise share one prefill forward.
+visibility, exactly like the lock-step ``SharedCacheSession`` API.
 """
 
 from __future__ import annotations
@@ -129,6 +128,9 @@ class AsyncLLM:
 
     async def free_block(self, block: CacheBlock) -> None:
         self.async_engine.free_block(block)
+
+    async def merge_blocks(self, left: CacheBlock, right: CacheBlock) -> CacheBlock:
+        return self.async_engine.merge_blocks(left, right)
 
     async def prefill_block(
         self,
