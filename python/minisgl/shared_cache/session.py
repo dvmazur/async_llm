@@ -274,9 +274,22 @@ class SharedCacheSession:
                 "it (its own tokens are attended to by the self segment)"
             )
         if context:
-            return self._prefill_block_in_context(
-                block, input_ids, context, pixel_values, image_grid_thw, mm_token_type_ids,
-                mrope_rel)
+            # An in-context prefill is just a one-request batch: ``prefill_batch``
+            # plans exactly the same two wrappers for a single spec (bit-identical
+            # results, and the extra scatter-merge is lost in the noise), so there
+            # is no separate single-request implementation to keep in step.
+            return self._prefill_batch_fused(
+                [
+                    PrefillJob(
+                        block=block,
+                        input_ids=input_ids,
+                        context=context,
+                        pixel_values=pixel_values,
+                        image_grid_thw=image_grid_thw,
+                        mm_token_type_ids=mm_token_type_ids,
+                    )
+                ]
+            )[0]
 
         assert cached_len + seq_len <= self.page_table.shape[1], (
             f"prefill of {seq_len} tokens into a block of {cached_len} exceeds the "
@@ -331,67 +344,6 @@ class SharedCacheSession:
             return logits[:1]
         finally:
             self._free_table_idx(table_idx)
-
-    def _prefill_block_in_context(
-        self,
-        block: CacheBlock,
-        input_ids: torch.Tensor,
-        context: List[CacheBlock],
-        pixel_values: Optional[torch.Tensor] = None,
-        image_grid_thw: Optional[torch.Tensor] = None,
-        mm_token_type_ids: Optional[torch.Tensor] = None,
-        mrope_rel: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Prefill *block* while attending to *context* blocks (all non-empty).
-
-        A non-empty *block* is extended: the new tokens sit at block-relative
-        positions ``cached_len ...`` and the causal self segment spans the
-        block's own prefix as well as the new tokens.  *mrope_rel* carries the new
-        tokens' zero-based 3-D mRoPE positions when they contain an image."""
-        seq_len = len(input_ids)
-        cached_len = block.num_tokens
-        cached_span = block.mrope_span
-        page_starts, out_loc = self._alloc_token_storage(seq_len, write_to=block)
-        # Self segment reads the block's whole (post-write) page list.
-        self_pages = torch.cat([block.page_starts_tensor(), page_starts.to(self.device)])
-
-        req = Req(
-            input_ids=input_ids,
-            table_idx=self.page_table.shape[0] - 1,  # dummy row; page table bypassed
-            cached_len=0,
-            output_len=1,
-            uid=-1,
-            sampling_params=self.engine.config.get_default_sampling_params(),
-            cache_handle=NULL_CACHE_HANDLE,
-        )
-        batch = Batch(reqs=[req], phase="prefill")
-        batch.padded_reqs = [req]
-        # block-relative RoPE positions for the stored keys
-        batch.positions = torch.arange(
-            cached_len, cached_len + seq_len, dtype=torch.int64, device=self.device
-        )
-        batch.input_ids = input_ids.to(self.device)
-        batch.out_loc = out_loc
-        batch.attn_metadata = self.sc_attn.prepare_context_prefill(
-            context,
-            self_pages,
-            seq_len,
-            self_prefix_len=cached_len,
-            self_prefix_span=cached_span,
-            mrope_rel=mrope_rel,
-        )
-        if pixel_values is not None:
-            batch.pixel_values = pixel_values.to(self.device)
-            batch.image_grid_thw = image_grid_thw.to(self.device)
-            batch.mm_token_type_ids = mm_token_type_ids.to(self.device)
-        new_span = self._attach_mrope_positions(batch, block, seq_len, mrope_rel)
-
-        logits = self._forward(batch, cache_structure=[[*context, block]], write_to=[block])
-
-        block.grow_pages(page_starts, seq_len)
-        block.token_ids.extend(input_ids.tolist())
-        self._commit_mrope_span(block, new_span)
-        return logits[:1]
 
     @torch.inference_mode()
     def prefill_batch(self, jobs: Sequence[PrefillJob]) -> List[torch.Tensor]:
