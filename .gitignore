@@ -31,3 +31,6 @@ env/
 # .vscode
 .vscode/
 .coverage
+
+# local profiling artifacts
+wip/
