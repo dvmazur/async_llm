@@ -48,6 +48,7 @@ class ModelConfig:
     num_experts: int
     num_experts_per_tok: int
     moe_intermediate_size: int
+    shared_expert_intermediate_size: int
     norm_topk_prob: bool
     model_type: str
     architectures: list[str]
@@ -125,10 +126,19 @@ class ModelConfig:
         )
         tie_word_embeddings = getattr(config, "tie_word_embeddings", False)
         model_type = getattr(config, "model_type", "llama")
-        num_experts = getattr(config, "num_local_experts", getattr(config, "num_experts", 0))
+        num_experts = getattr(config, "num_local_experts", None) or getattr(
+            config, "num_experts", 0
+        )
         num_experts_per_tok = getattr(config, "num_experts_per_tok", 0)
         moe_intermediate_size = getattr(config, "moe_intermediate_size", 0)
-        norm_topk_prob = getattr(config, "norm_topk_prob", False)
+        shared_expert_intermediate_size = getattr(
+            config, "shared_expert_intermediate_size", 0
+        )
+        # Qwen3.5-MoE intentionally does not expose ``norm_topk_prob`` in its HF
+        # config, but its router always renormalizes the selected softmax scores.
+        norm_topk_prob = getattr(
+            config, "norm_topk_prob", model_type == "qwen3_5_moe_text"
+        )
         architectures = getattr(config, "architectures", ["LlamaForCausalLM"])
 
         # Rope: Qwen3.5 nests under `rope_parameters`; Llama/Qwen use a direct `rope_theta`; Mistral uses `rope_scaling`
@@ -181,7 +191,8 @@ class ModelConfig:
             head_dim=head_dim,
             hidden_size=config.hidden_size,
             vocab_size=config.vocab_size,
-            intermediate_size=config.intermediate_size,
+            # Sparse Qwen3.5-MoE layers have no dense ``intermediate_size``.
+            intermediate_size=getattr(config, "intermediate_size", 0),
             hidden_act=config.hidden_act,
             rms_norm_eps=config.rms_norm_eps,
             tie_word_embeddings=tie_word_embeddings,
@@ -195,6 +206,7 @@ class ModelConfig:
             num_experts=num_experts,
             num_experts_per_tok=num_experts_per_tok,
             moe_intermediate_size=moe_intermediate_size,
+            shared_expert_intermediate_size=shared_expert_intermediate_size,
             norm_topk_prob=norm_topk_prob,
             model_type=model_type,
             architectures=architectures,

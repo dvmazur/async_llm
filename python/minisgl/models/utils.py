@@ -23,10 +23,13 @@ if TYPE_CHECKING:
 
 
 class GatedMLP(BaseOP):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, intermediate_size: int | None = None):
+        intermediate_size = (
+            config.intermediate_size if intermediate_size is None else intermediate_size
+        )
         self.gate_up_proj = LinearColParallelMerged(
             config.hidden_size,
-            [config.intermediate_size, config.intermediate_size],
+            [intermediate_size, intermediate_size],
             has_bias=False,
         )
 
@@ -36,7 +39,7 @@ class GatedMLP(BaseOP):
             raise ValueError(f"Unsupported activation function: {config.hidden_act}")
         self.act_fn = act_fn
         self.down_proj = LinearRowParallel(
-            config.intermediate_size,
+            intermediate_size,
             config.hidden_size,
             has_bias=False,
         )

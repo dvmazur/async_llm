@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
 
 class Qwen3_5DecoderLayer(BaseOP):
+    mlp_cls = GatedMLP
+
     def __init__(self, config: ModelConfig, layer_id: int, kv_idx: int, linear_idx: int):
         assert config.layer_types is not None
         if config.layer_types[layer_id] == "linear_attention":
@@ -26,7 +28,7 @@ class Qwen3_5DecoderLayer(BaseOP):
         else:
             self.self_attn = Qwen3_5Attention(config, kv_idx)
             self._is_linear = False
-        self.mlp = GatedMLP(config)
+        self.mlp = self.mlp_cls(config)
         self.input_layernorm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNormFused(
             size=config.hidden_size, eps=config.rms_norm_eps
@@ -48,6 +50,8 @@ class Qwen3_5DecoderLayer(BaseOP):
 
 
 class Qwen3_5Model(BaseOP):
+    decoder_layer_cls = Qwen3_5DecoderLayer
+
     def __init__(self, config: ModelConfig):
         assert config.layer_types is not None
         self.config = config
@@ -65,7 +69,7 @@ class Qwen3_5Model(BaseOP):
         layers = []
         kv_idx = linear_idx = 0
         for layer_id in range(config.num_layers):
-            layers.append(Qwen3_5DecoderLayer(config, layer_id, kv_idx, linear_idx))
+            layers.append(self.decoder_layer_cls(config, layer_id, kv_idx, linear_idx))
             if config.layer_types[layer_id] == "linear_attention":
                 linear_idx += 1
             else:
@@ -116,8 +120,10 @@ class Qwen3_5Model(BaseOP):
 
 
 class Qwen3_5ForCausalLM(BaseLLMModel):
+    model_cls = Qwen3_5Model
+
     def __init__(self, config: ModelConfig):
-        self.model = Qwen3_5Model(config)
+        self.model = self.model_cls(config)
         self.lm_head = ParallelLMHead(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
@@ -138,4 +144,4 @@ class Qwen3_5ForCausalLM(BaseLLMModel):
         return logits
 
 
-__all__ = ["Qwen3_5ForCausalLM"]
+__all__ = ["Qwen3_5DecoderLayer", "Qwen3_5Model", "Qwen3_5ForCausalLM"]
