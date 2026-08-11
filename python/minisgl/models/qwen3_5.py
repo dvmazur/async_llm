@@ -89,12 +89,21 @@ class Qwen3_5Model(BaseOP):
         mrope_positions: torch.Tensor | None = batch.mrope_positions
         if pixel_values is not None:
             assert mm_token_type_ids is not None
-            assert batch.size == 1, "batching multimodal prefills is not implemented yet"
+            # The tower attends within each image (per-image ``cu_seqlens``) and the
+            # embeddings are scattered into the image-token positions in order, so
+            # several requests' images concatenate exactly like several images of one.
             image_embeds = self.visual.forward(pixel_values, image_grid_thw)  # (n_img, hidden)
             image_mask = mm_token_type_ids == 1  # 0 - text, 1 - image, 2 - video, etc
             x = x.clone()
             x[image_mask] = image_embeds.to(x.dtype)
             if mrope_positions is None:
+                # This fallback reads the batch as ONE sequence: get_rope_index knows
+                # no request boundaries and mrope_span_override is a single scalar.
+                # A batch must therefore arrive with per-request positions already
+                # computed (``SharedCacheSession.prefill_batch`` always does).
+                assert batch.size == 1, (
+                    "batching multimodal prefills requires precomputed mrope_positions"
+                )
                 spatial_merge_size = self.config.vision_config.spatial_merge_size
                 mrope_positions = get_rope_index(
                     input_ids, mm_token_type_ids, spatial_merge_size, image_grid_thw

@@ -4,11 +4,17 @@ Queue-based scheduling core for async cache requests
 ``AsyncCacheEngine`` owns two request queues and drains them one forward per
 ``tick()``:
 
-* ``PrefillRequest`` — fill a fresh ``CacheBlock`` with tokens (optionally
-  attending to a context view); resolves with the last-token logits.
+* ``PrefillRequest`` — fill a ``CacheBlock`` with tokens (optionally attending
+  to a context view); resolves with the last-token logits.  All pending
+  prefill requests that do not depend on each other's new KV are batched into
+  a single forward.
 * ``DecodeRequest`` — one decode step for one ``AsyncContext``; all pending
   decode requests are batched into a single ``WorkerGroup`` forward and each
   resolves with its sampled token id.
+
+A ``forward`` request from the asyncio frontend is one or the other: with
+``input_ids`` it is prefill-like and joins the prefill batch, without them it
+is decode-like and joins the decode batch.
 
 The engine is deliberately synchronous: ``tick()`` blocks on the GPU forward
 and resolves plain future objects.  The asyncio frontend (``AsyncLLM``,
@@ -35,6 +41,7 @@ from minisgl.shared_cache import (
     AsyncContext,
     CacheBlock,
     CacheView,
+    PrefillJob,
     SharedCacheSession,
     WorkerGroup,
 )
@@ -108,10 +115,12 @@ class AsyncCacheEngine:
     """
     Drains async-cache request queues, one forward per ``tick()``.
 
-    Scheduling policy (v1): prefills first, one per tick; otherwise every
-    pending decode request is batched into a single ``WorkerGroup`` step.
-    Mixed prefill+decode forwards are a later tick-policy upgrade (see
-    docs/mixed_batch_plan.md).
+    Scheduling policy: prefills first, then decodes — each phase batched.  A
+    prefill tick runs every pending prefill request that can share a forward
+    (see ``_take_prefill_group``) in one batch; a decode tick batches every
+    pending decode request into a single ``WorkerGroup`` step.  Prefill and
+    decode are still scheduled as separate forwards; mixing them in one is a
+    later tick-policy upgrade.
     """
 
     def __init__(
@@ -227,29 +236,65 @@ class AsyncCacheEngine:
         """Run at most one forward; returns ``"prefill"``/``"decode"`` or
         ``None`` when both queues are empty."""
         if self._prefill_queue:
-            self._run_prefill(self._prefill_queue.popleft())
+            self._run_prefill_batch()
             return "prefill"
         if self._decode_queue:
             self._run_decode_batch()
             return "decode"
         return None
 
-    def _run_prefill(self, req: PrefillRequest) -> None:
-        kwargs: dict[str, Any] = {"context": req.context or None}
-        # Only forward image kwargs for multimodal blocks, so the text path keeps the
-        # original prefill_block signature (stub/non-vision sessions stay compatible).
-        if req.pixel_values is not None:
-            kwargs["pixel_values"] = req.pixel_values
-            kwargs["image_grid_thw"] = req.image_grid_thw
-            kwargs["mm_token_type_ids"] = req.mm_token_type_ids
+    def _take_prefill_group(self) -> List[PrefillRequest]:
+        """Pop the longest prefix of the prefill queue that can share one forward.
+
+        Requests are taken in submission order and stop at the first one that
+        would have to see KV this same batch writes — a second write to a block
+        already written here, or a context/write block that collides with one.
+        Whatever is left keeps its place at the head of the queue for the next
+        tick, so the order in which prefills are applied never changes.
+        """
+        group: List[PrefillRequest] = []
+        write_ids: set = set()
+        context_ids: set = set()
+        while self._prefill_queue:
+            req = self._prefill_queue[0]
+            write_id = id(req.write_to)
+            ctx_ids = {id(b) for b in req.context}
+            if group and (
+                write_id in write_ids  # two prefills appending to one block
+                or write_id in context_ids  # an earlier request reads this block
+                or ctx_ids & write_ids  # this request reads a block written here
+            ):
+                break
+            self._prefill_queue.popleft()
+            group.append(req)
+            write_ids.add(write_id)
+            context_ids |= ctx_ids
+        return group
+
+    def _run_prefill_batch(self) -> None:
+        reqs = self._take_prefill_group()
+        jobs = [
+            PrefillJob(
+                block=req.write_to,
+                input_ids=req.input_ids,
+                context=list(req.context),
+                pixel_values=req.pixel_values,
+                image_grid_thw=req.image_grid_thw,
+                mm_token_type_ids=req.mm_token_type_ids,
+            )
+            for req in reqs
+        ]
         try:
-            logits = self.session.prefill_block(req.write_to, req.input_ids, **kwargs)
+            logits = self.session.prefill_batch(jobs)
         except Exception as exc:
-            req.future.set_exception(exc)
+            for req in reqs:
+                if not req.future.done():
+                    req.future.set_exception(exc)
             raise
         # Clone outside inference mode: callers own the returned row and may
         # mutate it (e.g. a forbid mask before their own argmax).
-        req.future.set_result(logits[0].clone() if req.return_logits else None)
+        for req, rows in zip(reqs, logits):
+            req.future.set_result(rows[0].clone() if req.return_logits else None)
 
     def _run_decode_batch(self) -> None:
         # Take everything queued; reject late duplicates of an output block

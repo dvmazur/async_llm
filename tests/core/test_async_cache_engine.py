@@ -53,6 +53,7 @@ class StubSession:
         self.device = CPU
         self.page_size = 1
         self.prefill_calls: List[dict] = []
+        self.prefill_batches: List[List[CacheBlock]] = []
         self.decode_calls: List[dict] = []
         self._next_page = 0
         self.fail_next: Optional[Exception] = None
@@ -85,6 +86,17 @@ class StubSession:
         logits[0, (ids[-1] + 1) % VOCAB] = 10.0
         logits[0, (ids[-1] + 2) % VOCAB] = 20.0
         return logits
+
+    def prefill_batch(self, jobs) -> List[torch.Tensor]:
+        """One forward for the whole group — recorded as a single batch call."""
+        if self.fail_next is not None:
+            exc, self.fail_next = self.fail_next, None
+            raise exc
+        self.prefill_batches.append([job.block for job in jobs])
+        return [
+            self.prefill_block(job.block, job.input_ids, context=job.context or None)
+            for job in jobs
+        ]
 
     def decode_step(self, group: WorkerGroup, input_ids: torch.Tensor) -> torch.Tensor:
         if self.fail_next is not None:
@@ -238,6 +250,58 @@ class TestQueueMechanics:
         assert block.token_ids == [1, 2, 3, 4]
         # queued prefills for one block chain in submission order
         assert [c["ids"] for c in session.prefill_calls] == [[1, 2], [3, 4]]
+
+    def test_prefill_batches_all_pending(self, stub_engine):
+        engine, session = stub_engine
+        b1, b2, b3 = (engine.create_block() for _ in range(3))
+        futs = [
+            engine.submit_prefill(torch.tensor(ids, dtype=torch.int32), write_to=b, return_logits=True)
+            for b, ids in ((b1, [1, 2]), (b2, [3]), (b3, [4, 5, 6]))
+        ]
+        assert engine.tick() == "prefill"
+        assert not engine.has_work  # all three went into one forward
+        assert session.prefill_batches == [[b1, b2, b3]]
+        # each future still resolves with its own request's last-token logits
+        assert [int(f.result().argmax()) for f in futs] == [4, 5, 8]
+        assert (b1.token_ids, b2.token_ids, b3.token_ids) == ([1, 2], [3], [4, 5, 6])
+
+    def test_prefill_group_stops_at_same_write_block(self, stub_engine):
+        engine, session = stub_engine
+        block, other = engine.create_block(), engine.create_block()
+        engine.submit_prefill(torch.tensor([1], dtype=torch.int32), write_to=block)
+        engine.submit_prefill(torch.tensor([2], dtype=torch.int32), write_to=block)
+        engine.submit_prefill(torch.tensor([3], dtype=torch.int32), write_to=other)
+
+        assert engine.tick() == "prefill"
+        assert session.prefill_batches == [[block]]  # the append must see the first write
+        assert engine.tick() == "prefill"
+        assert session.prefill_batches[1] == [block, other]
+        assert block.token_ids == [1, 2] and other.token_ids == [3]
+
+    def test_prefill_group_stops_at_context_written_in_batch(self, stub_engine):
+        engine, session = stub_engine
+        prompt = _prefilled_block(engine, [1])
+        head, tail = engine.create_block(), engine.create_block()
+        # `tail` reads `head`, which this same batch would write -> next tick
+        engine.submit_prefill(torch.tensor([2], dtype=torch.int32), write_to=head, cache_view=[prompt])
+        engine.submit_prefill(
+            torch.tensor([3], dtype=torch.int32), write_to=tail, cache_view=[prompt, head]
+        )
+        assert engine.tick() == "prefill"
+        assert session.prefill_batches[-1] == [head]
+        assert engine.tick() == "prefill"
+        assert session.prefill_batches[-1] == [tail]
+
+    def test_prefill_batch_failure_propagates_to_all_futures(self, stub_engine):
+        engine, session = stub_engine
+        b1, b2 = engine.create_block(), engine.create_block()
+        fut1 = engine.submit_prefill(torch.tensor([1], dtype=torch.int32), write_to=b1)
+        fut2 = engine.submit_prefill(torch.tensor([2], dtype=torch.int32), write_to=b2)
+        session.fail_next = RuntimeError("forward exploded")
+        with pytest.raises(RuntimeError, match="forward exploded"):
+            engine.tick()
+        assert isinstance(fut1.exception(), RuntimeError)
+        assert isinstance(fut2.exception(), RuntimeError)
 
     def test_failure_propagates_to_all_futures(self, stub_engine):
         engine, session = stub_engine

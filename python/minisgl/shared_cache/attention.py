@@ -78,14 +78,55 @@ class SharedCacheAttnMetadata(BaseAttnMetadata):
     max_segments: int
     n_main: int = 0  # sub-requests served by the paged wrapper
     n_aux: int = 0  # sub-requests served by the page_size=1 (implicit-self) wrapper
-    phase: Literal["decode", "context_prefill"] = "decode"
+    # ``prefill_batch``: q-rows served by the (non-causal) context wrapper; the
+    # rest, ``[n_ctx_rows:]``, are the causal self segments.
+    n_ctx_rows: int = 0
+    # ``prefill_batch``: last-token output row of each request, for the LM head.
+    last_indices: Optional[torch.Tensor] = None
+    phase: Literal["decode", "context_prefill", "prefill_batch"] = "decode"
     _plan_refs: tuple = field(default=(), repr=False)
 
     def get_last_indices(self, bs: int) -> torch.Tensor:
+        if self.phase == "prefill_batch":
+            assert self.last_indices is not None
+            return self.last_indices
         if self.phase == "context_prefill":
             # one request of num_workers(=S) tokens; the LM head wants the last
             return torch.tensor([self.num_workers - 1], device=self.sub_worker.device)
         return torch.arange(bs, device=self.sub_worker.device)
+
+
+@dataclass
+class PrefillSpec:
+    """One prefill inside a batched shared-cache prefill forward.
+
+    Mirrors the arguments of :meth:`SharedCacheAttention.prepare_context_prefill`
+    for a single request: *context* are the (non-empty) blocks the new tokens
+    attend to in view order — possibly empty, for a plain prefill —
+    *self_page_starts* is the write block's complete post-write page list,
+    *self_prefix_len* how many tokens it already held, *self_prefix_span* that
+    prefix's mRoPE advance, and *mrope_rel* the new tokens' zero-based 3-D
+    mRoPE positions ``[3, num_new]`` when they contain an image.
+    """
+
+    context: List[CacheBlock]
+    self_page_starts: torch.Tensor
+    num_new: int
+    self_prefix_len: int = 0
+    self_prefix_span: Optional[int] = None
+    mrope_rel: Optional[torch.Tensor] = None
+
+
+def _rel_positions(mrope_rel: Optional[torch.Tensor], num_new: int, use_3d: bool) -> torch.Tensor:
+    """Zero-based positions of a request's new tokens: ``[S]`` for text, or
+    ``[3, S]`` once any request in the batch carries genuine 3-D mRoPE positions
+    (a text token's position is the same on all three axes)."""
+    if mrope_rel is None:
+        rel = torch.arange(num_new, dtype=torch.int64)
+        return rel.view(1, -1).expand(3, -1) if use_3d else rel
+    rel = mrope_rel.to(dtype=torch.int64, device="cpu")
+    assert rel.shape == (3, num_new), f"mrope_rel must be [3, {num_new}], got {tuple(rel.shape)}"
+    return rel
 
 
 def _rotate_half_last(x: torch.Tensor) -> torch.Tensor:
@@ -526,6 +567,174 @@ class SharedCacheAttention:
         )
         return meta
 
+    def prepare_prefill_batch(self, specs: List[PrefillSpec]) -> SharedCacheAttnMetadata:
+        """
+        Plan several prefills as one forward, laid out request-major: request
+        ``r`` owns output rows ``[offset_r, offset_r + num_new_r)``.
+
+        Each request is planned exactly as :meth:`prepare_context_prefill` plans
+        a single one — its new tokens attend causally to their own block (prefix
+        included, so a non-empty write block is extended) and fully to each of
+        its own context blocks — only now the two wrappers carry one sub-request
+        per (request, context block) and per request respectively, so the
+        requests' segment counts may differ and a request may have no context at
+        all (a plain prefill).
+
+        Requests are independent: nothing planned here lets one request's
+        queries reach another's freshly-written KV.  Context segments are sized
+        from their block's *pre-write* token count, so co-batching a request
+        that reads a block another request writes this step would silently drop
+        those tokens — callers must not form such a batch (the async engine's
+        grouping and ``SharedCacheSession.prefill_batch`` both refuse it).
+        """
+        assert specs, "prepare_prefill_batch needs at least one request"
+        P = self.page_size
+        # A single 3-D request forces every row onto the 3-axis mRoPE path, since
+        # ``sub_loc`` is one tensor; text rows simply repeat their position thrice.
+        use_3d = any(spec.mrope_rel is not None for spec in specs)
+        cat_dim = 1 if use_3d else 0
+
+        max_segments = max(len(spec.context) + 1 for spec in specs)
+        CPU_KWARGS = {"device": "cpu", "dtype": torch.int32, "pin_memory": True}
+
+        # Context sub-requests (non-causal), then self sub-requests (causal) —
+        # one contiguous q_sub run per wrapper.
+        ctx_gather: List[int] = []
+        ctx_slot: List[int] = []
+        ctx_loc: List[torch.Tensor] = []
+        ctx_kv_parts: List[torch.Tensor] = []
+        ctx_page_counts: List[int] = []
+        ctx_q_lens: List[int] = []
+        ctx_seq_lens: List[int] = []
+        ctx_last_page: List[int] = []
+
+        self_gather: List[int] = []
+        self_slot: List[int] = []
+        self_loc: List[torch.Tensor] = []
+        self_kv_parts: List[torch.Tensor] = []
+        self_page_counts: List[int] = []
+        self_q_lens: List[int] = []
+        self_seq_lens: List[int] = []
+        self_last_page: List[int] = []
+
+        last_indices: List[int] = []
+        offset = 0
+
+        for spec in specs:
+            S = int(spec.num_new)
+            assert S > 0
+            T = int(spec.self_prefix_len)
+            T_span = T if spec.self_prefix_span is None else int(spec.self_prefix_span)
+            ctx_spans = [b.mrope_span for b in spec.context]
+            # Running mRoPE position of this request's first new token.
+            self_offset = sum(ctx_spans) + T_span
+            rows = list(range(offset, offset + S))
+            rel = _rel_positions(spec.mrope_rel, S, use_3d)
+
+            prefix = 0
+            for j, (block, span) in enumerate(zip(spec.context, ctx_spans)):
+                assert block.num_tokens > 0, "context blocks must be non-empty"
+                ctx_gather.extend(rows)
+                ctx_slot.extend([j] * S)
+                ctx_loc.append(rel + (self_offset - prefix))
+                ctx_kv_parts.append(block.page_numbers_tensor())
+                ctx_page_counts.append(block.num_pages)
+                ctx_q_lens.append(S)
+                ctx_seq_lens.append(block.num_tokens)
+                ctx_last_page.append(block.last_page_len)
+                prefix += span
+
+            pages = (spec.self_page_starts.to(self.device) // P).to(torch.int32)
+            n_pages = int(pages.numel())
+            self_len = T + S
+            self_gather.extend(rows)
+            self_slot.extend([len(spec.context)] * S)
+            self_loc.append(rel + T_span)
+            self_kv_parts.append(pages)
+            self_page_counts.append(n_pages)
+            self_q_lens.append(S)
+            self_seq_lens.append(self_len)
+            self_last_page.append(self_len - (n_pages - 1) * P)
+
+            last_indices.append(offset + S - 1)
+            offset += S
+
+        n_rows = offset
+        sub_gather = ctx_gather + self_gather
+        sub_slot = ctx_slot + self_slot
+        sub_loc_t = torch.cat(ctx_loc + self_loc, dim=cat_dim)
+        pad_slot = [r * max_segments + s for r, s in zip(sub_gather, sub_slot)]
+
+        plan_common = dict(
+            num_qo_heads=self.num_qo_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim_qk=self.head_dim,
+            page_size=P,
+            pos_encoding_mode="NONE",
+            q_data_type=self.dtype,
+            kv_data_type=self.dtype,
+            non_blocking=True,
+        )
+        plan_refs: List[torch.Tensor] = []
+
+        self._plan_event.synchronize()
+        if ctx_q_lens:
+            # context segments lie entirely in the new tokens' past -> no masking
+            ctx_kv_indices = torch.cat(ctx_kv_parts).to(torch.int32)
+            ctx_kv_indptr = (
+                torch.tensor([0] + ctx_page_counts, **CPU_KWARGS).cumsum_(0).to(torch.int32)
+            )
+            ctx_qo_indptr = torch.tensor([0] + ctx_q_lens, **CPU_KWARGS).cumsum_(0).to(torch.int32)
+            ctx_seq_cpu = torch.tensor(ctx_seq_lens, **CPU_KWARGS)
+            ctx_last_cpu = torch.tensor(ctx_last_page, **CPU_KWARGS)
+            self.prefill_ctx_wrapper.plan(
+                qo_indptr=ctx_qo_indptr,
+                paged_kv_indptr=ctx_kv_indptr,
+                paged_kv_indices=ctx_kv_indices,
+                paged_kv_last_page_len=ctx_last_cpu,
+                seq_lens=ctx_seq_cpu,
+                causal=False,
+                **plan_common,
+            )
+            plan_refs += [ctx_kv_indices, ctx_kv_indptr, ctx_qo_indptr, ctx_seq_cpu, ctx_last_cpu]
+
+        # Each request attends to its own block causally; with qo_len = S <=
+        # kv_len = T + S FlashInfer aligns the mask to the end, i.e. an extend prefill.
+        self_kv_indices = torch.cat(self_kv_parts).to(torch.int32)
+        self_kv_indptr = (
+            torch.tensor([0] + self_page_counts, **CPU_KWARGS).cumsum_(0).to(torch.int32)
+        )
+        self_qo_indptr = torch.tensor([0] + self_q_lens, **CPU_KWARGS).cumsum_(0).to(torch.int32)
+        self_seq_cpu = torch.tensor(self_seq_lens, **CPU_KWARGS)
+        self_last_cpu = torch.tensor(self_last_page, **CPU_KWARGS)
+        self.prefill_self_wrapper.plan(
+            qo_indptr=self_qo_indptr,
+            paged_kv_indptr=self_kv_indptr,
+            paged_kv_indices=self_kv_indices,
+            paged_kv_last_page_len=self_last_cpu,
+            seq_lens=self_seq_cpu,
+            causal=True,
+            **plan_common,
+        )
+        plan_refs += [self_kv_indices, self_kv_indptr, self_qo_indptr, self_seq_cpu, self_last_cpu]
+        self._plan_event.record()
+
+        meta = SharedCacheAttnMetadata(
+            shared_cache_op=self,
+            sub_worker=torch.tensor(sub_gather, dtype=torch.int64, device=self.device),
+            sub_loc=sub_loc_t.to(self.device),
+            pad_slot=torch.tensor(pad_slot, dtype=torch.int64, device=self.device),
+            num_workers=n_rows,
+            max_segments=max_segments,
+            n_ctx_rows=len(ctx_gather),
+            last_indices=torch.tensor(last_indices, dtype=torch.int64, device=self.device),
+            phase="prefill_batch",
+        )
+        # Keep plan inputs alive through the forward: the async plan copy reads
+        # the pinned tensors after prepare() returns.
+        meta._plan_refs = tuple(plan_refs)
+        return meta
+
     def forward(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
     ) -> torch.Tensor:
@@ -559,6 +768,8 @@ class SharedCacheAttention:
 
         if meta.phase == "context_prefill":
             return self._forward_context_prefill(q_sub, meta, layer_id)
+        if meta.phase == "prefill_batch":
+            return self._forward_prefill_batch(q_sub, meta, layer_id)
 
         # Paged views of the KV pool: [num_pages, page_size, n_kv_heads, head_dim].
         k_paged = self.kv_cache.k_cache(layer_id)
@@ -600,6 +811,39 @@ class SharedCacheAttention:
         s_pad[meta.pad_slot] = lse
         merged, _ = merge_states(v_pad.view(W, M, Hq, D), s_pad.view(W, M, Hq))
         return merged.view(W, -1)
+
+    def _forward_prefill_batch(
+        self, q_sub: torch.Tensor, meta: SharedCacheAttnMetadata, layer_id: int
+    ) -> torch.Tensor:
+        """Run the planned prefill wrappers over a whole batch of requests and
+        merge each token row's segments.
+
+        *q_sub*: ``[n_ctx_rows + N, Hq, D]`` rotated queries — every request's
+        context segments first (request-major), then every request's causal self
+        segment.  Returns ``[N, Hq * D]``, one row per new token of the batch.
+        """
+        N, Hq, D = meta.num_workers, self.num_qo_heads, self.head_dim
+        n_ctx_rows = meta.n_ctx_rows
+
+        kv = (self.kv_cache.k_cache(layer_id), self.kv_cache.v_cache(layer_id))
+        out_self, lse_self = self.prefill_self_wrapper.run(q_sub[n_ctx_rows:], kv, return_lse=True)
+        if n_ctx_rows == 0:
+            # No request has context: the causal self segment is the whole answer.
+            return out_self.view(N, -1)
+        out_ctx, lse_ctx = self.prefill_ctx_wrapper.run(q_sub[:n_ctx_rows], kv, return_lse=True)
+
+        from flashinfer import merge_states
+
+        # Requests may have different segment counts, so scatter into a padded
+        # [N, max_segments] grid (as decode does) instead of a fixed reshape.
+        M = meta.max_segments
+        v_pad = q_sub.new_zeros(N * M, Hq, D)
+        # finite "minus infinity": exp(pad - max) underflows to 0 for any real lse
+        s_pad = torch.full((N * M, Hq), -5.0e4, dtype=torch.float32, device=self.device)
+        v_pad[meta.pad_slot] = torch.cat([out_ctx, out_self], dim=0)
+        s_pad[meta.pad_slot] = torch.cat([lse_ctx, lse_self], dim=0)
+        merged, _ = merge_states(v_pad.view(N, M, Hq, D), s_pad.view(N, M, Hq))
+        return merged.view(N, -1)
 
     def _forward_context_prefill(
         self, q_sub: torch.Tensor, meta: SharedCacheAttnMetadata, layer_id: int
