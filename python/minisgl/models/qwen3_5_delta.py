@@ -282,8 +282,35 @@ class Qwen3_5GatedDeltaNet(BaseOP):
             return self._forward_prefill(x, batch, gdn)
         return self._forward_decode(x, batch, gdn)
 
-    # --- async-reasoning prefill: single-worker block, compose prior + capture ---
+    # --- async-reasoning prefill: one block per request, compose prior + capture ---
     def _forward_ar_prefill(self, x, ar) -> torch.Tensor:
+        lin = self._lin_idx
+        # Reads are batched over the forward's chains; the recurrent scan is not,
+        # so a batch of prefills runs one scan per request over its own rows.
+        prior_conv = ar.prior_conv_states(lin)  # (R, conv_dim, k) | None
+        # fp32 initial state: the delta-rule kernels upcast to fp32 anyway, and
+        # fp32 composition avoids bf16 error compounding across long chains.
+        initial_state = ar.compose_initial_recurrent_state(
+            lin, dtype=torch.float32
+        )  # (R,H,dk,dv)|None
+        segments = ar.prefill_segments
+        if segments is None or len(segments) == 1:
+            return self._forward_ar_prefill_one(x, ar, 0, prior_conv, initial_state)
+
+        outs = []
+        offset = 0
+        for w, length in enumerate(segments):
+            outs.append(
+                self._forward_ar_prefill_one(
+                    x[offset : offset + length], ar, w, prior_conv, initial_state
+                )
+            )
+            offset += length
+        assert offset == x.shape[0], "prefill_segments do not cover the batch"
+        return torch.cat(outs, dim=0)
+
+    def _forward_ar_prefill_one(self, x, ar, w: int, prior_conv, initial_state) -> torch.Tensor:
+        """One request's prefill rows, reading/writing worker slot *w*."""
         lin = self._lin_idx
         k = self.conv_kernel
         length = x.shape[0]
@@ -294,9 +321,8 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         b = self.in_proj_b.forward(x)
 
         conv_in = qkv.transpose(0, 1).unsqueeze(0)  # (1, conv_dim, L)
-        prior_conv = ar.prior_conv_states(lin)  # (1, conv_dim, k) or None
         if prior_conv is not None:
-            ctx_tail = prior_conv[..., -(k - 1) :]  # (1, conv_dim, k-1)
+            ctx_tail = prior_conv[w : w + 1, :, -(k - 1) :]  # (1, conv_dim, k-1)
             full_input = torch.cat([ctx_tail, conv_in], dim=-1)  # (1, conv_dim, k-1+L)
             conv_out = F.silu(
                 F.conv1d(full_input, self.conv1d.weight, groups=self.conv_dim, padding=k - 1)
@@ -314,24 +340,24 @@ class Qwen3_5GatedDeltaNet(BaseOP):
 
         q, kk, v = self._split_heads(qkv2)  # each (L, num_v_heads, d)
         beta, g = self._gates(a, b)
-        # fp32 initial state: the delta-rule kernels upcast to fp32 anyway, and
-        # fp32 composition avoids bf16 error compounding across long chains.
-        initial_state = ar.compose_initial_recurrent_state(
-            lin, dtype=torch.float32
-        )  # (1,H,dk,dv)|None
         core, _ = _chunk_delta(
             q.unsqueeze(0),
             kk.unsqueeze(0),
             v.unsqueeze(0),
             g.unsqueeze(0),
             beta.unsqueeze(0),
-            initial_state=initial_state,
+            initial_state=None if initial_state is None else initial_state[w : w + 1],
         )
 
         ar.capture_token_affines(
-            lin, kk.unsqueeze(0), v.unsqueeze(0), g.exp().unsqueeze(0), beta.unsqueeze(0)
+            lin,
+            kk.unsqueeze(0),
+            v.unsqueeze(0),
+            g.exp().unsqueeze(0),
+            beta.unsqueeze(0),
+            workers=[w],
         )
-        ar.set_conv_states(lin, new_conv_state)
+        ar.set_conv_states(lin, new_conv_state, workers=[w])
 
         core = core.reshape(length, self.num_v_heads, self.head_v_dim)
         core = self.norm.forward(core, z.reshape(length, self.num_v_heads, self.head_v_dim))

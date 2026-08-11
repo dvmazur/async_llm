@@ -23,7 +23,8 @@ Everything runs single-threaded: the GPU forward blocks the loop for one tick,
 then every consumer woken by that tick gets to enqueue its next request before
 the following batch is formed (one ``sleep(0)`` round).  Concurrent agents
 therefore decode in the same ``WorkerGroup`` step, with same-step cross-worker
-visibility, exactly like the lock-step ``SharedCacheSession`` API.
+visibility, exactly like the lock-step ``SharedCacheSession`` API — and their
+prefill-mode requests likewise share one prefill forward.
 """
 
 from __future__ import annotations

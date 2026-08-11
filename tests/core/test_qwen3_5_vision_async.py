@@ -203,6 +203,56 @@ def test_repeated_block_prefill_equals_fresh_prefill():
     assert torch.allclose(lr, lf, atol=1e-4), f"max|Δ|={ (lr - lf).abs().max().item() }"
 
 
+def test_prefill_batch_with_images_matches_serialized():
+    """Batched prefill carrying images: the vision tower runs once over the whole
+    batch and each request must still land exactly where its own forward would —
+    same logits, same token count, same (image-compressed) mRoPE span."""
+    from minisgl.shared_cache import PrefillJob
+
+    _, engine, session, ref, mc = _build_async_engine()
+    ids_a, pv_a, grid_a, mm_a = _make_synthetic_image_block(mc, 8, 8, seed=1)
+    ids_b, pv_b, grid_b, mm_b = _make_synthetic_image_block(mc, 12, 8, seed=2)
+    text_ids = torch.tensor([11, 12, 13, 14], dtype=torch.int32)  # text-only request
+
+    def img(ids, pv, grid, mm):
+        return PrefillJob(block=session.create_block(), input_ids=ids, pixel_values=pv,
+                          image_grid_thw=grid, mm_token_type_ids=mm)
+
+    def txt(ids):
+        return PrefillJob(block=session.create_block(), input_ids=ids)
+
+    def check(make_jobs, exact: bool, label: str):
+        batched_jobs = make_jobs()
+        batched = session.prefill_batch(batched_jobs)
+        single_jobs = make_jobs()
+        single = [session._prefill_batch_fused([j])[0] for j in single_jobs]
+        for i, (b, s, jb, js) in enumerate(zip(batched, single, batched_jobs, single_jobs)):
+            assert jb.block.num_tokens == js.block.num_tokens, (label, i)
+            assert jb.block.mrope_span == js.block.mrope_span, (label, i)
+            diff = (b.float() - s.float()).abs().max().item()
+            print(f"[{label}] request {i} max |logit diff| = {diff}")
+            if exact:
+                assert diff == 0.0, f"{label} request {i} is not bit-exact: {diff}"
+            else:
+                assert diff < 3e-1, f"{label} request {i}: {diff}"
+
+    # One image in the batch: the tower sees exactly the same patches batched and
+    # alone, so this isolates the batching itself — and it must be bit-exact,
+    # multimodal request included (mRoPE positions, image scatter, block frames).
+    check(lambda: [img(ids_a, pv_a, grid_a, mm_a), txt(text_ids), txt(text_ids[:2])],
+          exact=True, label="one image + text")
+
+    # Two images: the tower now runs over both requests' patches concatenated,
+    # and it is shape-sensitive on its own (batching an image even with a *copy*
+    # of itself moves its embeddings by ~0.05 at a scale of ~3.5).  So the image
+    # rows inherit that drift while the text row stays exact.  Argmax is not
+    # asserted here: on these synthetic images the top-2 gap (~0.06) is smaller
+    # than the tower's own noise, so a flip says nothing about the batching.
+    check(lambda: [img(ids_a, pv_a, grid_a, mm_a), txt(text_ids),
+                   img(ids_b, pv_b, grid_b, mm_b)],
+          exact=False, label="two images + text")
+
+
 def test_two_image_prefill_matches_hf():
     """A prompt with TWO images prefills to the same next-token as HF (multi-image
     path: get_rope_index over 2 grids + vision tower over 2 images + scatter)."""

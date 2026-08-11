@@ -47,14 +47,20 @@ class SharedCacheGDN:
         # Set per forward pass.
         self.cache_structure: List[List[CacheBlock]] = []
         self.write_to: List[CacheBlock] = []
+        # Prefill only: per-request token counts, in row order, when the forward
+        # batches several prefills.  ``None`` for decode (one token per worker)
+        # and for a single-request prefill.
+        self.prefill_segments: Optional[List[int]] = None
 
     def set_context(
         self,
         cache_structure: Sequence[Sequence["CacheBlock"]],
         write_to: Sequence["CacheBlock"],
+        prefill_segments: Optional[Sequence[int]] = None,
     ) -> None:
         self.cache_structure = [list(c) for c in cache_structure]
         self.write_to = list(write_to)
+        self.prefill_segments = None if prefill_segments is None else list(prefill_segments)
 
     @property
     def num_workers(self) -> int:
@@ -128,7 +134,7 @@ class SharedCacheGDN:
         """Per-worker most-recent conv window along the chain, ``[W, conv_dim, k]``
         (zeros for a worker whose chain has none), or ``None`` if all are empty."""
         per_worker: List[Optional[torch.Tensor]] = []
-        any_present = False
+        present: Optional[torch.Tensor] = None
         for chain in self.cache_structure:
             found: Optional[torch.Tensor] = None
             for block in reversed(chain):
@@ -137,11 +143,15 @@ class SharedCacheGDN:
                     found = c
                     break
             if found is not None:
-                any_present = True
+                present = found
             per_worker.append(found)
-        if not any_present:
+        if present is None:
             return None
-        zeros = torch.zeros(self.conv_dim, self.conv_kernel, device=self.device)
+        # Match the stored states' dtype: stacking a float32 filler with bf16
+        # states would silently promote the whole window and break the conv.
+        zeros = torch.zeros(
+            self.conv_dim, self.conv_kernel, device=self.device, dtype=present.dtype
+        )
         filled = [(c if c is not None else zeros).to(device=self.device) for c in per_worker]
         return torch.stack(filled, dim=0)  # [W, conv_dim, k]
 
@@ -157,16 +167,22 @@ class SharedCacheGDN:
         alpha: torch.Tensor,
         beta: torch.Tensor,
         l2norm_eps: float = 1e-6,
+        workers: Optional[Sequence[int]] = None,
     ) -> None:
         """Accumulate per-token affine updates into each worker's write block.
 
         ``key/value`` are ``[W, seq, H, d]``; ``alpha/beta`` are ``[W, seq, H]``.
         The key is L2-normed to match the kernel's ``use_qk_l2norm_in_kernel=True``.
 
+        *workers* selects which write blocks the ``W`` rows correspond to
+        (default: all of them, in order).  A batched prefill has a different
+        token count per request, so it captures one request at a time.
+
         The rank-1 update is batched over workers (one call per token, not per
         worker), so the only Python loop is the inherently-sequential token scan
         (length 1 for decode; the block length for a prefill).
         """
+        targets = self.write_to if workers is None else [self.write_to[w] for w in workers]
         W, seq, H, dk = key.shape
         dv = value.shape[-1]
         key_f = key.float()
@@ -177,7 +193,7 @@ class SharedCacheGDN:
         A, B = init_gdn_affine(
             batch_size=W, num_heads=H, d_k=dk, d_v=dv, dtype=torch.float32, device=key.device
         )
-        for w, target in enumerate(self.write_to):
+        for w, target in enumerate(targets):
             pair = target.linear_affine.get(lin_idx)
             if pair is not None:
                 A[w] = pair[0][0].to(dtype=torch.float32, device=key.device)
@@ -193,12 +209,16 @@ class SharedCacheGDN:
                 beta=beta_f[:, t],
             )
 
-        for w, target in enumerate(self.write_to):
+        for w, target in enumerate(targets):
             target.linear_affine[lin_idx] = (A[w : w + 1], B[w : w + 1])
 
-    def set_conv_states(self, lin_idx: int, conv: torch.Tensor) -> None:
-        """Store per-worker conv windows ``[W, conv_dim, k]`` into write blocks."""
-        for w, target in enumerate(self.write_to):
+    def set_conv_states(
+        self, lin_idx: int, conv: torch.Tensor, workers: Optional[Sequence[int]] = None
+    ) -> None:
+        """Store per-worker conv windows ``[W, conv_dim, k]`` into write blocks
+        (``workers`` selects which, as in :meth:`capture_token_affines`)."""
+        targets = self.write_to if workers is None else [self.write_to[w] for w in workers]
+        for w, target in enumerate(targets):
             target.linear_conv_state[lin_idx] = conv[w].detach().clone()
 
 
