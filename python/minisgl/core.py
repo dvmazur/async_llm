@@ -96,6 +96,9 @@ class Batch:
     pixel_values: "torch.Tensor | None" = field(default=None, init=False)
     image_grid_thw: "torch.Tensor | None" = field(default=None, init=False)
     mm_token_type_ids: "torch.Tensor | None" = field(default=None, init=False)
+    # Vision-tower output [n_img_tokens, hidden] in place of pixel_values, for callers
+    # that ran the tower themselves (chunked prefill: run once, slice per chunk).
+    image_embeds: "torch.Tensor | None" = field(default=None, init=False)
     mrope_span_override: int | None = field(default=None, init=False)
     mrope_positions: "torch.Tensor | None" = field(default=None, init=False)
 

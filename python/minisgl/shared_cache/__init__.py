@@ -8,7 +8,7 @@ from .gdn_affine import (
     update_affine_summary,
 )
 from .rope_correction import apply_rope_correction
-from .session import PrefillJob, SharedCacheSession, extract_cos_sin_cache
+from .session import PrefillJob, PrefillPlan, SharedCacheSession, extract_cos_sin_cache
 from .shared_block import CacheBlock, SharedBlock
 from .worker_group import WorkerGroup
 
@@ -17,6 +17,7 @@ __all__ = [
     "CacheBlock",
     "CacheView",
     "PrefillJob",
+    "PrefillPlan",
     "PrefillSpec",
     "SharedBlock",
     "WorkerGroup",
