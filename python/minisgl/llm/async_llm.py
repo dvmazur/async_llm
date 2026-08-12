@@ -130,8 +130,20 @@ class AsyncLLM:
     async def free_block(self, block: CacheBlock) -> None:
         self.async_engine.free_block(block)
 
-    async def merge_blocks(self, left: CacheBlock, right: CacheBlock) -> CacheBlock:
-        return self.async_engine.merge_blocks(left, right)
+    async def merge_blocks(
+        self,
+        left: CacheBlock,
+        right: CacheBlock,
+        *,
+        consume_left: bool = False,
+        consume_right: bool = False,
+    ) -> CacheBlock:
+        return self.async_engine.merge_blocks(
+            left,
+            right,
+            consume_left=consume_left,
+            consume_right=consume_right,
+        )
 
     async def prefill_block(
         self,

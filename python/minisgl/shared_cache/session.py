@@ -217,6 +217,7 @@ class SharedCacheSession:
 
     def free_block(self, block: CacheBlock) -> None:
         """Return a block's pages to the engine's page allocator and reset it."""
+        self._validate_block(block)
         page_starts = block.clear()
         if page_starts:
             self.page_allocator.free_pages(
@@ -224,77 +225,112 @@ class SharedCacheSession:
             )
 
     @torch.inference_mode()
-    def merge_blocks(self, left: CacheBlock, right: CacheBlock) -> CacheBlock:
+    def merge_blocks(
+        self,
+        left: CacheBlock,
+        right: CacheBlock,
+        *,
+        consume_left: bool = False,
+        consume_right: bool = False,
+    ) -> CacheBlock:
         """Return a new block equivalent to the logical view [left, right].
 
-        The input blocks are left unchanged. Full-attention KV is copied into
-        compact fresh pages; right keys are RoPE/mRoPE-shifted by
-        left.mrope_span so the result uses one block-relative coordinate
-        frame. Qwen3.5 GDN affine summaries are composed in left-to-right
-        order, and the final causal-convolution state comes from right.
+        By default the inputs are unchanged and the merged block owns fresh
+        pages. ``consume_left`` and ``consume_right`` independently transfer
+        the corresponding input's pages and GDN tensors where possible; a
+        consumed input handle is invalid after this call.
+
+        KV copying and right-key RoPE/mRoPE correction use at most one page of
+        temporary token data at a time.  Thus consuming inputs does not require
+        materializing another full-length KV cache.  Qwen3.5 GDN affine
+        summaries are composed in left-to-right order, and the final causal-
+        convolution state comes from right when present.
         """
-        if left.device != self.device or right.device != self.device:
-            raise ValueError("both blocks must belong to this session's device")
-        if left.page_size != self.page_size or right.page_size != self.page_size:
-            raise ValueError("both blocks must use this session's page size")
+        self._validate_block(left)
+        self._validate_block(right)
+        if left is right and (consume_left or consume_right):
+            raise ValueError("cannot consume a block while merging it with itself")
+
+        left_tokens = left.num_tokens
+        right_tokens = right.num_tokens
+        left_span = left.mrope_span
+        right_span = right.mrope_span
+        left_pages = list(left.page_starts)
+        right_pages = list(right.page_starts)
+        total_tokens = left_tokens + right_tokens
+
+        # Phase 1: construct the final compact page layout and copy raw KV into
+        # it.  Consumed pages are adopted; preserved inputs require fresh pages.
+        tail_capacity = left.free_tail
+        right_output_pages = div_ceil(max(0, right_tokens - tail_capacity), self.page_size)
+        fresh_left_pages = 0 if consume_left else len(left_pages)
+        fresh_right_pages = 0 if consume_right else right_output_pages
+        num_fresh = fresh_left_pages + fresh_right_pages
+        fresh = self.page_allocator.alloc_pages(num_fresh).tolist() if num_fresh else []
+
+        left_output = left_pages if consume_left else fresh[:fresh_left_pages]
+        if consume_right:
+            right_output = right_pages[:right_output_pages]
+        else:
+            right_output = fresh[fresh_left_pages:]
 
         merged = self.create_block()
-        total_tokens = left.num_tokens + right.num_tokens
-        if total_tokens:
-            page_starts, _ = self._alloc_token_storage(total_tokens, write_to=merged)
-            merged.grow_pages(page_starts, total_tokens)
+        merged.page_starts = [*left_output, *right_output]
+        merged.num_tokens = total_tokens
+        assert merged.num_pages == div_ceil(total_tokens, self.page_size)
 
-        if total_tokens:
-            dst = merged.token_slots_tensor().to(torch.int64)
-            left_dst = dst[: left.num_tokens]
-            right_dst = dst[left.num_tokens :]
-            left_src = left.token_slots_tensor().to(torch.int64)
-            right_src = right.token_slots_tensor().to(torch.int64)
+        if left_tokens and not consume_left:
+            self._copy_cache_range(
+                source=left,
+                destination=merged,
+                source_start=0,
+                destination_start=0,
+                num_tokens=left_tokens,
+            )
 
-            for layer_idx in range(self.kv_cache.num_layers):
-                k_cache = self.kv_cache.k_cache(layer_idx)
-                v_cache = self.kv_cache.v_cache(layer_idx)
-                k_flat = k_cache.reshape(-1, *k_cache.shape[2:])
-                v_flat = v_cache.reshape(-1, *v_cache.shape[2:])
+        right_pages_are_already_aligned = consume_right and tail_capacity == 0
+        if right_tokens and not right_pages_are_already_aligned:
+            self._copy_cache_range(
+                source=right,
+                destination=merged,
+                source_start=0,
+                destination_start=left_tokens,
+                num_tokens=right_tokens,
+            )
 
-                if left.num_tokens:
-                    k_flat.index_copy_(0, left_dst, k_flat.index_select(0, left_src))
-                    v_flat.index_copy_(0, left_dst, v_flat.index_select(0, left_src))
-
-                if right.num_tokens:
-                    right_keys = k_flat.index_select(0, right_src)
-                    if left.mrope_span:
-                        shift = torch.full(
-                            (right.num_tokens,),
-                            left.mrope_span,
-                            dtype=torch.int64,
-                            device=self.device,
-                        )
-                        right_keys = self.sc_attn._rope(right_keys.float(), shift).to(
-                            k_flat.dtype
-                        )
-                    k_flat.index_copy_(0, right_dst, right_keys)
-                    v_flat.index_copy_(0, right_dst, v_flat.index_select(0, right_src))
+        # Phase 2: right keys were stored in right's local coordinate frame.
+        # Correct only their final destination range, after all raw movement.
+        if right_tokens and left_span:
+            self._rotate_cache_range_(
+                block=merged,
+                start=left_tokens,
+                num_tokens=right_tokens,
+                position_shift=left_span,
+            )
 
         merged.token_ids = [*left.token_ids, *right.token_ids]
-        merged_span = left.mrope_span + right.mrope_span
+        merged_span = left_span + right_span
         if merged_span != total_tokens:
             merged.mrope_span_override = merged_span
 
-        affine_layers = left.linear_affine.keys() | right.linear_affine.keys()
+        # Phase 3: compose recurrent state.  Popping consumed entries one layer
+        # at a time prevents all input and output affine tensors from coexisting.
+        affine_layers = set(left.linear_affine) | set(right.linear_affine)
         for layer_idx in affine_layers:
             left_pair = left.linear_affine.get(layer_idx)
             right_pair = right.linear_affine.get(layer_idx)
             if left_pair is None:
                 assert right_pair is not None
                 merged.linear_affine[layer_idx] = (
-                    right_pair[0].clone(),
-                    right_pair[1].clone(),
+                    right_pair
+                    if consume_right
+                    else (right_pair[0].clone(), right_pair[1].clone())
                 )
             elif right_pair is None:
                 merged.linear_affine[layer_idx] = (
-                    left_pair[0].clone(),
-                    left_pair[1].clone(),
+                    left_pair
+                    if consume_left
+                    else (left_pair[0].clone(), left_pair[1].clone())
                 )
             else:
                 merged.linear_affine[layer_idx] = compose_gdn_affines(
@@ -303,16 +339,108 @@ class SharedCacheSession:
                     A_second=right_pair[0],
                     B_second=right_pair[1],
                 )
+            if consume_left:
+                left.linear_affine.pop(layer_idx, None)
+            if consume_right:
+                right.linear_affine.pop(layer_idx, None)
 
-        conv_layers = left.linear_conv_state.keys() | right.linear_conv_state.keys()
+        conv_layers = set(left.linear_conv_state) | set(right.linear_conv_state)
         for layer_idx in conv_layers:
-            state = right.linear_conv_state.get(
-                layer_idx, left.linear_conv_state.get(layer_idx)
+            right_state = right.linear_conv_state.get(layer_idx)
+            state = (
+                right_state
+                if right_state is not None
+                else left.linear_conv_state.get(layer_idx)
             )
             assert state is not None
-            merged.linear_conv_state[layer_idx] = state.clone()
+            transfer = consume_right if right_state is not None else consume_left
+            merged.linear_conv_state[layer_idx] = state if transfer else state.clone()
+            if consume_left:
+                left.linear_conv_state.pop(layer_idx, None)
+            if consume_right:
+                right.linear_conv_state.pop(layer_idx, None)
+
+        if consume_right:
+            unused_right_pages = right_pages[right_output_pages:]
+            if unused_right_pages:
+                self.page_allocator.free_pages(
+                    torch.tensor(unused_right_pages, dtype=torch.int32, device=self.device)
+                )
+        if consume_left:
+            left._mark_consumed()
+        if consume_right:
+            right._mark_consumed()
 
         return merged
+
+    def _validate_block(self, block: CacheBlock) -> None:
+        if block.is_consumed:
+            raise RuntimeError(f"cannot use consumed {block!r}")
+        if block.device != self.device:
+            raise ValueError("block must belong to this session's device")
+        if block.page_size != self.page_size:
+            raise ValueError("block must use this session's page size")
+
+    def _logical_slots(
+        self, block: CacheBlock, start: int, num_tokens: int
+    ) -> torch.Tensor:
+        """Physical slots for a short logical range (merge calls this per page)."""
+        assert 0 <= start <= start + num_tokens <= block.num_tokens
+        slots = [
+            block.page_starts[pos // self.page_size] + pos % self.page_size
+            for pos in range(start, start + num_tokens)
+        ]
+        return torch.tensor(slots, dtype=torch.int64, device=self.device)
+
+    def _copy_cache_range(
+        self,
+        *,
+        source: CacheBlock,
+        destination: CacheBlock,
+        source_start: int,
+        destination_start: int,
+        num_tokens: int,
+    ) -> None:
+        """Copy a logical KV range with temporary storage bounded by one page."""
+        for offset in range(0, num_tokens, self.page_size):
+            count = min(self.page_size, num_tokens - offset)
+            source_slots = self._logical_slots(source, source_start + offset, count)
+            destination_slots = self._logical_slots(
+                destination, destination_start + offset, count
+            )
+            for layer_idx in range(self.kv_cache.num_layers):
+                k_cache = self.kv_cache.k_cache(layer_idx)
+                v_cache = self.kv_cache.v_cache(layer_idx)
+                k_flat = k_cache.reshape(-1, *k_cache.shape[2:])
+                v_flat = v_cache.reshape(-1, *v_cache.shape[2:])
+                k_flat.index_copy_(
+                    0, destination_slots, k_flat.index_select(0, source_slots)
+                )
+                v_flat.index_copy_(
+                    0, destination_slots, v_flat.index_select(0, source_slots)
+                )
+
+    def _rotate_cache_range_(
+        self,
+        *,
+        block: CacheBlock,
+        start: int,
+        num_tokens: int,
+        position_shift: int,
+    ) -> None:
+        """Apply one scalar RoPE/mRoPE correction in one-page chunks."""
+        for offset in range(0, num_tokens, self.page_size):
+            count = min(self.page_size, num_tokens - offset)
+            slots = self._logical_slots(block, start + offset, count)
+            corrections = torch.full(
+                (count,), position_shift, dtype=torch.int64, device=self.device
+            )
+            for layer_idx in range(self.kv_cache.num_layers):
+                k_cache = self.kv_cache.k_cache(layer_idx)
+                k_flat = k_cache.reshape(-1, *k_cache.shape[2:])
+                keys = k_flat.index_select(0, slots).float()
+                keys = self.sc_attn._rope(keys, corrections).to(k_flat.dtype)
+                k_flat.index_copy_(0, slots, keys)
 
     @torch.inference_mode()
     def prefill_block(
@@ -340,6 +468,9 @@ class SharedCacheSession:
         reference's ``prefill_cache_block(text, [ctx..., new])``); the stored
         KV stays block-relative either way.  Empty context blocks are skipped.
         """
+        self._validate_block(block)
+        for context_block in context or []:
+            self._validate_block(context_block)
         input_ids = input_ids.to(dtype=torch.int32).flatten().cpu()
         seq_len = len(input_ids)
         assert seq_len > 0
@@ -456,6 +587,10 @@ class SharedCacheSession:
         """
         jobs = list(jobs)
         assert jobs, "prefill_batch needs at least one request"
+        for job in jobs:
+            self._validate_block(job.block)
+            for context_block in job.context:
+                self._validate_block(context_block)
         if len(jobs) == 1:
             job = jobs[0]
             return [
@@ -705,6 +840,10 @@ class SharedCacheSession:
         Returns:
             Logits ``[num_workers, vocab_size]``.
         """
+        for context in group:
+            self._validate_block(context.output_block)
+            for block in context.cache_view:
+                self._validate_block(block)
         num_workers = group.num_workers
         input_ids = input_ids.to(dtype=torch.int32).reshape(num_workers).cpu()
 
