@@ -277,12 +277,11 @@ class SharedCacheSession:
         """Append a copy of ``right`` to ``left`` and return ``left``.
 
         Free slots in the last page of ``left`` are filled first; only the
-        remaining pages are allocated.  ``right`` remains valid and unchanged.
+        remaining pages are allocated.  A distinct ``right`` remains valid and
+        unchanged; ``append_block(block, block)`` duplicates ``block`` in place.
         """
         self._validate_block(left)
         self._validate_block(right)
-        if left is right:
-            raise ValueError("cannot append a block to itself")
 
         left_tokens = left.num_tokens
         right_tokens = right.num_tokens
@@ -290,9 +289,13 @@ class SharedCacheSession:
         right_span = right.mrope_span
 
         if right_tokens:
+            # Capture the source layout before growing ``left``.  This matters
+            # when both arguments are the same object: grow_pages changes its
+            # num_tokens and therefore the slots returned by token_slots_tensor.
+            source_slots = right.token_slots_tensor().to(torch.int64)
             new_pages = self.page_allocator.alloc_pages(left.pages_needed(right_tokens))
             left.grow_pages(new_pages, right_tokens)
-            self._copy_block(right, left, destination_start=left_tokens)
+            self._copy_slots(source_slots, left, destination_start=left_tokens)
             if left_span:
                 self._shift_keys_(
                     block=left,
@@ -378,8 +381,17 @@ class SharedCacheSession:
     ) -> None:
         """Copy all KV from ``source`` into one range of ``destination``."""
         source_slots = source.token_slots_tensor().to(torch.int64)
+        self._copy_slots(source_slots, destination, destination_start)
+
+    def _copy_slots(
+        self,
+        source_slots: torch.Tensor,
+        destination: CacheBlock,
+        destination_start: int,
+    ) -> None:
+        """Copy KV from captured physical slots into ``destination``."""
         destination_slots = destination.token_slots_tensor()[
-            destination_start : destination_start + source.num_tokens
+            destination_start : destination_start + source_slots.numel()
         ].to(torch.int64)
         for layer_idx in range(self.kv_cache.num_layers):
             k_cache = self.kv_cache.k_cache(layer_idx)
