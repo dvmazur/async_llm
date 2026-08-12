@@ -33,7 +33,19 @@ _EXPERT_PATTERN = re.compile(r"^(?P<prefix>.+\.experts)\.(?P<idx>\d+)\.(?P<name>
 
 def _shard_tensor(key: str, value: torch.Tensor, r: int, n: int, num_kv_heads: int):
     """Extract rank r's shard from a single tensor. Returns a contiguous copy."""
-    if any(key.count(sub) for sub in _SPLIT_DIM_0):
+    packed_key = key.removesuffix(".weight")
+    if packed_key.endswith(".experts.gate_up_proj"):
+        # Qwen3.5-MoE checkpoints already pack all experts and both projections:
+        # [experts, gate + up, hidden].  Shard gate and up independently so every
+        # rank retains the fused [local_gate, local_up] layout expected by MoELayer.
+        gate, up = value.chunk(2, dim=1)
+        gate_shard = gate.chunk(n, dim=1)[r]
+        up_shard = up.chunk(n, dim=1)[r]
+        return torch.cat((gate_shard, up_shard), dim=1).contiguous()
+    elif packed_key.endswith(".experts.down_proj"):
+        # [experts, hidden, intermediate] is row-parallel over intermediate.
+        return value.chunk(n, dim=2)[r].clone()
+    elif any(key.count(sub) for sub in _SPLIT_DIM_0):
         is_kv_proj = any(key.count(sub) for sub in (".k_proj", ".v_proj"))
         if is_kv_proj and num_kv_heads is not None and num_kv_heads < n:
             head_dim = value.shape[0] // num_kv_heads
