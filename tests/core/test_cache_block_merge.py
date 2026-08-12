@@ -21,7 +21,12 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture
-def runtime(tmp_path):
+def runtime(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        torch.backends.cuda.matmul,
+        "allow_bf16_reduced_precision_reduction",
+        False,
+    )
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     llm = AsyncLLM(

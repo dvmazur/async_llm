@@ -270,22 +270,9 @@ class SharedCacheSession:
                             dtype=torch.int64,
                             device=self.device,
                         )
-                        if right.mrope_span == right.num_tokens:
-                            # Text positions are known exactly. Undo their local
-                            # rotation in fp32, then apply the final absolute
-                            # position once; this avoids composing a new phase
-                            # directly onto already-rounded bf16 keys.
-                            local_pos = torch.arange(
-                                right.num_tokens, dtype=torch.int64, device=self.device
-                            )
-                            right_keys = self.sc_attn._rope(right_keys.float(), -local_pos)
-                            right_keys = self.sc_attn._rope(
-                                right_keys, local_pos + shift
-                            ).to(k_flat.dtype)
-                        else:
-                            # Exact per-token 3-D positions are not retained for
-                            # multimodal blocks, so apply the algebraic block shift.
-                            right_keys = self.sc_attn._rope(right_keys, shift)
+                        right_keys = self.sc_attn._rope(right_keys.float(), shift).to(
+                            k_flat.dtype
+                        )
                     k_flat.index_copy_(0, right_dst, right_keys)
                     v_flat.index_copy_(0, right_dst, v_flat.index_select(0, right_src))
 
