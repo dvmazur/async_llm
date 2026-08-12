@@ -66,15 +66,6 @@ class CacheBlock:
         # Rolling causal-conv window (last conv_kernel columns) per linear layer,
         # [conv_dim, conv_kernel].  Standard full-attention blocks leave these empty.
         self.linear_conv_state: Dict[int, torch.Tensor] = {}
-        # A consumed handle has transferred its storage/state to another block.
-        # It is deliberately not reusable: treating it as an ordinary empty
-        # block would hide use-after-consume bugs in cache views.
-        self._consumed: bool = False
-
-    @property
-    def is_consumed(self) -> bool:
-        return self._consumed
-
     @property
     def mrope_span(self) -> int:
         """Running-mRoPE advance over this block (== num_tokens unless overridden)."""
@@ -155,8 +146,6 @@ class CacheBlock:
 
     def clear(self) -> List[int]:
         """Reset the block and return the page-start slots the caller should free."""
-        if self._consumed:
-            raise RuntimeError(f"cannot clear consumed {self!r}")
         pages = list(self.page_starts)
         self.page_starts.clear()
         self.num_tokens = 0
@@ -166,23 +155,10 @@ class CacheBlock:
         self.linear_conv_state.clear()
         return pages
 
-    def _mark_consumed(self) -> None:
-        """Invalidate this handle after its owned storage has been transferred."""
-        if self._consumed:
-            raise RuntimeError(f"block is already consumed: {self!r}")
-        self.page_starts.clear()
-        self.num_tokens = 0
-        self.mrope_span_override = None
-        self.token_ids.clear()
-        self.linear_affine.clear()
-        self.linear_conv_state.clear()
-        self._consumed = True
-
     def __repr__(self) -> str:
-        state = ", consumed" if self._consumed else ""
         return (
             f"CacheBlock(id={self.block_id}, tokens={self.num_tokens}, "
-            f"pages={self.num_pages}, page_size={self.page_size}{state})"
+            f"pages={self.num_pages}, page_size={self.page_size})"
         )
 
 

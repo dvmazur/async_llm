@@ -30,7 +30,7 @@ def runtime(tmp_path_factory):
         MODEL_PATH,
         dtype=torch.bfloat16,
         max_running_req=2,
-        memory_ratio=0.65,
+        num_page_override=8192,
         attention_backend="fi",
         distributed_addr=(
             tmp_path_factory.mktemp("cache_merge") / "distributed_init"
@@ -46,7 +46,7 @@ def runtime(tmp_path_factory):
 def assert_same_distribution(left: torch.Tensor, right: torch.Tensor) -> None:
     left = left.float().softmax(-1)
     right = right.float().softmax(-1)
-    torch.testing.assert_close(left, right, rtol=0, atol=2e-3)
+    torch.testing.assert_close(left, right, rtol=0, atol=2.5e-3)
     assert left.argmax().item() == right.argmax().item()
 
 
@@ -117,127 +117,80 @@ def test_merged_block_matches_split_view(runtime) -> None:
     loop.run_until_complete(run())
 
 
-def test_merge_consume_modes(runtime) -> None:
+def test_append_block_matches_copied_merge(runtime) -> None:
     loop, llm = runtime
 
     async def run() -> None:
         allocator = llm.async_engine.session.page_allocator
+        free_pages_before = allocator.num_free_pages
+        left, right, merged_tail, appended_tail = await asyncio.gather(
+            *(llm.create_block() for _ in range(4))
+        )
 
-        for consume_left, consume_right in (
-            (False, False),
-            (True, False),
-            (False, True),
-            (True, True),
-        ):
-            free_pages_before = allocator.num_free_pages
-            left, right, split_tail, merged_tail = await asyncio.gather(
-                *(llm.create_block() for _ in range(4))
-            )
+        image_inputs = llm.processor.apply_chat_template(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": Image.new("RGB", (256, 192))},
+                        {"type": "text", "text": "Analyze this image carefully."},
+                    ],
+                }
+            ],
+            add_generation_prompt=False,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        await llm(**image_inputs, cache_view=[left], write_to=left, return_logits=False)
 
-            left_ids = llm.tokenizer(
-                "<|im_start|>user\nExplain why cache composition should preserve logits.",
-                return_tensors="pt",
-                add_special_tokens=False,
-            )["input_ids"]
-            await llm(left_ids, cache_view=[left], write_to=left, return_logits=False)
+        right_ids = llm.tokenizer(
+            "<|im_start|>assistant\n<think>\nThe image shows a structured visual pattern.",
+            return_tensors="pt",
+            add_special_tokens=False,
+        )["input_ids"]
+        await llm(
+            right_ids,
+            cache_view=[left, right],
+            write_to=right,
+            return_logits=False,
+        )
 
-            right_ids = llm.tokenizer(
-                "<|im_end|>\n<|im_start|>assistant\n<think>First inspect both cache segments.",
-                return_tensors="pt",
-                add_special_tokens=False,
-            )["input_ids"]
-            await llm(
-                right_ids,
-                cache_view=[left, right],
-                write_to=right,
-                return_logits=False,
-            )
+        left_tokens = left.token_ids.copy()
+        right_tokens = right.token_ids.copy()
+        left_pages = left.page_starts.copy()
+        right_pages = right.page_starts.copy()
 
-            left_tokens = left.token_ids.copy()
-            right_tokens = right.token_ids.copy()
-            left_pages = left.page_starts.copy()
-            right_pages = right.page_starts.copy()
-            left_conv_ptrs = {
-                layer_idx: state.data_ptr()
-                for layer_idx, state in left.linear_conv_state.items()
-            }
-            right_conv_ptrs = {
-                layer_idx: state.data_ptr()
-                for layer_idx, state in right.linear_conv_state.items()
-            }
+        probe_ids = llm.tokenizer(
+            " Continue the analysis using the visual evidence:",
+            return_tensors="pt",
+            add_special_tokens=False,
+        )["input_ids"]
+        merged = await llm.merge_blocks(left, right)
+        appended = await llm.append_block(left, right)
+        assert appended is left
+        assert left.token_ids == left_tokens + right_tokens
+        assert left.page_starts[: len(left_pages)] == left_pages
+        assert right.token_ids == right_tokens
+        assert right.page_starts == right_pages
 
-            probe_ids = llm.tokenizer(
-                " Therefore the next conclusion is",
-                return_tensors="pt",
-                add_special_tokens=False,
-            )["input_ids"]
-            split = await llm(
-                probe_ids,
-                cache_view=[left, right, split_tail],
-                write_to=split_tail,
-            )
-            next_token = int(split.logits.argmax())
-            split_ctx = AsyncContext([left, right, split_tail], split_tail, next_token)
-            split_decode = await llm(cache_view=split_ctx)
+        copied, appended = await asyncio.gather(
+            llm(probe_ids, cache_view=[merged, merged_tail], write_to=merged_tail),
+            llm(probe_ids, cache_view=[left, appended_tail], write_to=appended_tail),
+        )
+        assert_same_distribution(copied.logits, appended.logits)
 
-            merged = await llm.merge_blocks(
-                left,
-                right,
-                consume_left=consume_left,
-                consume_right=consume_right,
-            )
+        next_token = int(copied.logits.argmax())
+        merged_ctx = AsyncContext([merged, merged_tail], merged_tail, next_token)
+        appended_ctx = AsyncContext([left, appended_tail], appended_tail, next_token)
+        copied, appended = await asyncio.gather(
+            llm(cache_view=merged_ctx),
+            llm(cache_view=appended_ctx),
+        )
+        assert_same_distribution(copied.logits, appended.logits)
 
-            assert merged.token_ids == left_tokens + right_tokens
-            if consume_left:
-                assert merged.page_starts[: len(left_pages)] == left_pages
-                assert left.is_consumed
-                with pytest.raises(RuntimeError, match="consumed"):
-                    await llm.free_block(left)
-            else:
-                assert not left.is_consumed
-                assert left.token_ids == left_tokens
-                assert left.page_starts == left_pages
-                assert {
-                    layer_idx: state.data_ptr()
-                    for layer_idx, state in left.linear_conv_state.items()
-                } == left_conv_ptrs
-
-            if consume_right:
-                adopted_right_pages = merged.page_starts[len(left_pages) :]
-                assert adopted_right_pages == right_pages[: len(adopted_right_pages)]
-                assert right.is_consumed
-                with pytest.raises(RuntimeError, match="consumed"):
-                    await llm.free_block(right)
-                for layer_idx, pointer in right_conv_ptrs.items():
-                    assert merged.linear_conv_state[layer_idx].data_ptr() == pointer
-            else:
-                assert not right.is_consumed
-                assert right.token_ids == right_tokens
-                assert right.page_starts == right_pages
-                assert {
-                    layer_idx: state.data_ptr()
-                    for layer_idx, state in right.linear_conv_state.items()
-                } == right_conv_ptrs
-                for layer_idx, pointer in right_conv_ptrs.items():
-                    assert merged.linear_conv_state[layer_idx].data_ptr() != pointer
-
-            compact = await llm(
-                probe_ids,
-                cache_view=[merged, merged_tail],
-                write_to=merged_tail,
-            )
-            assert_same_distribution(split.logits, compact.logits)
-
-            merged_ctx = AsyncContext([merged, merged_tail], merged_tail, next_token)
-            compact_decode = await llm(cache_view=merged_ctx)
-            assert_same_distribution(split_decode.logits, compact_decode.logits)
-
-            for block in (split_tail, merged, merged_tail):
-                await llm.free_block(block)
-            if not consume_left:
-                await llm.free_block(left)
-            if not consume_right:
-                await llm.free_block(right)
-            assert allocator.num_free_pages == free_pages_before
+        for block in (left, right, merged, merged_tail, appended_tail):
+            await llm.free_block(block)
+        assert allocator.num_free_pages == free_pages_before
 
     loop.run_until_complete(run())

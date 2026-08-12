@@ -159,19 +159,17 @@ class AsyncCacheEngine:
         self,
         left: CacheBlock,
         right: CacheBlock,
-        *,
-        consume_left: bool = False,
-        consume_right: bool = False,
     ) -> CacheBlock:
         for block in (left, right):
             if self._block_in_use(block):
                 raise RuntimeError(f"cannot merge {block!r}: referenced by a queued request")
-        return self.session.merge_blocks(
-            left,
-            right,
-            consume_left=consume_left,
-            consume_right=consume_right,
-        )
+        return self.session.merge_blocks(left, right)
+
+    def append_block(self, left: CacheBlock, right: CacheBlock) -> CacheBlock:
+        for block in (left, right):
+            if self._block_in_use(block):
+                raise RuntimeError(f"cannot append {block!r}: referenced by a queued request")
+        return self.session.append_block(left, right)
 
     def _block_in_use(self, block: CacheBlock) -> bool:
         for pf in self._prefill_queue:

@@ -134,16 +134,13 @@ class AsyncLLM:
         self,
         left: CacheBlock,
         right: CacheBlock,
-        *,
-        consume_left: bool = False,
-        consume_right: bool = False,
     ) -> CacheBlock:
-        return self.async_engine.merge_blocks(
-            left,
-            right,
-            consume_left=consume_left,
-            consume_right=consume_right,
-        )
+        """Copy ``left + right`` into a newly allocated block."""
+        return self.async_engine.merge_blocks(left, right)
+
+    async def append_block(self, left: CacheBlock, right: CacheBlock) -> CacheBlock:
+        """Append a copy of ``right`` to ``left`` and return ``left``."""
+        return self.async_engine.append_block(left, right)
 
     async def prefill_block(
         self,
