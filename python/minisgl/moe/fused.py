@@ -6,6 +6,18 @@ from minisgl.moe import BaseMoeBackend
 from minisgl.utils import div_ceil
 
 
+def _get_sgl_kernel_op(name: str, tensor: torch.Tensor):
+    if tensor.device.type != "cuda":
+        return None
+    if torch.cuda.get_device_capability(tensor.device) == (12, 1):
+        return None
+    try:
+        import sgl_kernel
+    except (ImportError, OSError):
+        return None
+    return getattr(sgl_kernel, name, None)
+
+
 def fused_topk(
     hidden_states: torch.Tensor,
     gating_output: torch.Tensor,
@@ -13,11 +25,33 @@ def fused_topk(
     renormalize: bool,
     num_token_non_padded: torch.Tensor | None = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    topk_softmax = _get_sgl_kernel_op("topk_softmax", hidden_states)
+    if topk_softmax is None:
+        return _torch_fused_topk(
+            hidden_states, gating_output, topk, renormalize, num_token_non_padded
+        )
+
     assert hidden_states.shape[0] == gating_output.shape[0], "Number of tokens mismatch"
-    # sgl_kernel's prebuilt SM100 extension is not compatible with SM121
-    # (GB10): its topk_softmax launch completes without writing its outputs.
-    # Keep routing correct and portable by using native Torch operations.  The
-    # expensive expert GEMMs below still run through the Triton fused kernel.
+    M, _ = hidden_states.shape
+    topk_weights = torch.empty(M, topk, dtype=torch.float32, device=hidden_states.device)
+    topk_ids = torch.empty(M, topk, dtype=torch.int32, device=hidden_states.device)
+    topk_softmax(topk_weights, topk_ids, gating_output.float(), renormalize)
+    if renormalize:
+        topk_weights = topk_weights / (topk_weights.sum(dim=-1, keepdim=True) + 1e-8)
+    if num_token_non_padded is not None:
+        indices = torch.arange(0, topk_ids.shape[0], device=topk_ids.device)
+        topk_ids[indices >= num_token_non_padded, :] = -1
+    return topk_weights, topk_ids
+
+
+def _torch_fused_topk(
+    hidden_states: torch.Tensor,
+    gating_output: torch.Tensor,
+    topk: int,
+    renormalize: bool,
+    num_token_non_padded: torch.Tensor | None = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    assert hidden_states.shape[0] == gating_output.shape[0], "Number of tokens mismatch"
     routing_weights = torch.softmax(gating_output.float(), dim=-1)
     topk_weights, topk_ids = torch.topk(routing_weights, topk, dim=-1)
     topk_ids = topk_ids.to(torch.int32)
@@ -69,6 +103,32 @@ def moe_align_block_size(
     - The padding ensures that the total number of tokens is now divisible
         by block_size for proper block matrix operations.
     """
+    sgl_moe_align_block_size = _get_sgl_kernel_op("moe_align_block_size", topk_ids)
+    if sgl_moe_align_block_size is None:
+        return _torch_moe_align_block_size(topk_ids, block_size, num_experts)
+
+    max_num_tokens_padded = topk_ids.numel() + (num_experts + 1) * (block_size - 1)
+    sorted_ids = torch.empty((max_num_tokens_padded,), dtype=torch.int32, device=topk_ids.device)
+    max_num_m_blocks = div_ceil(max_num_tokens_padded, block_size)
+    expert_ids = torch.empty((max_num_m_blocks,), dtype=torch.int32, device=topk_ids.device)
+    num_tokens_post_pad = torch.empty((1), dtype=torch.int32, device=topk_ids.device)
+    cumsum_buffer = torch.empty((num_experts + 2,), dtype=torch.int32, device=topk_ids.device)
+    sgl_moe_align_block_size(
+        topk_ids,
+        num_experts + 1,
+        block_size,
+        sorted_ids,
+        expert_ids,
+        num_tokens_post_pad,
+        cumsum_buffer,
+        True,
+    )
+    return sorted_ids, expert_ids, num_tokens_post_pad
+
+
+def _torch_moe_align_block_size(
+    topk_ids: torch.Tensor, block_size: int, num_experts: int
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     max_num_tokens_padded = topk_ids.numel() + (num_experts + 1) * (block_size - 1)
     sentinel = topk_ids.numel()
     sorted_ids = torch.full(
