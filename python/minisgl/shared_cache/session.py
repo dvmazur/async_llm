@@ -40,6 +40,7 @@ from minisgl.utils import div_ceil
 
 from .attention import PrefillSpec, SharedCacheAttention
 from .gdn import SharedCacheGDN
+from .gdn_affine import compose_gdn_affines
 from .shared_block import NULL_CACHE_HANDLE, CacheBlock
 from .worker_group import WorkerGroup
 
@@ -277,11 +278,210 @@ class SharedCacheSession:
 
     def free_block(self, block: CacheBlock) -> None:
         """Return a block's pages to the engine's page allocator and reset it."""
+        self._validate_block(block)
         page_starts = block.clear()
         if page_starts:
             self.page_allocator.free_pages(
                 torch.tensor(page_starts, dtype=torch.int32, device=self.device)
             )
+
+    @torch.inference_mode()
+    def merge_blocks(
+        self,
+        left: CacheBlock,
+        right: CacheBlock,
+    ) -> CacheBlock:
+        """Copy ``left + right`` into a new compact block.
+
+        Both input blocks remain valid and unchanged.  The result owns fresh
+        pages, so its lifetime is independent from either input.
+        """
+        self._validate_block(left)
+        self._validate_block(right)
+
+        left_tokens = left.num_tokens
+        right_tokens = right.num_tokens
+        left_span = left.mrope_span
+        right_span = right.mrope_span
+        total_tokens = left_tokens + right_tokens
+
+        merged = self.create_block()
+        num_pages = div_ceil(total_tokens, self.page_size)
+        if num_pages:
+            merged.page_starts = self.page_allocator.alloc_pages(num_pages).tolist()
+        merged.num_tokens = total_tokens
+
+        if left_tokens:
+            self._copy_block(left, merged, destination_start=0)
+        if right_tokens:
+            self._copy_block(right, merged, destination_start=left_tokens)
+        if right_tokens and left_span:
+            self._shift_keys_(
+                block=merged,
+                start=left_tokens,
+                num_tokens=right_tokens,
+                position_shift=left_span,
+            )
+
+        self._finish_block_merge(
+            destination=merged,
+            left=left,
+            right=right,
+            left_span=left_span,
+            right_span=right_span,
+            keep_left_state=False,
+        )
+        return merged
+
+    @torch.inference_mode()
+    def append_block(self, left: CacheBlock, right: CacheBlock) -> CacheBlock:
+        """Append a copy of ``right`` to ``left`` and return ``left``.
+
+        Free slots in the last page of ``left`` are filled first; only the
+        remaining pages are allocated.  A distinct ``right`` remains valid and
+        unchanged; ``append_block(block, block)`` duplicates ``block`` in place.
+        """
+        self._validate_block(left)
+        self._validate_block(right)
+
+        left_tokens = left.num_tokens
+        right_tokens = right.num_tokens
+        left_span = left.mrope_span
+        right_span = right.mrope_span
+
+        if right_tokens:
+            # Capture the source layout before growing ``left``.  This matters
+            # when both arguments are the same object: grow_pages changes its
+            # num_tokens and therefore the slots returned by token_slots_tensor.
+            source_slots = right.token_slots_tensor().to(torch.int64)
+            new_pages = self.page_allocator.alloc_pages(left.pages_needed(right_tokens))
+            left.grow_pages(new_pages, right_tokens)
+            self._copy_slots(source_slots, left, destination_start=left_tokens)
+            if left_span:
+                self._shift_keys_(
+                    block=left,
+                    start=left_tokens,
+                    num_tokens=right_tokens,
+                    position_shift=left_span,
+                )
+
+        self._finish_block_merge(
+            destination=left,
+            left=left,
+            right=right,
+            left_span=left_span,
+            right_span=right_span,
+            keep_left_state=True,
+        )
+        return left
+
+    def _finish_block_merge(
+        self,
+        *,
+        destination: CacheBlock,
+        left: CacheBlock,
+        right: CacheBlock,
+        left_span: int,
+        right_span: int,
+        keep_left_state: bool,
+    ) -> None:
+        """Merge token metadata and recurrent state after KV has been copied."""
+        left_token_ids = list(left.token_ids)
+        destination.token_ids = [*left_token_ids, *right.token_ids]
+        merged_span = left_span + right_span
+        destination.mrope_span_override = (
+            None if merged_span == destination.num_tokens else merged_span
+        )
+
+        merged_affine: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
+        affine_layers = set(left.linear_affine) | set(right.linear_affine)
+        for layer_idx in affine_layers:
+            left_pair = left.linear_affine.get(layer_idx)
+            right_pair = right.linear_affine.get(layer_idx)
+            if left_pair is None:
+                assert right_pair is not None
+                merged_affine[layer_idx] = (right_pair[0].clone(), right_pair[1].clone())
+            elif right_pair is None:
+                merged_affine[layer_idx] = (
+                    left_pair
+                    if keep_left_state
+                    else (left_pair[0].clone(), left_pair[1].clone())
+                )
+            else:
+                merged_affine[layer_idx] = compose_gdn_affines(
+                    A_first=left_pair[0],
+                    B_first=left_pair[1],
+                    A_second=right_pair[0],
+                    B_second=right_pair[1],
+                )
+        destination.linear_affine = merged_affine
+
+        merged_conv: Dict[int, torch.Tensor] = {}
+        conv_layers = set(left.linear_conv_state) | set(right.linear_conv_state)
+        for layer_idx in conv_layers:
+            right_state = right.linear_conv_state.get(layer_idx)
+            left_state = left.linear_conv_state.get(layer_idx)
+            state = right_state if right_state is not None else left_state
+            assert state is not None
+            merged_conv[layer_idx] = (
+                state if keep_left_state and right_state is None else state.clone()
+            )
+        destination.linear_conv_state = merged_conv
+
+    def _validate_block(self, block: CacheBlock) -> None:
+        if block.device != self.device:
+            raise ValueError("block must belong to this session's device")
+        if block.page_size != self.page_size:
+            raise ValueError("block must use this session's page size")
+
+    def _copy_block(
+        self,
+        source: CacheBlock,
+        destination: CacheBlock,
+        destination_start: int,
+    ) -> None:
+        """Copy all KV from ``source`` into one range of ``destination``."""
+        source_slots = source.token_slots_tensor().to(torch.int64)
+        self._copy_slots(source_slots, destination, destination_start)
+
+    def _copy_slots(
+        self,
+        source_slots: torch.Tensor,
+        destination: CacheBlock,
+        destination_start: int,
+    ) -> None:
+        """Copy KV from captured physical slots into ``destination``."""
+        destination_slots = destination.token_slots_tensor()[
+            destination_start : destination_start + source_slots.numel()
+        ].to(torch.int64)
+        for layer_idx in range(self.kv_cache.num_layers):
+            k_cache = self.kv_cache.k_cache(layer_idx)
+            v_cache = self.kv_cache.v_cache(layer_idx)
+            k_flat = k_cache.reshape(-1, *k_cache.shape[2:])
+            v_flat = v_cache.reshape(-1, *v_cache.shape[2:])
+            k_flat.index_copy_(0, destination_slots, k_flat.index_select(0, source_slots))
+            v_flat.index_copy_(0, destination_slots, v_flat.index_select(0, source_slots))
+
+    def _shift_keys_(
+        self,
+        *,
+        block: CacheBlock,
+        start: int,
+        num_tokens: int,
+        position_shift: int,
+    ) -> None:
+        """Move stored keys into the left block's position frame."""
+        slots = block.token_slots_tensor()[start : start + num_tokens].to(torch.int64)
+        corrections = torch.full(
+            (num_tokens,), position_shift, dtype=torch.int64, device=self.device
+        )
+        for layer_idx in range(self.kv_cache.num_layers):
+            k_cache = self.kv_cache.k_cache(layer_idx)
+            k_flat = k_cache.reshape(-1, *k_cache.shape[2:])
+            keys = self.sc_attn._rope(
+                k_flat.index_select(0, slots).float(), corrections
+            ).to(k_flat.dtype)
+            k_flat.index_copy_(0, slots, keys)
 
     @torch.inference_mode()
     def prefill_block(
@@ -309,6 +509,9 @@ class SharedCacheSession:
         reference's ``prefill_cache_block(text, [ctx..., new])``); the stored
         KV stays block-relative either way.  Empty context blocks are skipped.
         """
+        self._validate_block(block)
+        for context_block in context or []:
+            self._validate_block(context_block)
         input_ids = input_ids.to(dtype=torch.int32).flatten().cpu()
         seq_len = len(input_ids)
         assert seq_len > 0
@@ -424,6 +627,10 @@ class SharedCacheSession:
         """
         jobs = list(jobs)
         assert jobs, "prefill_batch needs at least one request"
+        for job in jobs:
+            self._validate_block(job.block)
+            for context_block in job.context:
+                self._validate_block(context_block)
         budget = self.max_prefill_rows
         if budget is not None and sum(_job_rows(j) for j in jobs) > budget:
             return self._prefill_waves(jobs, budget)
@@ -753,6 +960,10 @@ class SharedCacheSession:
         Returns:
             Logits ``[num_workers, vocab_size]``.
         """
+        for context in group:
+            self._validate_block(context.output_block)
+            for block in context.cache_view:
+                self._validate_block(block)
         num_workers = group.num_workers
         input_ids = input_ids.to(dtype=torch.int32).reshape(num_workers).cpu()
 

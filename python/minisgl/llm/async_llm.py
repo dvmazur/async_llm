@@ -130,6 +130,18 @@ class AsyncLLM:
     async def free_block(self, block: CacheBlock) -> None:
         self.async_engine.free_block(block)
 
+    async def merge_blocks(
+        self,
+        left: CacheBlock,
+        right: CacheBlock,
+    ) -> CacheBlock:
+        """Copy ``left + right`` into a newly allocated block."""
+        return self.async_engine.merge_blocks(left, right)
+
+    async def append_block(self, left: CacheBlock, right: CacheBlock) -> CacheBlock:
+        """Append ``right`` to ``left``; passing the same block duplicates it."""
+        return self.async_engine.append_block(left, right)
+
     async def prefill_block(
         self,
         input_ids: TokenIds,

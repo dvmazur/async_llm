@@ -110,7 +110,8 @@ def compose_gdn_affines(
     """Compose ``S_mid = S_in A1 + B1`` then ``S_out = S_mid A2 + B2``:
     ``A = A1 A2``, ``B = B1 A2 + B2``."""
     A = torch.matmul(A_first, A_second)
-    B = torch.matmul(B_first, A_second) + B_second
+    B = torch.matmul(B_first, A_second)
+    B.add_(B_second)
     return A, B
 
 
