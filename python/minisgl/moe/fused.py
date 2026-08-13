@@ -6,10 +6,11 @@ from minisgl.moe import BaseMoeBackend
 from minisgl.utils import div_ceil
 
 
-def _use_torch_moe_fallback(name: str, tensor: torch.Tensor) -> bool:
-    if tensor.device.type != "cuda":
+@functools.cache
+def _use_torch_moe_fallback(name: str, device: torch.device) -> bool:
+    if device.type != "cuda":
         return True
-    if torch.cuda.get_device_capability(tensor.device) == (12, 1):
+    if torch.cuda.get_device_capability(device) == (12, 1):
         return True
     try:
         import sgl_kernel
@@ -25,7 +26,7 @@ def fused_topk(
     renormalize: bool,
     num_token_non_padded: torch.Tensor | None = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if _use_torch_moe_fallback("topk_softmax", hidden_states):
+    if _use_torch_moe_fallback("topk_softmax", hidden_states.device):
         assert hidden_states.shape[0] == gating_output.shape[0], "Number of tokens mismatch"
         # sgl_kernel's prebuilt SM100 extension is not compatible with SM121
         # (GB10): its topk_softmax launch completes without writing its outputs.
@@ -96,7 +97,7 @@ def moe_align_block_size(
     - The padding ensures that the total number of tokens is now divisible
         by block_size for proper block matrix operations.
     """
-    if _use_torch_moe_fallback("moe_align_block_size", topk_ids):
+    if _use_torch_moe_fallback("moe_align_block_size", topk_ids.device):
         max_num_tokens_padded = topk_ids.numel() + (num_experts + 1) * (block_size - 1)
         sentinel = topk_ids.numel()
         sorted_ids = torch.full(
