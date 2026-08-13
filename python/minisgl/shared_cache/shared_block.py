@@ -30,9 +30,9 @@ class CacheBlock:
     ``page_starts[i // page_size] + (i % page_size)``.  The last page may be
     partially filled.
 
-    Keys are stored at block-relative RoPE positions (0..num_tokens-1) and
-    never re-rotated; the query-rotation decode rotates queries instead (see
-    ``shared_cache.attention``).
+    Keys are stored at block-relative RoPE positions (0..num_tokens-1). Normal
+    cache views rotate queries instead of keys (see ``shared_cache.attention``);
+    merging blocks shifts copied keys into the merged block's coordinate frame.
     """
 
     _next_id: int = 0
@@ -66,7 +66,6 @@ class CacheBlock:
         # Rolling causal-conv window (last conv_kernel columns) per linear layer,
         # [conv_dim, conv_kernel].  Standard full-attention blocks leave these empty.
         self.linear_conv_state: Dict[int, torch.Tensor] = {}
-
     @property
     def mrope_span(self) -> int:
         """Running-mRoPE advance over this block (== num_tokens unless overridden)."""
