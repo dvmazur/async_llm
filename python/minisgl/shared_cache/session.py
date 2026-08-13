@@ -175,7 +175,8 @@ class SharedCacheSession:
 
     Set ``max_prefill_rows`` to chunk long prefills over several forwards, bounding
     peak activation memory; every prefill entry point honours it, including
-    ``AsyncLLM.forward`` (``llm.async_engine.session.max_prefill_rows = n``).
+    ``AsyncLLM.forward``.  It defaults to ``EngineConfig.max_prefill_rows``, so
+    ``AsyncLLM(model_path, max_prefill_rows=n)`` configures it end to end.
     """
 
     def __init__(
@@ -185,7 +186,10 @@ class SharedCacheSession:
         max_prefill_rows: Optional[int] = None,
     ):
         # Chunked prefill: cap on query rows per forward (see ``_job_rows``); None
-        # disables it.  Mutable, so callers can set it after construction.
+        # disables it.  Defaults to the engine's setting, so it can be configured once
+        # via EngineConfig.  Mutable, so callers can also set it after construction.
+        if max_prefill_rows is None:
+            max_prefill_rows = engine.config.max_prefill_rows
         self.max_prefill_rows = max_prefill_rows
         self.engine = engine
         self.device = engine.device
