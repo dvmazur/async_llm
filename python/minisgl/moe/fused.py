@@ -6,6 +6,19 @@ from minisgl.moe import BaseMoeBackend
 from minisgl.utils import div_ceil
 
 
+@functools.cache
+def _use_torch_moe_fallback(device: torch.device) -> bool:
+    if device.type != "cuda":
+        return True
+    if torch.cuda.get_device_capability(device) == (12, 1):
+        return True
+    try:
+        import sgl_kernel
+    except (ImportError, OSError):
+        return True
+    return False
+
+
 def fused_topk(
     hidden_states: torch.Tensor,
     gating_output: torch.Tensor,
@@ -13,6 +26,22 @@ def fused_topk(
     renormalize: bool,
     num_token_non_padded: torch.Tensor | None = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    if _use_torch_moe_fallback(hidden_states.device):
+        assert hidden_states.shape[0] == gating_output.shape[0], "Number of tokens mismatch"
+        # sgl_kernel's prebuilt SM100 extension is not compatible with SM121
+        # (GB10): its topk_softmax launch completes without writing its outputs.
+        # Keep routing correct and portable by using native Torch operations.  The
+        # expensive expert GEMMs below still run through the Triton fused kernel.
+        routing_weights = torch.softmax(gating_output.float(), dim=-1)
+        topk_weights, topk_ids = torch.topk(routing_weights, topk, dim=-1)
+        topk_ids = topk_ids.to(torch.int32)
+        if renormalize:
+            topk_weights = topk_weights / (topk_weights.sum(dim=-1, keepdim=True) + 1e-8)
+        if num_token_non_padded is not None:
+            indices = torch.arange(0, topk_ids.shape[0], device=topk_ids.device)
+            topk_ids[indices >= num_token_non_padded, :] = -1
+        return topk_weights, topk_ids
+
     from sgl_kernel import topk_softmax
 
     assert hidden_states.shape[0] == gating_output.shape[0], "Number of tokens mismatch"
@@ -68,6 +97,39 @@ def moe_align_block_size(
     - The padding ensures that the total number of tokens is now divisible
         by block_size for proper block matrix operations.
     """
+    if _use_torch_moe_fallback(topk_ids.device):
+        max_num_tokens_padded = topk_ids.numel() + (num_experts + 1) * (block_size - 1)
+        sentinel = topk_ids.numel()
+        sorted_ids = torch.full(
+            (max_num_tokens_padded,), sentinel, dtype=torch.int32, device=topk_ids.device
+        )
+        max_num_m_blocks = div_ceil(max_num_tokens_padded, block_size)
+        expert_ids = torch.zeros(
+            (max_num_m_blocks,), dtype=torch.int32, device=topk_ids.device
+        )
+
+        flat_experts = topk_ids.flatten().to(torch.int64)
+        token_ids = torch.arange(sentinel, device=topk_ids.device, dtype=torch.int64)
+        order = torch.argsort(flat_experts, stable=True)
+        sorted_experts = flat_experts[order]
+        counts = torch.bincount(flat_experts, minlength=num_experts)
+        padded_counts = ((counts + block_size - 1) // block_size) * block_size
+        input_starts = torch.cumsum(counts, dim=0) - counts
+        padded_starts = torch.cumsum(padded_counts, dim=0) - padded_counts
+        destinations = padded_starts[sorted_experts] + (
+            torch.arange(sentinel, device=topk_ids.device) - input_starts[sorted_experts]
+        )
+        sorted_ids[destinations] = token_ids[order].to(torch.int32)
+
+        blocks_per_expert = padded_counts // block_size
+        block_experts = torch.repeat_interleave(
+            torch.arange(num_experts, device=topk_ids.device, dtype=torch.int32),
+            blocks_per_expert,
+        )
+        expert_ids[: block_experts.numel()] = block_experts
+        num_tokens_post_pad = padded_counts.sum().reshape(1).to(torch.int32)
+        return sorted_ids, expert_ids, num_tokens_post_pad
+
     from sgl_kernel import moe_align_block_size as sgl_moe_align_block_size
 
     max_num_tokens_padded = topk_ids.numel() + (num_experts + 1) * (block_size - 1)
