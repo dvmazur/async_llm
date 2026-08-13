@@ -155,20 +155,10 @@ class AsyncCacheEngine:
             raise RuntimeError(f"cannot free {block!r}: referenced by a queued request")
         self.session.free_block(block)
 
-    def merge_blocks(
-        self,
-        left: CacheBlock,
-        right: CacheBlock,
-    ) -> CacheBlock:
-        for block in (left, right):
-            if self._block_in_use(block):
-                raise RuntimeError(f"cannot merge {block!r}: referenced by a queued request")
+    def merge_blocks(self, left: CacheBlock, right: CacheBlock) -> CacheBlock:
         return self.session.merge_blocks(left, right)
 
     def append_block(self, left: CacheBlock, right: CacheBlock) -> CacheBlock:
-        for block in (left, right):
-            if self._block_in_use(block):
-                raise RuntimeError(f"cannot append {block!r}: referenced by a queued request")
         return self.session.append_block(left, right)
 
     def _block_in_use(self, block: CacheBlock) -> bool:
