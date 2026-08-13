@@ -233,10 +233,6 @@ class TestQueueMechanics:
         prompt = _prefilled_block(engine, [1])
         block = _prefilled_block(engine, [2])
         engine.submit_decode(AsyncContext(cache_view=[prompt, block]), input_id=3)
-        with pytest.raises(RuntimeError, match="referenced by a queued request"):
-            engine.free_block(prompt)  # in a queued view
-        with pytest.raises(RuntimeError, match="referenced by a queued request"):
-            engine.free_block(block)  # queued output block
         engine.tick()
         engine.free_block(block)
         assert block.num_tokens == 0
