@@ -200,8 +200,9 @@ class AsyncLLM:
           feeding its pending ``next_input_id`` (consumed on success).  Token
           selection is the caller's job: sample from ``.logits`` and re-seed
           ``ctx.next_input_id`` (or pass ``input_ids``) for the next step.
-        * ``forward(input_ids, cache_view)`` — **in-context / conditional
-          prefill**: the new tokens attend to the view's blocks in order and
+        * ``forward(input_ids, cache_view)`` — **decode** for a single token,
+          otherwise **in-context / conditional prefill**: the new tokens attend
+          to the view's blocks in order and
           their KV is appended to *write_to*.  *write_to* must be the last
           block of *cache_view* (earlier positions raise) or outside it.  A
           non-empty *write_to* is *extended* — the new tokens are appended after
@@ -270,6 +271,15 @@ class AsyncLLM:
 
         if write_to.num_tokens > 0 and not in_view:
             raise ValueError("cannot extend a non-empty write_to outside cache_view")
+
+        if input_ids.numel() == 1 and cache_view is not None and pixel_values is None:
+            step_ctx = (
+                ctx
+                if ctx is not None and write_to is ctx.output_block
+                else AsyncContext(cache_view=view, output_block=write_to)
+            )
+            logits = await self._forward_decode_step(step_ctx, int(input_ids.item()), return_logits)
+            return CausalLMOutput(logits=logits, block=write_to)
 
         # (Conditional) prefill / extension: one forward for all tokens.
         self._ensure_loop()

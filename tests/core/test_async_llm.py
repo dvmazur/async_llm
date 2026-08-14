@@ -258,10 +258,11 @@ def test_forward_conditional_prefill():
         assert fresh.token_ids == [7, 8]
         assert int(out.logits.argmax()) == 10  # decoy of last token 8
 
-        # write_to as (default) last-of-view: same prefill, context excludes it.
+        # A single token with a cache view uses decode.
         tail = await llm.create_block()
         out = await llm.forward([9], [prompt, fresh, tail])
-        assert session.prefill_calls[-1]["context"] == [prompt, fresh]
+        assert session.decode_calls[-1]["structure"] == [[prompt, fresh, tail]]
+        assert session.decode_calls[-1]["input_ids"] == [9]
         assert out.block is tail  # defaulted write_to: last of the view
         assert tail.token_ids == [9]
         await llm.close()
@@ -316,7 +317,7 @@ def test_forward_extend_non_empty_block_in_context():
         await llm.forward([4, 5], [prompt, block])  # extend it in the same context
 
         assert block.token_ids == [3, 4, 5]
-        assert not session.decode_calls
+        assert session.decode_calls[0]["input_ids"] == [3]
         last = session.prefill_calls[-1]
         assert last["ids"] == [4, 5]
         assert last["context"] == [prompt]  # the write block is the target, not context
@@ -341,7 +342,12 @@ def test_forward_decode_mode():
         ctx.next_input_id = int(out.logits.argmax())
         out = await llm.forward(cache_view=ctx, return_logits=True)
         assert block.token_ids == [1, 5, 7]
-        assert len(session.decode_calls) == 2
+
+        # The token can also be passed directly with a plain cache view.
+        out = await llm.forward([9], [block])
+        assert int(out.logits.argmax()) == 11
+        assert block.token_ids == [1, 5, 7, 9]
+        assert len(session.decode_calls) == 3
         await llm.close()
 
     asyncio.run(main())

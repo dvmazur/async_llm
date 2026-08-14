@@ -12,9 +12,11 @@ Queue-based scheduling core for async cache requests
   decode requests are batched into a single ``WorkerGroup`` forward and each
   resolves with its sampled token id.
 
-A ``forward`` request from the asyncio frontend is one or the other: with
-``input_ids`` it is prefill-like and joins the prefill batch, without them it
-is decode-like and joins the decode batch.
+A ``forward`` request from the asyncio frontend is routed by workload: a
+single text token with a cache view joins the decode batch; other requests
+with ``input_ids`` (plain prefill, multi-token, or multimodal) join the prefill
+batch.  A request without ``input_ids`` is also decode-like and consumes the
+pending token from its ``AsyncContext``.
 
 The engine is deliberately synchronous: ``tick()`` blocks on the GPU forward
 and resolves plain future objects.  The asyncio frontend (``AsyncLLM``,
