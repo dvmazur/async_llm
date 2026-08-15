@@ -85,22 +85,25 @@ class Qwen3_5Model(BaseOP):
         mm_token_type_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         x = self.embed_tokens.forward(input_ids)
-        assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None)
+        assert (pixel_values is None) == (image_grid_thw is None)
         batch = get_global_ctx().batch
         # The caller (SharedCacheSession) may have precomputed the positions in the
         # write block's frame -- they are then already offset past whatever the block
         # held, which zero-based ``get_rope_index`` output cannot express.
         mrope_positions: torch.Tensor | None = batch.mrope_positions
-        if pixel_values is not None:
-            assert mm_token_type_ids is not None
-            # The tower attends within each image (per-image ``cu_seqlens``) and the
-            # embeddings are scattered into the image-token positions in order, so
-            # several requests' images concatenate exactly like several images of one.
+        # Tower output either arrives precomputed (chunked prefill, which slices it per
+        # chunk) or is produced here.  Embeddings scatter into the image-token positions
+        # in order, so several requests' images concatenate like several images of one.
+        image_embeds = batch.image_embeds
+        if image_embeds is None and pixel_values is not None:
             image_embeds = self.visual.forward(pixel_values, image_grid_thw)  # (n_img, hidden)
+        if image_embeds is not None:
+            assert mm_token_type_ids is not None
             image_mask = mm_token_type_ids == 1  # 0 - text, 1 - image, 2 - video, etc
             x = x.clone()
             x[image_mask] = image_embeds.to(x.dtype)
             if mrope_positions is None:
+                assert pixel_values is not None, "precomputed embeds need mrope_positions"
                 # This fallback reads the batch as ONE sequence: get_rope_index knows
                 # no request boundaries and mrope_span_override is a single scalar.
                 # A batch must therefore arrive with per-request positions already

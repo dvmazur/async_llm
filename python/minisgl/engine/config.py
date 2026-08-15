@@ -30,6 +30,9 @@ class EngineConfig:
     use_pynccl: bool = True
     max_seq_len_override: int | None = None
     num_page_override: int | None = None  # if not None, will override the number of pages
+    # Default query-row budget per shared-cache prefill forward; None disables chunking.
+    # Read by SharedCacheSession, not by the engine itself.
+    max_prefill_rows: int | None = None
     generation_config: GenerationConfig = None
     distributed_addr: str = "tcp://127.0.0.1:2333"
 

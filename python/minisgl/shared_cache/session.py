@@ -30,7 +30,8 @@ Usage::
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from itertools import zip_longest
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 import torch
@@ -62,6 +63,58 @@ class PrefillJob:
     pixel_values: Optional[torch.Tensor] = None
     image_grid_thw: Optional[torch.Tensor] = None
     mm_token_type_ids: Optional[torch.Tensor] = None
+    # Set by the chunked-prefill driver only (see ``_chunk_job``).
+    image_embeds: Optional[torch.Tensor] = None  # tower output for this chunk
+    mrope_rel: Optional[torch.Tensor] = None  # positions rel. to the block's span
+    mrope_span: Optional[int] = None  # the block's span once this chunk lands
+
+
+@dataclass
+class PrefillPlan:
+    """Whole-request state a chunked prefill slices per chunk.
+
+    ``rel_pos`` and ``embeds`` are computed once: ``get_rope_index`` needs the whole
+    sequence, and the vision tower needs whole images.
+    """
+
+    ids: torch.Tensor  # [L] int32 cpu
+    types: Optional[torch.Tensor] = None  # [L] int64 cpu; None for text-only
+    rel_pos: Optional[torch.Tensor] = None  # [3, L] int64 cpu
+    embeds: Optional[torch.Tensor] = None  # [n_img_tokens, hidden]
+    base_span: int = 0  # the write block's mRoPE span before the first chunk
+
+
+def _job_rows(job: PrefillJob) -> int:
+    """Query rows a job costs: one q copy per (token, segment)."""
+    n_ctx = len([b for b in (job.context or []) if b.num_tokens > 0])
+    return (n_ctx + 1) * job.input_ids.numel()
+
+
+def _chunk_job(job: PrefillJob, plan: PrefillPlan, start: int, stop: int) -> PrefillJob:
+    """Tokens ``[start, stop)`` of *job* as a standalone prefill of its own.
+
+    Image tokens split like any others: the chunk carries the matching rows of the
+    already-computed tower output, so no boundary is special.
+    """
+    ids = plan.ids[start:stop]
+    if plan.types is None:
+        return replace(job, input_ids=ids)
+    types = plan.types[start:stop]
+    n_before = int((plan.types[:start] == 1).sum())
+    n_here = int((types == 1).sum())
+    # Image positions cycle rather than grow with token index, so a block's span is a
+    # cumulative max -- not derivable from one chunk's own positions.
+    shift = int(plan.rel_pos[:, :start].max()) + 1 if start else 0
+    return replace(
+        job,
+        input_ids=ids,
+        pixel_values=None,
+        image_grid_thw=None,
+        mm_token_type_ids=types,
+        image_embeds=plan.embeds[n_before : n_before + n_here],
+        mrope_rel=plan.rel_pos[:, start:stop] - shift,
+        mrope_span=plan.base_span + int(plan.rel_pos[:, :stop].max()) + 1,
+    )
 
 
 def extract_cos_sin_cache(engine: Engine) -> torch.Tensor:
@@ -119,13 +172,25 @@ class SharedCacheSession:
     The session is designed for **standalone** use, bypassing the scheduler; to
     run alongside the live scheduler the two consumers would need to share one
     allocator instance.
+
+    Set ``max_prefill_rows`` to chunk long prefills over several forwards, bounding
+    peak activation memory; every prefill entry point honours it, including
+    ``AsyncLLM.forward``.  It defaults to ``EngineConfig.max_prefill_rows``, so
+    ``AsyncLLM(model_path, max_prefill_rows=n)`` configures it end to end.
     """
 
     def __init__(
         self,
         engine: Engine,
         cos_sin_cache: Optional[torch.Tensor] = None,
+        max_prefill_rows: Optional[int] = None,
     ):
+        # Chunked prefill: cap on query rows per forward (see ``_job_rows``); None
+        # disables it.  Defaults to the engine's setting, so it can be configured once
+        # via EngineConfig.  Mutable, so callers can also set it after construction.
+        if max_prefill_rows is None:
+            max_prefill_rows = engine.config.max_prefill_rows
+        self.max_prefill_rows = max_prefill_rows
         self.engine = engine
         self.device = engine.device
         self.page_table = engine.page_table
@@ -476,23 +541,22 @@ class SharedCacheSession:
                 "the write block must not appear in context: pass the blocks before "
                 "it (its own tokens are attended to by the self segment)"
             )
+        job = PrefillJob(
+            block=block,
+            input_ids=input_ids,
+            context=context,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
+        )
+        if self.max_prefill_rows is not None and _job_rows(job) > self.max_prefill_rows:
+            return self._prefill_waves([job], self.max_prefill_rows)[0]
         if context:
             # An in-context prefill is just a one-request batch: ``prefill_batch``
             # plans exactly the same two wrappers for a single spec (bit-identical
             # results, and the extra scatter-merge is lost in the noise), so there
             # is no separate single-request implementation to keep in step.
-            return self._prefill_batch_fused(
-                [
-                    PrefillJob(
-                        block=block,
-                        input_ids=input_ids,
-                        context=context,
-                        pixel_values=pixel_values,
-                        image_grid_thw=image_grid_thw,
-                        mm_token_type_ids=mm_token_type_ids,
-                    )
-                ]
-            )[0]
+            return self._prefill_batch_fused([job])[0]
 
         assert cached_len + seq_len <= self.page_table.shape[1], (
             f"prefill of {seq_len} tokens into a block of {cached_len} exceeds the "
@@ -571,6 +635,9 @@ class SharedCacheSession:
             self._validate_block(job.block)
             for context_block in job.context:
                 self._validate_block(context_block)
+        budget = self.max_prefill_rows
+        if budget is not None and sum(_job_rows(j) for j in jobs) > budget:
+            return self._prefill_waves(jobs, budget)
         if len(jobs) == 1:
             job = jobs[0]
             return [
@@ -609,6 +676,7 @@ class SharedCacheSession:
         mm_type_parts: List[torch.Tensor] = []
         pixel_parts: List[torch.Tensor] = []
         grid_parts: List[torch.Tensor] = []
+        embed_parts: List[torch.Tensor] = []
         need_mrope = False
 
         for job in jobs:
@@ -637,11 +705,11 @@ class SharedCacheSession:
                 )
             context = [b for b in (job.context or []) if b.num_tokens > 0]
 
-            mrope_rel = (
-                self._mrope_rel(input_ids, job.mm_token_type_ids, job.image_grid_thw)
-                if job.pixel_values is not None
-                else None
-            )
+            # A chunk arrives with its positions already sliced out of the request's
+            # whole-sequence layout; a whole job computes them here.
+            mrope_rel = job.mrope_rel
+            if mrope_rel is None and job.pixel_values is not None:
+                mrope_rel = self._mrope_rel(input_ids, job.mm_token_type_ids, job.image_grid_thw)
             page_starts, token_slots = self._alloc_token_storage(seq_len, write_to=block)
             # The self segment reads the block's whole post-write page list.
             self_pages = torch.cat([block.page_starts_tensor(), page_starts.to(self.device)])
@@ -676,12 +744,18 @@ class SharedCacheSession:
                 need_mrope = True
             need_mrope |= block.mrope_span_override is not None
             mrope_parts.append(rel.to(torch.int64) + offset)
-            span_advance = seq_len if mrope_rel is None else int(mrope_rel.max()) + 1
-            new_spans.append(offset + span_advance)
+            if job.mrope_span is not None:
+                new_spans.append(job.mrope_span)
+            else:
+                span_advance = seq_len if mrope_rel is None else int(mrope_rel.max()) + 1
+                new_spans.append(offset + span_advance)
 
-            if job.pixel_values is not None:
+            if job.image_embeds is not None:
+                embed_parts.append(job.image_embeds)
+            elif job.pixel_values is not None:
                 pixel_parts.append(job.pixel_values.to(self.device))
                 grid_parts.append(job.image_grid_thw.to(self.device))
+            if job.mm_token_type_ids is not None:
                 # Normalized to int64: a text-only request contributes a zero
                 # filler and the whole batch's type ids must concatenate.
                 mm_type_parts.append(
@@ -713,13 +787,16 @@ class SharedCacheSession:
         batch.attn_metadata = self.sc_attn.prepare_prefill_batch(specs)
         if need_mrope:
             batch.mrope_positions = torch.cat(mrope_parts, dim=1).to(self.device)
-        if pixel_parts:
-            # The vision tower embeds every image of the batch in one go and the
-            # embeddings are scattered into the image-token positions in order,
-            # so plain concatenation is the batched form of a single request.
-            batch.pixel_values = torch.cat(pixel_parts)
-            batch.image_grid_thw = torch.cat(grid_parts)
+        if pixel_parts or embed_parts:
+            # Image embeddings are scattered into the image-token positions in order,
+            # so plain concatenation is the batched form of a single request -- whether
+            # the rows come from the tower in the forward or were precomputed.
             batch.mm_token_type_ids = torch.cat(mm_type_parts)
+            if pixel_parts:
+                batch.pixel_values = torch.cat(pixel_parts)
+                batch.image_grid_thw = torch.cat(grid_parts)
+            if embed_parts:
+                batch.image_embeds = torch.cat(embed_parts)
 
         logits = self._forward(
             batch,
@@ -735,6 +812,73 @@ class SharedCacheSession:
 
         # ParallelLMHead already extracted the per-request last-token rows.
         return [logits[i : i + 1] for i in range(len(jobs))]
+
+    # ------------------------------------------------------------------
+    # Chunked prefill
+    # ------------------------------------------------------------------
+
+    def _plan_job(self, job: PrefillJob) -> PrefillPlan:
+        """Run the per-request work that cannot be done per chunk: the mRoPE layout
+        (needs the whole sequence) and the vision tower (needs whole images)."""
+        ids = job.input_ids.to(dtype=torch.int32).flatten().cpu()
+        if job.pixel_values is None:
+            return PrefillPlan(ids=ids)
+        types = job.mm_token_type_ids.flatten().to(dtype=torch.int64).cpu()
+        rel_pos = self._mrope_rel(ids, types, job.image_grid_thw)
+        visual = self.engine.model.model.visual
+        embeds = visual.forward(
+            job.pixel_values.to(self.device), job.image_grid_thw.to(self.device)
+        )
+        assert embeds.shape[0] == int((types == 1).sum()), (
+            f"tower produced {embeds.shape[0]} embeddings for "
+            f"{int((types == 1).sum())} image tokens"
+        )
+        return PrefillPlan(
+            ids=ids,
+            types=types,
+            rel_pos=rel_pos,
+            embeds=embeds,
+            base_span=job.block.mrope_span,
+        )
+
+    def _split_job(self, job: PrefillJob, max_rows: int) -> List[PrefillJob]:
+        n_ctx = len([b for b in (job.context or []) if b.num_tokens > 0])
+        size = max(1, max_rows // (n_ctx + 1))
+        if self._is_hybrid and size >= 64:
+            # Align to the GDN scan's own chunk where the budget allows; a smaller
+            # budget is honoured as given rather than silently overrun.
+            size = size // 64 * 64
+        total = int(job.input_ids.numel())
+        if size >= total and job.pixel_values is None:
+            return [job]
+        # A multimodal job is always planned, even unsplit: a batch cannot mix jobs
+        # carrying pixels with jobs carrying tower output.
+        plan = self._plan_job(job)
+        return [_chunk_job(job, plan, s, min(s + size, total)) for s in range(0, total, size)]
+
+    @torch.inference_mode()
+    def _prefill_waves(self, jobs: Sequence[PrefillJob], max_rows: int) -> List[torch.Tensor]:
+        """Run *jobs* as several forwards, each within *max_rows* query rows.
+
+        Wave ``i`` holds the i-th chunk of every job that still has tokens, so requests
+        stay batched together.  Only the last chunk's logits are returned.
+        """
+        share = max(1, max_rows // len(jobs))
+        per_job = [self._split_job(job, share) for job in jobs]
+        last: Dict[int, torch.Tensor] = {}
+        for wave in zip_longest(*per_job):
+            chunks = [c for c in wave if c is not None]
+            try:
+                rows = self._prefill_batch_fused(chunks)
+            except Exception:
+                # A block holding a prefix cannot be truncated and a GDN affine cannot
+                # be un-folded, so there is no rollback: reset and let the caller retry.
+                for job in jobs:
+                    self.free_block(job.block)
+                raise
+            for chunk, row in zip(chunks, rows):
+                last[id(chunk.block)] = row
+        return [last[id(job.block)] for job in jobs]
 
     # ------------------------------------------------------------------
     # Interleaved mRoPE (Qwen3.5 multimodal)
