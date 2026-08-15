@@ -44,15 +44,18 @@ class EngineConfig:
         Cached because resolving it hits the HF hub, and the shared-cache paths
         ask for default sampling params once per request per forward.
         """
-        if self.generation_config is not None:
-            return self.generation_config
         try:
             return GenerationConfig.from_pretrained(self.model_path)
         except OSError:  # missing file
             return GenerationConfig()
 
     def get_default_sampling_params(self):  # not a property to avoid accidental in-place changes
-        return SamplingParams.from_hf(self._default_generation_config)
+        generation_config = (
+            self.generation_config
+            if self.generation_config is not None
+            else self._default_generation_config()
+        )
+        return SamplingParams.from_hf(generation_config)
 
     @cached_property
     def model_config(self) -> ModelConfig:
