@@ -34,6 +34,17 @@ class ScheduleResult:
     output_indices: List[torch.Tensor]
 
 
+def resolve_mixed_batch(*, enabled: bool, is_hybrid: bool) -> bool:
+    """Whether mixed prefill+decode forwards are safe for this model.
+
+    NOTE: hybrid models dispatch their linear-attention layers on ``batch.is_prefill`` and
+    rebuild the recurrent state from scratch, so a decode req inside an extend batch would
+    be computed wrongly -- and wrongly *silently*, with no shape or assertion failure to
+    catch it.  Keep them on alternating batches.
+    """
+    return enabled and not is_hybrid
+
+
 def mix_batches(prefill: Batch | None, decode: Batch | None) -> Batch | None:
     """Fuse a prefill and a decode batch into one mixed batch.
 

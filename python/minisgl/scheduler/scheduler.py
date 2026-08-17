@@ -21,7 +21,7 @@ from .decode import DecodeManager
 from .io import SchedulerIOMixin
 from .prefill import ChunkedReq, PrefillManager
 from .table import TableManager
-from .utils import mix_batches
+from .utils import mix_batches, resolve_mixed_batch
 
 if TYPE_CHECKING:
     from minisgl.engine import BatchSamplingArgs, ForwardOutput
@@ -73,10 +73,10 @@ class Scheduler(SchedulerIOMixin):
         self.eos_token_id = self.tokenizer.eos_token_id
         self.token_pool = self.table_manager.token_pool
         self.prefill_budget = config.max_extend_tokens
-        # NOTE: hybrid models dispatch their linear-attention layers on batch.is_prefill and
-        # rebuild the recurrent state from scratch, so a decode req inside an extend batch
-        # would be computed wrongly. Keep them on alternating batches.
-        self.enable_mixed_batch = config.enable_mixed_batch and not config.model_config.is_hybrid
+        # NOTE: see `resolve_mixed_batch` -- hybrid models must stay on alternating batches
+        self.enable_mixed_batch = resolve_mixed_batch(
+            enabled=config.enable_mixed_batch, is_hybrid=config.model_config.is_hybrid
+        )
         if config.enable_mixed_batch and not self.enable_mixed_batch:
             logger.info_rank0("Hybrid model detected: mixed prefill/decode batching disabled.")
         # self.config = config
