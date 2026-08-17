@@ -170,14 +170,6 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         help="Chunk Prefill maximum chunk size in tokens.",
     )
 
-    assert ServerArgs.enable_mixed_batch == True
-    parser.add_argument(
-        "--disable-mixed-batch",
-        action="store_false",
-        dest="enable_mixed_batch",
-        help="Disable running prefill chunks and decodes in the same forward.",
-    )
-
     parser.add_argument(
         "--num-pages",
         dest="num_page_override",

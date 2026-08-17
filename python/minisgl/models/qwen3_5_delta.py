@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Tuple
+from typing import TYPE_CHECKING, List, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -9,6 +9,8 @@ from minisgl.layers import BaseOP, LinearReplicated
 from minisgl.utils import nvtx_annotate
 
 if TYPE_CHECKING:
+    from minisgl.core import Req
+
     from .config import ModelConfig
 
 # Optional fast Gated DeltaNet kernels (flash-linear-attention, Triton).  When
@@ -272,15 +274,30 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         # Async-reasoning shared-cache path: compose the initial recurrent state
         # from the worker's block chain and capture per-token affine updates.
         if ctx.gdn_ar is not None:
+            # the shared-cache path drives its own batches and never mixes the two phases
+            assert not batch.is_mixed, "async-reasoning path does not support mixed batches"
             if batch.is_prefill:
                 return self._forward_ar_prefill(x, ctx.gdn_ar)
             return self._forward_ar_decode(x, ctx.gdn_ar)
         # Normal serving path: per-request state pool indexed by table_idx.
         gdn = ctx.gdn_state
         assert gdn is not None, "GDNStatePool not initialized for hybrid model"
-        if batch.is_prefill:
-            return self._forward_prefill(x, batch, gdn)
-        return self._forward_decode(x, batch, gdn)
+        if not batch.is_prefill:
+            return self._forward_decode(x, batch.reqs, gdn)
+        if not batch.is_mixed:
+            return self._forward_prefill(x, batch.reqs, gdn)
+        # A mixed batch is two row segments: the leading extend reqs rebuild their
+        # recurrent state by scan, the trailing `num_decode` reqs advance theirs by one
+        # step.  Both index the state pool by `table_idx` and the segments hold disjoint
+        # reqs, so neither can read state the other is writing.
+        num_extend = batch.num_prefill
+        split = sum(req.extend_len for req in batch.reqs[:num_extend])
+        return torch.cat(
+            [
+                self._forward_prefill(x[:split], batch.reqs[:num_extend], gdn),
+                self._forward_decode(x[split:], batch.reqs[num_extend:], gdn),
+            ]
+        )
 
     # --- async-reasoning prefill: one block per request, compose prior + capture ---
     def _forward_ar_prefill(self, x, ar) -> torch.Tensor:
@@ -415,13 +432,13 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         return self.out_proj.forward(core.reshape(n, self.value_dim))
 
     # --- prefill: one chunked pass per request, write final state to pool ---
-    def _forward_prefill(self, x, batch, gdn) -> torch.Tensor:
+    def _forward_prefill(self, x, reqs: List[Req], gdn) -> torch.Tensor:
         out = torch.empty(
             x.shape[0], self.out_proj.full_output_size, dtype=x.dtype, device=x.device
         )
         k = self.conv_kernel
         offset = 0
-        for req in batch.reqs:
+        for req in reqs:
             assert req.cached_len == 0, (
                 "Qwen3.5 hybrid prefill does not support prefix-cache reuse for linear "
                 "layers yet; run with prefix caching disabled."
@@ -461,9 +478,9 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         return out
 
     # --- decode: single recurrent step, batched across requests ---
-    def _forward_decode(self, x, batch, gdn) -> torch.Tensor:
+    def _forward_decode(self, x, reqs: List[Req], gdn) -> torch.Tensor:
         table_idx = torch.tensor(
-            [req.table_idx for req in batch.reqs], device=x.device, dtype=torch.long
+            [req.table_idx for req in reqs], device=x.device, dtype=torch.long
         )
         n = x.shape[0]
         qkv = self.in_proj_qkv.forward(x)  # (N, conv_dim)

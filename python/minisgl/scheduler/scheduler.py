@@ -21,7 +21,7 @@ from .decode import DecodeManager
 from .io import SchedulerIOMixin
 from .prefill import ChunkedReq, PrefillManager
 from .table import TableManager
-from .utils import mix_batches, resolve_mixed_batch
+from .utils import mix_batches
 
 if TYPE_CHECKING:
     from minisgl.engine import BatchSamplingArgs, ForwardOutput
@@ -73,12 +73,6 @@ class Scheduler(SchedulerIOMixin):
         self.eos_token_id = self.tokenizer.eos_token_id
         self.token_pool = self.table_manager.token_pool
         self.prefill_budget = config.max_extend_tokens
-        # NOTE: see `resolve_mixed_batch` -- hybrid models must stay on alternating batches
-        self.enable_mixed_batch = resolve_mixed_batch(
-            enabled=config.enable_mixed_batch, is_hybrid=config.model_config.is_hybrid
-        )
-        if config.enable_mixed_batch and not self.enable_mixed_batch:
-            logger.info_rank0("Hybrid model detected: mixed prefill/decode batching disabled.")
         # self.config = config
 
         # Initialize the I/O mixin
@@ -226,21 +220,14 @@ class Scheduler(SchedulerIOMixin):
         )
 
     def _schedule_next_batch(self) -> ForwardInput | None:
-        # TODO: support other policies: e.g. DECODE first
-        if not self.enable_mixed_batch:
-            batch = (
-                self.prefill_manager.schedule_next_batch(self.prefill_budget)
-                or self.decode_manager.schedule_next_batch()
-            )
-        else:
-            # NOTE: decode rows are charged against the same budget, so a mixed forward
-            # never exceeds max_extend_tokens rows (which sizes the pynccl buffer).
-            decode_batch = self.decode_manager.schedule_next_batch()
-            budget = self.prefill_budget - (decode_batch.size if decode_batch else 0)
-            prefill_batch = (
-                self.prefill_manager.schedule_next_batch(budget) if budget > 0 else None
-            )
-            batch = mix_batches(prefill_batch, decode_batch)
+        # Decode goes first and is never deferred: every running req is older than every
+        # pending one, so this is also the FIFO order.  Its rows are charged against the
+        # same budget as extend rows, so a mixed forward never exceeds max_extend_tokens
+        # rows (which sizes the pynccl buffer).
+        decode_batch = self.decode_manager.schedule_next_batch()
+        budget = self.prefill_budget - (decode_batch.size if decode_batch else 0)
+        prefill_batch = self.prefill_manager.schedule_next_batch(budget) if budget > 0 else None
+        batch = mix_batches(prefill_batch, decode_batch)
         return self._prepare_batch(batch) if batch else None
 
     def _forward(self, forward_input: ForwardInput) -> ForwardOutput:

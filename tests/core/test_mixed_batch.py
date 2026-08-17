@@ -1,5 +1,5 @@
 """
-Mixed prefill/decode batches, in four tiers.
+Mixed prefill/decode batches -- the only batch shape the scheduler builds -- in five tiers.
 
 A mixed batch is an *extend* batch whose trailing reqs happen to have ``extend_len == 1``.
 Nothing downstream of the scheduler branches on "mixed" -- the attention backends, the LM
@@ -15,22 +15,25 @@ were not a contiguous suffix, every decode step would re-insert its prefix.
 
 The tiers, cheapest first:
 
-1. layout + the hybrid guard -- pure CPU, no engine.
+1. the layout itself -- pure CPU, no engine.
 2. the budget arithmetic in ``Scheduler._schedule_next_batch``, against stub managers.
    Decode rows are charged against the same ``max_extend_tokens`` budget as extend rows,
    because that budget is what sizes the pynccl forward buffer.
 3. the same arithmetic against the *real* ``PrefillManager``/``DecodeManager`` plus the
    real page allocator and radix cache -- CUDA, but no model weights.
-4. end-to-end equivalence: the same greedy prompts must produce the same token ids with
-   mixed batching on and off.  Needs CUDA and a model; runs each policy in its own
-   subprocess because ``Engine.__init__`` allows only one engine per process.  See
-   ``E2E_PROMPTS`` for why the prompts are what they are -- the two policies use
-   different attention kernels, so this is argmax-stable, not bit-exact.
+4. hybrid models: a Gated DeltaNet layer must split a mixed batch itself, since its two
+   segments need different recurrences.  CUDA with random weights, no checkpoint.
+5. end-to-end equivalence: prompts submitted together must produce the same token ids as
+   the same prompts submitted one at a time, which is a reference that provably never
+   mixes.  Needs CUDA and a model; each mode runs in its own subprocess because
+   ``Engine.__init__`` allows only one engine per process.  See ``E2E_PROMPTS`` for why
+   the prompts are what they are -- mixed and pure decode rows go through different
+   attention kernels, so this is argmax-stable, not bit-exact.
 
 Run::
 
     pytest tests/core/test_mixed_batch.py -v
-    MINISGL_E2E_MODEL=Qwen/Qwen3-0.6B pytest tests/core/test_mixed_batch.py -v  # + tier 4
+    MINISGL_E2E_MODEL=Qwen/Qwen3-0.6B pytest tests/core/test_mixed_batch.py -v  # + tier 5
 """
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ import pytest
 import torch
 from minisgl.core import Batch, Req, SamplingParams
 from minisgl.scheduler.prefill import ChunkedReq
-from minisgl.scheduler.utils import mix_batches, resolve_mixed_batch
+from minisgl.scheduler.utils import mix_batches
 
 E2E_MODEL_PATH = os.environ.get("MINISGL_E2E_MODEL", "")
 
@@ -181,25 +184,6 @@ class TestPrefixCachingRule:
 
 
 # =============================================================================
-# The hybrid guard (CPU only -- a pure predicate)
-# =============================================================================
-
-
-class TestHybridGuard:
-    """A hybrid model must never see a mixed batch: it would be wrong *and* silent."""
-
-    def test_hybrid_disables_mixed_batch(self):
-        assert resolve_mixed_batch(enabled=True, is_hybrid=True) is False
-
-    def test_non_hybrid_keeps_it_enabled(self):
-        assert resolve_mixed_batch(enabled=True, is_hybrid=False) is True
-
-    def test_the_knob_still_wins_when_off(self):
-        assert resolve_mixed_batch(enabled=False, is_hybrid=False) is False
-        assert resolve_mixed_batch(enabled=False, is_hybrid=True) is False
-
-
-# =============================================================================
 # Budget arithmetic (CPU only -- stub managers, no engine)
 # =============================================================================
 
@@ -234,7 +218,7 @@ class _FixedDecode:
         return Batch(reqs=_decode_reqs(self.size, offset=1000), phase="decode")
 
 
-def _schedule(*, budget: int, decode: int, mixed: bool = True, no_prefill: bool = False):
+def _schedule(*, budget: int, decode: int, no_prefill: bool = False):
     """Run the real ``Scheduler._schedule_next_batch`` against stub managers.
 
     ``_prepare_batch`` is the identity so the batch comes back unprepared: everything it
@@ -243,7 +227,6 @@ def _schedule(*, budget: int, decode: int, mixed: bool = True, no_prefill: bool 
     from minisgl.scheduler.scheduler import Scheduler
 
     stub = SimpleNamespace(
-        enable_mixed_batch=mixed,
         prefill_budget=budget,
         prefill_manager=_BudgetFillingPrefill(empty=no_prefill),
         decode_manager=_FixedDecode(decode),
@@ -292,22 +275,11 @@ class TestMixedBudget:
             assert _prefill_rows(batch) == 0
 
     def test_idle_scheduler_produces_nothing(self):
-        for mixed in (True, False):
-            batch, _ = _schedule(budget=100, decode=0, mixed=mixed, no_prefill=True)
-            assert batch is None
+        batch, _ = _schedule(budget=100, decode=0, no_prefill=True)
+        assert batch is None
 
-
-class TestAlternatingBudget:
-    """With mixed batching off, the two phases take turns and never share a budget."""
-
-    def test_prefill_wins_and_gets_the_whole_budget(self):
-        batch, stub = _schedule(budget=100, decode=30, mixed=False)
-        assert stub.prefill_manager.budgets == [100]
-        assert batch is not None
-        assert batch.num_decode == 0 and _prefill_rows(batch) == 100
-
-    def test_decode_runs_only_when_no_prefill_batch_forms(self):
-        batch, stub = _schedule(budget=100, decode=30, mixed=False, no_prefill=True)
+    def test_decode_alone_is_a_pure_decode_batch(self):
+        batch, stub = _schedule(budget=100, decode=30, no_prefill=True)
         assert batch is not None
         assert (batch.num_prefill, batch.num_decode) == (0, 30)
         assert stub.decode_manager.calls == 1
@@ -408,7 +380,6 @@ class TestRealMixedBudget:
         managers.decode_manager.running_reqs = set(_decode_reqs(num_decode, offset=1000))
 
         stub = SimpleNamespace(
-            enable_mixed_batch=True,
             prefill_budget=budget,
             prefill_manager=managers.prefill_manager,
             decode_manager=managers.decode_manager,
@@ -423,6 +394,181 @@ class TestRealMixedBudget:
 
 
 # =============================================================================
+# Hybrid (Gated DeltaNet) mixed batches -- CUDA, random weights, no checkpoint
+# =============================================================================
+
+# A hybrid model's linear-attention layer is the one place that has to know a batch is
+# mixed: `is_prefill` alone would send the decode rows through the chunked scan, which
+# rebuilds the recurrent state from scratch instead of advancing it by one step.  The
+# layer therefore splits the batch at `num_prefill` and runs each segment its own way;
+# these tests pin that the split lands in the right place and writes the right slots.
+
+GDN_HIDDEN = 64
+GDN_K_HEADS = 2
+GDN_V_HEADS = 4
+GDN_HEAD_DIM = 16
+GDN_CONV_KERNEL = 4
+GDN_SLOTS = 8
+
+
+def _hybrid_config():
+    from minisgl.models.config import ModelConfig, RotaryConfig
+
+    return ModelConfig(
+        num_layers=1,
+        num_qo_heads=4,
+        num_kv_heads=2,
+        head_dim=GDN_HEAD_DIM,
+        hidden_size=GDN_HIDDEN,
+        vocab_size=128,
+        intermediate_size=128,
+        rms_norm_eps=1e-6,
+        rotary_config=RotaryConfig(
+            head_dim=GDN_HEAD_DIM,
+            rotary_dim=GDN_HEAD_DIM,
+            max_position=512,
+            base=1e4,
+            scaling=None,
+        ),
+        hidden_act="silu",
+        tie_word_embeddings=False,
+        num_experts=0,
+        num_experts_per_tok=0,
+        moe_intermediate_size=0,
+        shared_expert_intermediate_size=0,
+        norm_topk_prob=False,
+        model_type="qwen3_5",
+        architectures=["Qwen3_5ForCausalLM"],
+        layer_types=("linear_attention",),
+        linear_num_key_heads=GDN_K_HEADS,
+        linear_num_value_heads=GDN_V_HEADS,
+        linear_key_head_dim=GDN_HEAD_DIM,
+        linear_value_head_dim=GDN_HEAD_DIM,
+        linear_conv_kernel_dim=GDN_CONV_KERNEL,
+    )
+
+
+@pytest.fixture(scope="module")
+def gdn_layer(global_ctx):
+    """A GatedDeltaNet layer with random weights, plus a state pool on the global ctx.
+
+    No checkpoint involved: ``LinearReplicated`` is a bare weight tensor, so seeding it
+    with random values is enough to exercise the real forward paths.
+    """
+    from minisgl.kvcache import GDNStatePool
+    from minisgl.models.qwen3_5_delta import Qwen3_5GatedDeltaNet
+
+    torch.manual_seed(0)
+    config = _hybrid_config()
+    layer = Qwen3_5GatedDeltaNet(config, linear_idx=0)
+    for name, param in layer.state_dict().items():
+        _assign(layer, name, torch.randn_like(param, device="cuda", dtype=torch.float32) * 0.1)
+    global_ctx.gdn_state = GDNStatePool(
+        model_config=config,
+        max_running_req=GDN_SLOTS,
+        device=torch.device("cuda"),
+        dtype=torch.float32,
+    )
+    return layer
+
+
+def _assign(root, dotted: str, value: torch.Tensor) -> None:
+    obj = root
+    *path, leaf = dotted.split(".")
+    for part in path:
+        obj = getattr(obj, part)
+    setattr(obj, leaf, value)
+
+
+def _gdn_state(gdn):
+    return gdn.conv_state.clone(), gdn.recurrent_state.clone()
+
+
+def _restore(gdn, snapshot) -> None:
+    conv, rec = snapshot
+    gdn.conv_state.copy_(conv)
+    gdn.recurrent_state.copy_(rec)
+
+
+@requires_cuda
+class TestHybridMixedBatch:
+    EXTEND_LENS = [5, 3]
+    NUM_DECODE = 3
+
+    def _reqs(self):
+        extend = [
+            _make_req(uid, input_len=length, cached_len=0)
+            for uid, length in enumerate(self.EXTEND_LENS)
+        ]
+        decode = _decode_reqs(self.NUM_DECODE, offset=len(self.EXTEND_LENS))
+        return extend, decode
+
+    def _run(self, layer, batch, x):
+        from minisgl.core import get_global_ctx
+
+        with get_global_ctx().forward_batch(batch):
+            return layer.forward(x)
+
+    def test_mixed_matches_the_two_segments_run_apart(self, gdn_layer, global_ctx):
+        """The whole point of the split: same rows, same states, same answers."""
+        extend, decode = self._reqs()
+        split = sum(self.EXTEND_LENS)
+        x = torch.randn(split + self.NUM_DECODE, GDN_HIDDEN, device="cuda")
+        gdn = global_ctx.gdn_state
+
+        # seed the decode reqs' state so the recurrent step has something to advance
+        gdn.conv_state.normal_()
+        gdn.recurrent_state.normal_()
+        before = _gdn_state(gdn)
+
+        mixed = mix_batches(
+            Batch(reqs=extend, phase="prefill"), Batch(reqs=decode, phase="decode")
+        )
+        assert mixed is not None and mixed.is_mixed
+        out_mixed = self._run(gdn_layer, mixed, x)
+        after_mixed = _gdn_state(gdn)
+
+        # same work, but as the two batches the scheduler used to alternate between
+        _restore(gdn, before)
+        out_extend = self._run(gdn_layer, Batch(reqs=extend, phase="prefill"), x[:split])
+        out_decode = self._run(gdn_layer, Batch(reqs=decode, phase="decode"), x[split:])
+        out_apart = torch.cat([out_extend, out_decode])
+
+        torch.testing.assert_close(out_mixed, out_apart, rtol=0, atol=0)
+        torch.testing.assert_close(after_mixed[0], gdn.conv_state, rtol=0, atol=0)
+        torch.testing.assert_close(after_mixed[1], gdn.recurrent_state, rtol=0, atol=0)
+
+    def test_decode_rows_advance_state_instead_of_rebuilding_it(self, gdn_layer, global_ctx):
+        """If the split were off, a decode req would land in the scan segment: its
+        ``cached_len > 0`` trips the no-prefix-reuse assert, or -- worse, once that is
+        lifted -- its state would be rebuilt from one token instead of advanced."""
+        extend, decode = self._reqs()
+        split = sum(self.EXTEND_LENS)
+        x = torch.randn(split + self.NUM_DECODE, GDN_HIDDEN, device="cuda")
+        gdn = global_ctx.gdn_state
+        gdn.conv_state.normal_()
+        gdn.recurrent_state.normal_()
+
+        mixed = mix_batches(
+            Batch(reqs=extend, phase="prefill"), Batch(reqs=decode, phase="decode")
+        )
+        assert mixed is not None
+        before = _gdn_state(gdn)
+        self._run(gdn_layer, mixed, x)
+
+        # a rebuilt conv window would be zero-padded around a single token; an advanced
+        # one keeps the tail of the previous window
+        for req in decode:
+            rolled = before[0][0, req.table_idx, :, 1:]
+            assert torch.equal(gdn.conv_state[0, req.table_idx, :, :-1], rolled)
+        # untouched slots stay untouched
+        used = {req.table_idx for req in extend + decode}
+        for slot in set(range(GDN_SLOTS)) - used:
+            assert torch.equal(gdn.conv_state[0, slot], before[0][0, slot])
+            assert torch.equal(gdn.recurrent_state[0, slot], before[1][0, slot])
+
+
+# =============================================================================
 # End-to-end equivalence (CUDA + model weights)
 # =============================================================================
 
@@ -433,11 +579,11 @@ E2E_MAX_TOKENS = 12
 E2E_EXTEND_BUDGET = 64
 _RESULT_SENTINEL = "__MIXED_BATCH_RESULT__ "
 
-# The two policies route decode rows through different attention kernels -- a mixed batch
-# is an extend batch (fa), a pure decode batch replays a CUDA graph (fi) -- so the logits
-# are close but not bit-identical, and only a *confident* argmax survives the difference.
-# Hence prompts with one obvious continuation each: on near-tied logits a single flip
-# cascades and the sequences diverge completely without anything being wrong.
+# A mixed batch computes its decode rows with the extend kernel (fa) while a pure decode
+# batch replays a CUDA graph (fi), so the logits are close but not bit-identical, and only
+# a *confident* argmax survives the difference.  Hence prompts with one obvious
+# continuation each: on near-tied logits a single flip cascades and the sequences diverge
+# completely without anything being wrong.
 E2E_PROMPTS = [
     "Count up: one, two, three, four, five, six, seven, eight, nine,",
     "The capital of France is Paris. The capital of Italy is Rome. The capital of Japan is",
@@ -450,12 +596,12 @@ E2E_PROMPTS = [
 ]
 
 
-def _run_policy(mixed: bool) -> dict:
+def _run_mode(mode: str) -> dict:
     """Generate in a subprocess: ``Engine.__init__`` refuses a second engine per process,
-    and a fresh process also means a cold prefix cache, so neither policy gets to read KV
-    the other one wrote."""
+    and a fresh process also means a cold prefix cache, so the reference run never reads
+    KV that the batched run wrote."""
     proc = subprocess.run(
-        [sys.executable, __file__, "mixed" if mixed else "alternating"],
+        [sys.executable, __file__, mode],
         capture_output=True,
         text=True,
         timeout=1800,
@@ -469,24 +615,29 @@ def _run_policy(mixed: bool) -> dict:
 
 @requires_e2e
 class TestMixedEquivalence:
-    """Mixing a decode row into an extend batch must not change what that row samples."""
+    """Mixing a decode row into an extend batch must not change what that row samples.
 
-    def test_same_tokens_with_and_without_mixed_batching(self):
-        mixed = _run_policy(mixed=True)
-        alternating = _run_policy(mixed=False)
+    The reference is the same prompts submitted one at a time: a lone request has nothing
+    to mix with -- it prefills, then decodes by itself -- so ``batched`` exercises mixed
+    batches against a reference that provably never built one.
+    """
+
+    def test_batching_does_not_change_what_a_request_samples(self):
+        batched = _run_mode("batched")
+        alone = _run_mode("sequential")
 
         # otherwise the comparison is vacuous: no mixed batch was ever built
-        assert mixed["mixed_batches"] > 0, "no mixed batch formed; tune E2E_EXTEND_BUDGET"
-        assert alternating["mixed_batches"] == 0
+        assert batched["mixed_batches"] > 0, "no mixed batch formed; tune E2E_EXTEND_BUDGET"
+        assert alone["mixed_batches"] == 0
 
-        assert len(mixed["tokens"]) == len(E2E_PROMPTS)
-        for i, (got, want) in enumerate(zip(mixed["tokens"], alternating["tokens"])):
+        assert len(batched["tokens"]) == len(E2E_PROMPTS)
+        for prompt, got, want in zip(E2E_PROMPTS, batched["tokens"], alone["tokens"]):
             assert len(want) == E2E_MAX_TOKENS
-            assert got == want, f"prompt {i!r} diverged: {got} vs {want}"
+            assert got == want, f"{prompt!r} diverged: {got} vs {want}"
 
 
-def _subprocess_main(policy: str) -> None:
-    """Entry point for ``_run_policy``; not collected by pytest."""
+def _subprocess_main(mode: str) -> None:
+    """Entry point for ``_run_mode``; not collected by pytest."""
     from minisgl.llm import LLM
 
     class CountingLLM(LLM):
@@ -502,7 +653,6 @@ def _subprocess_main(policy: str) -> None:
 
     llm = CountingLLM(
         E2E_MODEL_PATH,
-        enable_mixed_batch=(policy == "mixed"),
         max_extend_tokens=E2E_EXTEND_BUDGET,
         max_running_req=8,
         cuda_graph_bs=[2, 4, 8],
@@ -510,10 +660,11 @@ def _subprocess_main(policy: str) -> None:
         memory_ratio=0.3,
         max_seq_len_override=1024,
     )
-    results = llm.generate(
-        E2E_PROMPTS,
-        SamplingParams(temperature=0.0, ignore_eos=True, max_tokens=E2E_MAX_TOKENS),
-    )
+    sampling_params = SamplingParams(temperature=0.0, ignore_eos=True, max_tokens=E2E_MAX_TOKENS)
+    if mode == "batched":
+        results = llm.generate(E2E_PROMPTS, sampling_params)
+    else:
+        results = [llm.generate([prompt], sampling_params)[0] for prompt in E2E_PROMPTS]
     payload = {
         "mixed_batches": llm.mixed_batches,
         "total_batches": llm.total_batches,
