@@ -21,6 +21,7 @@ from .decode import DecodeManager
 from .io import SchedulerIOMixin
 from .prefill import ChunkedReq, PrefillManager
 from .table import TableManager
+from .utils import mix_batches
 
 if TYPE_CHECKING:
     from minisgl.engine import BatchSamplingArgs, ForwardOutput
@@ -72,6 +73,12 @@ class Scheduler(SchedulerIOMixin):
         self.eos_token_id = self.tokenizer.eos_token_id
         self.token_pool = self.table_manager.token_pool
         self.prefill_budget = config.max_extend_tokens
+        # NOTE: hybrid models dispatch their linear-attention layers on batch.is_prefill and
+        # rebuild the recurrent state from scratch, so a decode req inside an extend batch
+        # would be computed wrongly. Keep them on alternating batches.
+        self.enable_mixed_batch = config.enable_mixed_batch and not config.model_config.is_hybrid
+        if config.enable_mixed_batch and not self.enable_mixed_batch:
+            logger.info_rank0("Hybrid model detected: mixed prefill/decode batching disabled.")
         # self.config = config
 
         # Initialize the I/O mixin
@@ -162,7 +169,7 @@ class Scheduler(SchedulerIOMixin):
                     self.decode_manager.remove_req(req)
                     self._free_req_resources(req)
                     new_finished_reqs.add(req)
-                elif batch.is_prefill:  # for prefill, non-chunk req, cache the prefix
+                elif i < batch.num_prefill:  # extend req (not a decode), cache the prefix
                     self.cache_manager.cache_req(req, finished=False)
 
         self.finished_reqs = new_finished_reqs
@@ -220,10 +227,20 @@ class Scheduler(SchedulerIOMixin):
 
     def _schedule_next_batch(self) -> ForwardInput | None:
         # TODO: support other policies: e.g. DECODE first
-        batch = (
-            self.prefill_manager.schedule_next_batch(self.prefill_budget)
-            or self.decode_manager.schedule_next_batch()
-        )
+        if not self.enable_mixed_batch:
+            batch = (
+                self.prefill_manager.schedule_next_batch(self.prefill_budget)
+                or self.decode_manager.schedule_next_batch()
+            )
+        else:
+            # NOTE: decode rows are charged against the same budget, so a mixed forward
+            # never exceeds max_extend_tokens rows (which sizes the pynccl buffer).
+            decode_batch = self.decode_manager.schedule_next_batch()
+            budget = self.prefill_budget - (decode_batch.size if decode_batch else 0)
+            prefill_batch = (
+                self.prefill_manager.schedule_next_batch(budget) if budget > 0 else None
+            )
+            batch = mix_batches(prefill_batch, decode_batch)
         return self._prepare_batch(batch) if batch else None
 
     def _forward(self, forward_input: ForwardInput) -> ForwardOutput:

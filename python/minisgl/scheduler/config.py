@@ -16,6 +16,9 @@ class SchedulerConfig(EngineConfig):
     max_extend_tokens: int = 8192
     cache_type: str = "radix"
     offline_mode: bool = False
+    # Run prefill chunks and decodes in one forward instead of alternating batches.
+    # Ignored for hybrid models, see Scheduler.__init__.
+    enable_mixed_batch: bool = True
 
     # networking config
     _unique_suffix: str = field(default_factory=_get_pid_suffix)
