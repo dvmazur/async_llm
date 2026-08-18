@@ -84,6 +84,11 @@ class Req:
 class Batch:
     reqs: List[Req]
     phase: Literal["prefill", "decode"]
+    # Number of trailing reqs of `reqs` that are single-token decodes.  A "prefill"
+    # batch with num_decode > 0 is a mixed batch: extend reqs first, decode reqs last.
+    # A decode req is just an extend req with extend_len == 1, so the whole batch runs
+    # through the extend path; only the scheduler needs to tell the two segments apart.
+    num_decode: int = 0
     # these fields should be set by scheduler
     input_ids: torch.Tensor = field(init=False)
     positions: torch.Tensor = field(init=False)
@@ -102,6 +107,10 @@ class Batch:
     mrope_span_override: int | None = field(default=None, init=False)
     mrope_positions: "torch.Tensor | None" = field(default=None, init=False)
 
+    def __post_init__(self) -> None:
+        if self.phase == "decode":
+            self.num_decode = len(self.reqs)
+
     @property
     def is_prefill(self) -> bool:
         return self.phase == "prefill"
@@ -113,6 +122,14 @@ class Batch:
     @property
     def size(self) -> int:
         return len(self.reqs)
+
+    @property
+    def num_prefill(self) -> int:
+        return self.size - self.num_decode
+
+    @property
+    def is_mixed(self) -> bool:
+        return self.num_decode > 0 and self.num_prefill > 0
 
     @property
     def padded_size(self) -> int:
