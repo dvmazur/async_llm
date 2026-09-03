@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, List, Tuple
 
 import torch
@@ -23,9 +24,15 @@ try:
     from fla.ops.gated_delta_rule import (
         fused_recurrent_gated_delta_rule as _fla_recurrent,
     )
-except Exception:  # pragma: no cover - fla is optional
+except Exception as exc:  # pragma: no cover - depends on the optional GPU backend
     _fla_chunk = None
     _fla_recurrent = None
+    warnings.warn(
+        "Flash Linear Attention kernels are unavailable; Qwen3.5 GDN is falling back "
+        f"to the much slower pure-PyTorch implementation ({type(exc).__name__}: {exc}).",
+        RuntimeWarning,
+        stacklevel=2,
+    )
 
 
 def _l2norm(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -158,11 +165,12 @@ def _recurrent_gated_delta_rule(
 
 
 # ---- dispatchers: fast fla kernels when available, else pure-torch ----
-# Both take (B, T, H, D) inputs and l2-norm q/k internally; return
-# (core (B, T, H, Dv), final_state (B, H, Dk, Dv)).
+# Both take (B, T, H, D) inputs and l2-norm q/k internally.  State convention
+# is [B,H,Dk,Dv] by default and [B,H,Dv,Dk] when state_v_first=True; input and
+# returned final state always use the same convention.
 
 
-def _chunk_delta(query, key, value, g, beta, initial_state=None):
+def _chunk_delta(query, key, value, g, beta, initial_state=None, *, state_v_first=False):
     if _fla_chunk is not None:
         return _fla_chunk(
             query,
@@ -173,11 +181,21 @@ def _chunk_delta(query, key, value, g, beta, initial_state=None):
             initial_state=initial_state,
             output_final_state=True,
             use_qk_l2norm_in_kernel=True,
+            state_v_first=state_v_first,
         )
-    return _chunk_gated_delta_rule(query, key, value, g, beta, initial_state=initial_state)
+    initial_state_hf = (
+        initial_state.transpose(-1, -2)
+        if state_v_first and initial_state is not None
+        else initial_state
+    )
+    output, final_state_hf = _chunk_gated_delta_rule(
+        query, key, value, g, beta, initial_state=initial_state_hf
+    )
+    final_state = final_state_hf.transpose(-1, -2) if state_v_first else final_state_hf
+    return output, final_state
 
 
-def _recurrent_delta(query, key, value, g, beta, initial_state):
+def _recurrent_delta(query, key, value, g, beta, initial_state, *, state_v_first=False):
     if _fla_recurrent is not None:
         return _fla_recurrent(
             query,
@@ -188,8 +206,14 @@ def _recurrent_delta(query, key, value, g, beta, initial_state):
             initial_state=initial_state,
             output_final_state=True,
             use_qk_l2norm_in_kernel=True,
+            state_v_first=state_v_first,
         )
-    return _recurrent_gated_delta_rule(query, key, value, g, beta, initial_state)
+    initial_state_hf = initial_state.transpose(-1, -2) if state_v_first else initial_state
+    output, final_state_hf = _recurrent_gated_delta_rule(
+        query, key, value, g, beta, initial_state_hf
+    )
+    final_state = final_state_hf.transpose(-1, -2) if state_v_first else final_state_hf
+    return output, final_state
 
 
 # ============================================================================
@@ -308,8 +332,8 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         # fp32 initial state: the delta-rule kernels upcast to fp32 anyway, and
         # fp32 composition avoids bf16 error compounding across long chains.
         initial_state = ar.compose_initial_recurrent_state(
-            lin, dtype=torch.float32
-        )  # (R,H,dk,dv)|None
+            lin, dtype=torch.float32, state_v_first=True
+        )  # (R,H,dv,dk)|None
         segments = ar.prefill_segments
         if segments is None or len(segments) == 1:
             return self._forward_ar_prefill_one(x, ar, 0, prior_conv, initial_state)
@@ -364,6 +388,7 @@ class Qwen3_5GatedDeltaNet(BaseOP):
             g.unsqueeze(0),
             beta.unsqueeze(0),
             initial_state=None if initial_state is None else initial_state[w : w + 1],
+            state_v_first=True,
         )
 
         ar.capture_token_affines(
@@ -402,14 +427,14 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         q, kk, v = self._split_heads(qkv2)  # (W, num_v_heads, d)
         beta, g = self._gates(a, b)
         initial_state = ar.compose_initial_recurrent_state(
-            lin, dtype=torch.float32
-        )  # (W,H,dk,dv)|None
+            lin, dtype=torch.float32, state_v_first=True
+        )  # (W,H,dv,dk)|None
         if initial_state is None:
             initial_state = torch.zeros(
                 n,
                 self.num_v_heads,
-                self.head_k_dim,
                 self.head_v_dim,
+                self.head_k_dim,
                 device=x.device,
                 dtype=torch.float32,
             )
@@ -420,6 +445,7 @@ class Qwen3_5GatedDeltaNet(BaseOP):
             g.unsqueeze(1),
             beta.unsqueeze(1),
             initial_state,
+            state_v_first=True,
         )
 
         ar.capture_token_affines(
@@ -479,9 +505,7 @@ class Qwen3_5GatedDeltaNet(BaseOP):
 
     # --- decode: single recurrent step, batched across requests ---
     def _forward_decode(self, x, reqs: List[Req], gdn) -> torch.Tensor:
-        table_idx = torch.tensor(
-            [req.table_idx for req in reqs], device=x.device, dtype=torch.long
-        )
+        table_idx = torch.tensor([req.table_idx for req in reqs], device=x.device, dtype=torch.long)
         n = x.shape[0]
         qkv = self.in_proj_qkv.forward(x)  # (N, conv_dim)
         z = self.in_proj_z.forward(x)

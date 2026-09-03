@@ -1,3 +1,5 @@
+from .gdn_capture import capture_gdn_affine_pointer_update
+from .gdn_compose import apply_gdn_affine_pointer_frontier, apply_gdn_affine_pointer_nodes
 from .index import indexing
 from .moe_impl import fused_moe_kernel_triton, moe_sum_reduce_triton
 from .pynccl import PyNCCLCommunicator, init_pynccl
@@ -7,6 +9,9 @@ from .tensor import test_tensor
 
 __all__ = [
     "indexing",
+    "capture_gdn_affine_pointer_update",
+    "apply_gdn_affine_pointer_frontier",
+    "apply_gdn_affine_pointer_nodes",
     "fast_compare_key",
     "store_cache",
     "test_tensor",

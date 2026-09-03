@@ -77,6 +77,8 @@ class DemoConfig:
     probe_period: int = DEFAULT_PROBE_PERIOD
     memory_ratio: float = DEFAULT_MEMORY_RATIO
     page_size: int = DEFAULT_PAGE_SIZE
+    num_pages: int | None = None
+    attention_backend: str = "auto"
 
 
 class Prompting:
@@ -340,7 +342,11 @@ def run(config: DemoConfig) -> None:
 
     print("\nLoading tokenizer & engine...")
     llm = build_async_llm(
-        config.model, memory_ratio=config.memory_ratio, page_size=config.page_size
+        config.model,
+        memory_ratio=config.memory_ratio,
+        page_size=config.page_size,
+        num_pages=config.num_pages,
+        attention_backend=config.attention_backend,
     )
     prompting = Prompting(config.problem)
 

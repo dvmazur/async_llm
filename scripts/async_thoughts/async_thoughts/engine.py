@@ -20,6 +20,8 @@ def build_async_llm(
     model_path: str,
     memory_ratio: float,
     page_size: int = 1,
+    num_pages: int | None = None,
+    attention_backend: str = "auto",
 ) -> AsyncLLM:
     """Build a single-GPU AsyncLLM sized for 1- or 2-worker decode."""
     return AsyncLLM(
@@ -31,6 +33,8 @@ def build_async_llm(
         memory_ratio=memory_ratio,
         max_seq_len_override=8192 * 2,
         page_size=page_size,
+        num_page_override=num_pages,
+        attention_backend=attention_backend,
     )
 
 

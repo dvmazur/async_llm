@@ -63,9 +63,13 @@ class CacheBlock:
         # (A_hat [1,H,d_k,d_k], B_hat [1,H,d_v,d_k]).  Composing a worker's chain
         # of these folds into an initial recurrent state (see shared_cache.gdn).
         self.linear_affine: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
+        # Monotonic per-layer revisions make persistent compose-cache keys safe
+        # across writes, clear/reuse, allocator pointer reuse, and block merges.
+        self.linear_affine_revision: Dict[int, int] = {}
         # Rolling causal-conv window (last conv_kernel columns) per linear layer,
         # [conv_dim, conv_kernel].  Standard full-attention blocks leave these empty.
         self.linear_conv_state: Dict[int, torch.Tensor] = {}
+
     @property
     def mrope_span(self) -> int:
         """Running-mRoPE advance over this block (== num_tokens unless overridden)."""
@@ -151,9 +155,18 @@ class CacheBlock:
         self.num_tokens = 0
         self.mrope_span_override = None
         self.token_ids.clear()
+        for layer_idx in self.linear_affine:
+            self.linear_affine_revision[layer_idx] = (
+                self.linear_affine_revision.get(layer_idx, 0) + 1
+            )
         self.linear_affine.clear()
         self.linear_conv_state.clear()
         return pages
+
+    def set_linear_affine(self, layer_idx: int, pair: Tuple[torch.Tensor, torch.Tensor]) -> None:
+        """Replace one affine summary and advance its persistent cache revision."""
+        self.linear_affine[layer_idx] = pair
+        self.linear_affine_revision[layer_idx] = self.linear_affine_revision.get(layer_idx, 0) + 1
 
     def __repr__(self) -> str:
         return (

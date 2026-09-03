@@ -27,13 +27,15 @@ Run::
 
 from __future__ import annotations
 
+import minisgl.models.qwen3_5_delta as delta_module
 import torch
-
 from minisgl.models.qwen3_5_delta import (
+    _chunk_delta,
     _chunk_gated_delta_rule,
     _fla_chunk,
     _fla_recurrent,
     _l2norm,
+    _recurrent_delta,
     _recurrent_gated_delta_rule,
 )
 from minisgl.shared_cache.gdn_affine import (
@@ -139,13 +141,64 @@ def test_initial_state_none_equals_zero():
     assert _rel(out_n, out_z) < 1e-6
 
 
+def test_v_first_dispatchers_preserve_puretorch_fallback(monkeypatch):
+    """The no-FLA path accepts/returns [B,H,Dv,Dk] without a materialized transpose."""
+
+    monkeypatch.setattr(delta_module, "_fla_chunk", None)
+    monkeypatch.setattr(delta_module, "_fla_recurrent", None)
+    Bs, H, dk, dv, T = 2, 3, 7, 5, 9
+    q, k, v, g, beta = _inputs(Bs, H, dk, dv, T, seed=91)
+    initial_v_first = torch.randn(Bs, H, dv, dk)
+    initial_hf_view = initial_v_first.transpose(-1, -2)
+
+    expected_chunk, expected_chunk_final = _chunk_gated_delta_rule(
+        q, k, v, g, beta, initial_state=initial_hf_view
+    )
+    actual_chunk, actual_chunk_final = _chunk_delta(
+        q,
+        k,
+        v,
+        g,
+        beta,
+        initial_state=initial_v_first,
+        state_v_first=True,
+    )
+    torch.testing.assert_close(actual_chunk, expected_chunk)
+    torch.testing.assert_close(actual_chunk_final, expected_chunk_final.transpose(-1, -2))
+
+    expected_zero_chunk, expected_zero_final = _chunk_gated_delta_rule(
+        q, k, v, g, beta, initial_state=None
+    )
+    actual_zero_chunk, actual_zero_final = _chunk_delta(
+        q, k, v, g, beta, initial_state=None, state_v_first=True
+    )
+    torch.testing.assert_close(actual_zero_chunk, expected_zero_chunk)
+    torch.testing.assert_close(actual_zero_final, expected_zero_final.transpose(-1, -2))
+
+    expected_recurrent, expected_recurrent_final = _recurrent_gated_delta_rule(
+        q[:, :1], k[:, :1], v[:, :1], g[:, :1], beta[:, :1], initial_hf_view
+    )
+    actual_recurrent, actual_recurrent_final = _recurrent_delta(
+        q[:, :1],
+        k[:, :1],
+        v[:, :1],
+        g[:, :1],
+        beta[:, :1],
+        initial_v_first,
+        state_v_first=True,
+    )
+    torch.testing.assert_close(actual_recurrent, expected_recurrent)
+    torch.testing.assert_close(actual_recurrent_final, expected_recurrent_final.transpose(-1, -2))
+
+
 def test_fla_matches_puretorch_gpu():
     """Optional: the fla kernels agree with the pure-torch reference (bf16 tol)."""
     if _fla_chunk is None or _fla_recurrent is None or not torch.cuda.is_available():
         print("  [skip] fla or CUDA unavailable")
         return
     dev = "cuda"
-    Bs, H, dk, dv, T = 2, 16, 128, 128, 40
+    # Rectangular state makes a swapped K/V convention observable in the shape.
+    Bs, H, dk, dv, T = 2, 16, 128, 64, 40
     q, k, v, g, beta = _inputs(Bs, H, dk, dv, T, seed=5, dtype=torch.bfloat16)
     q, k, v, beta = (t.to(dev) for t in (q, k, v, beta))
     g = g.float().to(dev)
@@ -165,6 +218,21 @@ def test_fla_matches_puretorch_gpu():
     assert _rel(c_fla, c_pt) < 2e-2
     assert _rel(s_fla, s_pt) < 2e-2
 
+    S0_v_first = S0.transpose(-1, -2).contiguous()
+    c_fla_v_first, s_fla_v_first = _fla_chunk(
+        q,
+        k,
+        v,
+        g=g,
+        beta=beta,
+        initial_state=S0_v_first,
+        output_final_state=True,
+        use_qk_l2norm_in_kernel=True,
+        state_v_first=True,
+    )
+    assert _rel(c_fla_v_first, c_fla) < 2e-2
+    assert _rel(s_fla_v_first.transpose(-1, -2), s_fla) < 2e-2
+
     q1, k1, v1, g1, b1 = (t[:, :1] for t in (q, k, v, g, beta))
     r_pt, sr_pt = _recurrent_gated_delta_rule(q1, k1, v1, g1, b1, S0)
     r_fla, sr_fla = _fla_recurrent(
@@ -179,6 +247,20 @@ def test_fla_matches_puretorch_gpu():
     )
     assert _rel(r_fla, r_pt) < 2e-2
     assert _rel(sr_fla, sr_pt) < 2e-2
+
+    r_fla_v_first, sr_fla_v_first = _fla_recurrent(
+        q1,
+        k1,
+        v1,
+        g=g1,
+        beta=b1,
+        initial_state=S0_v_first,
+        output_final_state=True,
+        use_qk_l2norm_in_kernel=True,
+        state_v_first=True,
+    )
+    assert _rel(r_fla_v_first, r_fla) < 2e-2
+    assert _rel(sr_fla_v_first.transpose(-1, -2), sr_fla) < 2e-2
 
 
 if __name__ == "__main__":

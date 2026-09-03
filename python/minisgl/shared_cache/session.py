@@ -237,6 +237,7 @@ class SharedCacheSession:
             sc_mrope = attn0._mrope_section
             sc_rope_base = attn0._rope_base
             gdn0 = _first_gdn(engine)  # Qwen3_5GatedDeltaNet
+            assert engine.ctx.gdn_state is not None
             self.sc_gdn: SharedCacheGDN | None = SharedCacheGDN(
                 num_heads=gdn0.num_v_heads,
                 head_k_dim=gdn0.head_k_dim,
@@ -244,6 +245,7 @@ class SharedCacheSession:
                 conv_dim=gdn0.conv_dim,
                 conv_kernel=gdn0.conv_kernel,
                 device=self.device,
+                gdn_storage_bytes=engine.ctx.gdn_state.storage_bytes,
             )
         else:
             attn0 = engine.model.model.layers.op_list[0].self_attn.attn
@@ -407,9 +409,7 @@ class SharedCacheSession:
                 merged_affine[layer_idx] = (right_pair[0].clone(), right_pair[1].clone())
             elif right_pair is None:
                 merged_affine[layer_idx] = (
-                    left_pair
-                    if keep_left_state
-                    else (left_pair[0].clone(), left_pair[1].clone())
+                    left_pair if keep_left_state else (left_pair[0].clone(), left_pair[1].clone())
                 )
             else:
                 merged_affine[layer_idx] = compose_gdn_affines(
@@ -418,7 +418,9 @@ class SharedCacheSession:
                     A_second=right_pair[0],
                     B_second=right_pair[1],
                 )
-        destination.linear_affine = merged_affine
+        destination.linear_affine = {}
+        for layer_idx, pair in merged_affine.items():
+            destination.set_linear_affine(layer_idx, pair)
 
         merged_conv: Dict[int, torch.Tensor] = {}
         conv_layers = set(left.linear_conv_state) | set(right.linear_conv_state)
@@ -482,9 +484,9 @@ class SharedCacheSession:
         for layer_idx in range(self.kv_cache.num_layers):
             k_cache = self.kv_cache.k_cache(layer_idx)
             k_flat = k_cache.reshape(-1, *k_cache.shape[2:])
-            keys = self.sc_attn._rope(
-                k_flat.index_select(0, slots).float(), corrections
-            ).to(k_flat.dtype)
+            keys = self.sc_attn._rope(k_flat.index_select(0, slots).float(), corrections).to(
+                k_flat.dtype
+            )
             k_flat.index_copy_(0, slots, keys)
 
     @torch.inference_mode()
@@ -898,9 +900,9 @@ class SharedCacheSession:
         from minisgl.models.qwen3_5_mrope import get_rope_index
 
         assert mm_token_type_ids is not None and image_grid_thw is not None
-        assert self._model_config is not None and self._model_config.is_multimodal, (
-            "multimodal prefill on a model without a vision config"
-        )
+        assert (
+            self._model_config is not None and self._model_config.is_multimodal
+        ), "multimodal prefill on a model without a vision config"
         return get_rope_index(
             input_ids.cpu(),
             mm_token_type_ids.cpu(),
