@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Tuple
 
 import torch
 from minisgl.core import get_global_ctx
-from minisgl.layers import BaseOP, OPList, ParallelLMHead, RMSNormFused, VocabParallelEmbedding
+from minisgl.layers import BaseOP, GemmaRMSNormFused, OPList, ParallelLMHead, VocabParallelEmbedding
 from minisgl.utils import nvtx_annotate
 
 from .base import BaseLLMModel
@@ -29,8 +29,8 @@ class Qwen3_5DecoderLayer(BaseOP):
             self.self_attn = Qwen3_5Attention(config, kv_idx)
             self._is_linear = False
         self.mlp = self.mlp_cls(config)
-        self.input_layernorm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNormFused(
+        self.input_layernorm = GemmaRMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = GemmaRMSNormFused(
             size=config.hidden_size, eps=config.rms_norm_eps
         )
         self._layer_id = layer_id
@@ -75,7 +75,7 @@ class Qwen3_5Model(BaseOP):
             else:
                 kv_idx += 1
         self.layers = OPList(layers)
-        self.norm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = GemmaRMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,

@@ -62,6 +62,17 @@ def parse_args(argv: list[str] | None = None) -> DemoConfig:
         default=DEFAULT_PAGE_SIZE,
         help="The number of tokens in a page.",
     )
+    p.add_argument(
+        "--num-pages",
+        type=int,
+        default=None,
+        help="Override the number of KV-cache pages (useful for deterministic smoke tests).",
+    )
+    p.add_argument(
+        "--attention-backend",
+        default="auto",
+        help="MiniSGL attention backend (auto, fi, fa, trtllm, or a prefill,decode pair).",
+    )
     args = p.parse_args(argv)
     return DemoConfig(
         model=args.model,
@@ -70,6 +81,8 @@ def parse_args(argv: list[str] | None = None) -> DemoConfig:
         probe_period=args.probe_period,
         memory_ratio=args.memory_ratio,
         page_size=args.page_size,
+        num_pages=args.num_pages,
+        attention_backend=args.attention_backend,
     )
 
 

@@ -1,4 +1,5 @@
 import functools
+import os
 from typing import Dict, Tuple
 
 import torch
@@ -19,6 +20,24 @@ def _use_torch_moe_fallback(device: torch.device) -> bool:
     return False
 
 
+@functools.cache
+def _vllm_custom_moe_ops():
+    """Return vLLM's CUDA routing ops when this environment provides them.
+
+    The sgl-kernel wheel available on GB10 is an SM100/CUDA-12 build and cannot
+    be loaded by the CUDA-13 runtime.  vLLM's local CUDA-13 extension supports
+    SM121, and its top-k/alignment ABI is compatible with this backend.  Keep
+    this optional: source installs without vLLM retain the exact Torch path.
+    """
+    if os.environ.get("MINISGL_DISABLE_VLLM_MOE_ROUTING", "0") == "1":
+        return None
+    try:
+        import vllm._custom_ops as ops
+    except (ImportError, OSError):
+        return None
+    return ops
+
+
 def fused_topk(
     hidden_states: torch.Tensor,
     gating_output: torch.Tensor,
@@ -28,6 +47,27 @@ def fused_topk(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if _use_torch_moe_fallback(hidden_states.device):
         assert hidden_states.shape[0] == gating_output.shape[0], "Number of tokens mismatch"
+        vllm_ops = _vllm_custom_moe_ops() if hidden_states.is_cuda else None
+        if vllm_ops is not None:
+            rows = hidden_states.shape[0]
+            topk_weights = torch.empty(
+                rows, topk, dtype=torch.float32, device=hidden_states.device
+            )
+            topk_ids = torch.empty(
+                rows, topk, dtype=torch.int32, device=hidden_states.device
+            )
+            token_expert_indices = torch.empty_like(topk_ids)
+            vllm_ops.topk_softmax(
+                topk_weights,
+                topk_ids,
+                token_expert_indices,
+                gating_output.float(),
+                renormalize,
+            )
+            if num_token_non_padded is not None:
+                indices = torch.arange(0, rows, device=hidden_states.device)
+                topk_ids[indices >= num_token_non_padded, :] = -1
+            return topk_weights, topk_ids
         # sgl_kernel's prebuilt SM100 extension is not compatible with SM121
         # (GB10): its topk_softmax launch completes without writing its outputs.
         # Keep routing correct and portable by using native Torch operations.  The
@@ -99,6 +139,28 @@ def moe_align_block_size(
     """
     if _use_torch_moe_fallback(topk_ids.device):
         max_num_tokens_padded = topk_ids.numel() + (num_experts + 1) * (block_size - 1)
+        vllm_ops = _vllm_custom_moe_ops() if topk_ids.is_cuda else None
+        if vllm_ops is not None:
+            sorted_ids = torch.empty(
+                (max_num_tokens_padded,), dtype=torch.int32, device=topk_ids.device
+            )
+            max_num_m_blocks = div_ceil(max_num_tokens_padded, block_size)
+            expert_ids = torch.empty(
+                (max_num_m_blocks,), dtype=torch.int32, device=topk_ids.device
+            )
+            num_tokens_post_pad = torch.empty(
+                (1,), dtype=torch.int32, device=topk_ids.device
+            )
+            vllm_ops.moe_align_block_size(
+                topk_ids,
+                num_experts,
+                block_size,
+                sorted_ids,
+                expert_ids,
+                num_tokens_post_pad,
+                None,
+            )
+            return sorted_ids, expert_ids, num_tokens_post_pad
         sentinel = topk_ids.numel()
         sorted_ids = torch.full(
             (max_num_tokens_padded,), sentinel, dtype=torch.int32, device=topk_ids.device
@@ -194,6 +256,8 @@ def fused_experts_impl(
     topk_ids: torch.Tensor,
     activation: str = "silu",
     apply_router_weight_on_input: bool = False,
+    w1_scale: torch.Tensor | None = None,
+    w2_scale: torch.Tensor | None = None,
 ) -> torch.Tensor:
     from minisgl.kernel import fused_moe_kernel_triton, moe_sum_reduce_triton
     from minisgl.layers import gelu_and_mul, silu_and_mul
@@ -233,6 +297,13 @@ def fused_experts_impl(
         (M, topk_ids.shape[1], w2.shape[1]),
     )
     compute_type = hidden_states.dtype
+    use_fp8 = w1.dtype == torch.float8_e4m3fn
+    if use_fp8:
+        from minisgl.kernel.fp8 import quantize_fp8_groups
+        if w2.dtype != w1.dtype or w1_scale is None or w2_scale is None:
+            raise ValueError("Block FP8 requires both expert matrices and scales")
+    elif w1_scale is not None or w2_scale is not None:
+        raise ValueError("Scales supplied for non-FP8 experts")
 
     out_hidden_states = hidden_states
     curr_hidden_states = hidden_states
@@ -243,6 +314,8 @@ def fused_experts_impl(
     intermediate_cache2 = intermediate_cache2[: tokens_num * topk_ids.shape[1]]
     intermediate_cache3 = intermediate_cache3[:tokens_num]
     config = get_config_func(tokens_num)
+    if use_fp8:
+        config = {**config, "BLOCK_SIZE_K": 128}
 
     curr_topk_ids = topk_ids[begin_token_idx:end_token_idx]
     curr_topk_weights = topk_weights[begin_token_idx:end_token_idx]
@@ -251,8 +324,10 @@ def fused_experts_impl(
         curr_topk_ids, config["BLOCK_SIZE_M"], E
     )
 
+    gemm_input, input_scale = (quantize_fp8_groups(curr_hidden_states) if use_fp8
+                              else (curr_hidden_states, None))
     fused_moe_kernel_triton(
-        curr_hidden_states,
+        gemm_input,
         w1,
         intermediate_cache1,
         curr_topk_weights,
@@ -264,11 +339,15 @@ def fused_experts_impl(
         topk_ids.shape[1],
         config,
         compute_type=compute_type,
+        a_scale=input_scale,
+        b_scale=w1_scale,
     )
     FN_MAP = {"silu": silu_and_mul, "gelu": gelu_and_mul}
     FN_MAP[activation](intermediate_cache1.view(-1, N), intermediate_cache2)
+    gemm_input, input_scale = (quantize_fp8_groups(intermediate_cache2) if use_fp8
+                              else (intermediate_cache2, None))
     fused_moe_kernel_triton(
-        intermediate_cache2,
+        gemm_input,
         w2,
         (intermediate_cache3),
         curr_topk_weights,
@@ -280,6 +359,8 @@ def fused_experts_impl(
         1,
         config,
         compute_type=compute_type,
+        a_scale=input_scale,
+        b_scale=w2_scale,
     )
 
     moe_sum_reduce_triton(
@@ -300,6 +381,8 @@ class FusedMoe(BaseMoeBackend):
         renormalize: bool,
         activation: str = "silu",
         apply_router_weight_on_input: bool = False,
+        w1_scale: torch.Tensor | None = None,
+        w2_scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
         topk_weights, topk_ids = fused_topk(
             hidden_states=hidden_states,
@@ -315,4 +398,6 @@ class FusedMoe(BaseMoeBackend):
             topk_ids,
             activation,
             apply_router_weight_on_input=apply_router_weight_on_input,
+            w1_scale=w1_scale,
+            w2_scale=w2_scale,
         )

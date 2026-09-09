@@ -31,6 +31,7 @@ Or run the test module directly (``__name__ == "__main__"`` runs pytest then the
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 from typing import List
 
 import pytest
@@ -41,6 +42,7 @@ from minisgl.shared_cache import (
     WorkerGroup,
     apply_rope_correction,
 )
+from minisgl.shared_cache.gdn_affine import compose_gdn_affines
 
 # =============================================================================
 # Unit tests — no model/GPU needed
@@ -125,14 +127,76 @@ class TestSharedBlock:
     def test_clear(self):
         block = SharedBlock(torch.device("cpu"), page_size=4)
         block.grow_pages(torch.tensor([8, 12], dtype=torch.int32), 6)
+        block.affine_storage_pair(
+            0, num_layers=2, num_heads=2, d_k=4, d_v=4
+        )
         pages = block.clear()
         assert pages == [8, 12]
         assert block.num_tokens == 0 and block.num_pages == 0
+        assert block.linear_affine_storage is None
 
     def test_unique_block_ids(self):
         b1 = SharedBlock(torch.device("cpu"))
         b2 = SharedBlock(torch.device("cpu"))
         assert b1.block_id != b2.block_id
+
+    def test_append_affines_remain_in_destination_owned_slab(self):
+        layers, heads, dim = 2, 2, 4
+        session = SharedCacheSession.__new__(SharedCacheSession)
+        session.sc_gdn = SimpleNamespace(
+            num_linear_layers=layers,
+            num_heads=heads,
+            head_k_dim=dim,
+            head_v_dim=dim,
+        )
+        left = SharedBlock(torch.device("cpu"))
+        right = SharedBlock(torch.device("cpu"))
+        left.num_tokens = right.num_tokens = 1
+        left.token_ids = [11]
+        right.token_ids = [22]
+
+        generator = torch.Generator().manual_seed(711)
+        for layer_idx in range(layers):
+            for block in (left, right):
+                A, B = block.affine_storage_pair(
+                    layer_idx,
+                    num_layers=layers,
+                    num_heads=heads,
+                    d_k=dim,
+                    d_v=dim,
+                )
+                A.copy_(torch.randn(A.shape, generator=generator))
+                B.copy_(torch.randn(B.shape, generator=generator))
+                block.set_linear_affine(layer_idx, (A, B))
+
+        expected = {
+            layer_idx: compose_gdn_affines(
+                A_first=left.linear_affine[layer_idx][0].clone(),
+                B_first=left.linear_affine[layer_idx][1].clone(),
+                A_second=right.linear_affine[layer_idx][0],
+                B_second=right.linear_affine[layer_idx][1],
+            )
+            for layer_idx in range(layers)
+        }
+        left_storage = left.linear_affine_storage
+        assert left_storage is not None
+
+        session._finish_block_merge(
+            destination=left,
+            left=left,
+            right=right,
+            left_span=1,
+            right_span=1,
+            keep_left_state=True,
+        )
+
+        assert left.linear_affine_storage is left_storage
+        for layer_idx, (expected_A, expected_B) in expected.items():
+            actual_A, actual_B = left.linear_affine[layer_idx]
+            assert actual_A.untyped_storage().data_ptr() == left_storage.untyped_storage().data_ptr()
+            assert actual_B.untyped_storage().data_ptr() == left_storage.untyped_storage().data_ptr()
+            torch.testing.assert_close(actual_A, expected_A)
+            torch.testing.assert_close(actual_B, expected_B)
 
 
 class TestWorkerGroup:

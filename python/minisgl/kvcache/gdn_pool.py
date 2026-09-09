@@ -56,6 +56,14 @@ class GDNStatePool:
     def device(self) -> torch.device:
         return self._device
 
+    @property
+    def storage_bytes(self) -> int:
+        """Bytes reserved by the recurrent and convolution state tensors."""
+        return sum(
+            tensor.numel() * tensor.element_size()
+            for tensor in (self.recurrent_state, self.conv_state)
+        )
+
     def reset(self, lin_idx: int, table_idx: int) -> None:
         """Clear a single request's state for one linear layer (fresh prefill)."""
         self.conv_state[lin_idx, table_idx].zero_()

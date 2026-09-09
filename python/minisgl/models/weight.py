@@ -73,9 +73,11 @@ def _get_merge_info(key: str):
 
 
 def _is_plus_one_norm(name: str) -> bool:
-    """Qwen3.5 standard RMSNorms use the ``(1 + weight)`` convention (like Qwen3-Next),
-    so we fold the +1 into the weight to reuse the plain flashinfer rmsnorm kernels.
-    The gated ``linear_attn.norm`` keeps plain weights and is excluded."""
+    """Identify Qwen3.5's Gemma-style norms, excluding gated linear_attn.norm.
+
+    Their checkpoint weights must stay raw: GemmaRMSNorm adds one in FP32
+    inside the kernel. Retained as a diagnostic/model-contract helper.
+    """
     return (
         name.endswith(".input_layernorm.weight")
         or name.endswith(".post_attention_layernorm.weight")
@@ -92,7 +94,9 @@ def _get_expert_stack_info(key: str) -> tuple[str, int] | None:
         return None
 
     packed_name = match.group("name")
-    if packed_name.endswith(".weight"):
+    if packed_name.endswith(".weight_scale_inv"):
+        packed_name = packed_name.removesuffix(".weight_scale_inv") + "_scale_inv"
+    elif packed_name.endswith(".weight"):
         packed_name = packed_name.removesuffix(".weight")
     return f"{match.group('prefix')}.{packed_name}", int(match.group("idx"))
 
@@ -107,6 +111,15 @@ def load_weight(model_path: str, device: torch.device) -> Iterator[Tuple[str, to
     files = glob.glob(f"{model_folder}/*.safetensors")
     files = [f for f in files if not f.endswith("consolidated.safetensors")] or files
     tp_info = get_tp_info()
+    quant_config = getattr(cached_load_hf_config(model_path), "quantization_config", None)
+    if quant_config:
+        if (quant_config.get("quant_method") != "fp8"
+                or quant_config.get("fmt", "e4m3") != "e4m3"
+                or quant_config.get("weight_block_size") != [128, 128]
+                or quant_config.get("activation_scheme") != "dynamic"):
+            raise ValueError("Only serialized dynamic FP8 with 128x128 blocks is supported")
+        if tp_info.size != 1:
+            raise NotImplementedError("Official block-FP8 loading is currently validated for TP1 only")
 
     # Buffer for merge groups: merged_key -> {slot: tensor}
     merge_buf: Dict[str, Dict[str, torch.Tensor]] = {}
@@ -131,9 +144,6 @@ def load_weight(model_path: str, device: torch.device) -> Iterator[Tuple[str, to
                 name = name.removeprefix("language_model.")
                 tensor = _shard_tensor(name, raw, tp_info.rank, tp_info.size, config.num_kv_heads)
                 del raw
-                if config.is_hybrid and _is_plus_one_norm(name):
-                    tensor = tensor + 1.0
-
                 if (info := _get_merge_info(name)) is None:
                     out = (name, tensor)
                 else:

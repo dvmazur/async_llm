@@ -172,6 +172,7 @@ class TestQueueMechanics:
         assert engine.tick() == "decode"
         assert not engine.has_work
 
+
     def test_decode_batches_all_pending(self, stub_engine):
         engine, session = stub_engine
         prompt = _prefilled_block(engine, [1, 2])

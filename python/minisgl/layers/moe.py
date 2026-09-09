@@ -41,6 +41,23 @@ class MoELayer(BaseOP):
             hidden_size,
             intermediate_size_per_partition,
         )
+        self.gate_up_proj_scale_inv = None
+        self.down_proj_scale_inv = None
+
+    def load_state_dict(self, state_dict, *, prefix="", _internal=False):
+        key = f"{prefix}.gate_up_proj" if prefix else "gate_up_proj"
+        if state_dict[key].dtype == torch.float8_e4m3fn:
+            for name in ("gate_up_proj", "down_proj"):
+                key = f"{prefix}.{name}" if prefix else name
+                value, scale = state_dict[key], state_dict[key + "_scale_inv"]
+                e, n, k = value.shape
+                if (value.shape != getattr(self, name).shape or value.dtype != torch.float8_e4m3fn
+                        or n % 128 or k % 128 or scale.shape != (e, n // 128, k // 128)
+                        or scale.dtype != torch.float32):
+                    raise ValueError(f"Invalid block-FP8 experts/scales: {key}")
+                setattr(self, name, torch.empty_like(value, device="meta"))
+                setattr(self, name + "_scale_inv", torch.empty_like(scale, device="meta"))
+        super().load_state_dict(state_dict, prefix=prefix, _internal=_internal)
 
     def forward(self, hidden_states: torch.Tensor, router_logits: torch.Tensor):
         ctx = get_global_ctx()
@@ -53,6 +70,8 @@ class MoELayer(BaseOP):
             renormalize=self.renormalize,
             activation=self.activation,
             apply_router_weight_on_input=self.apply_router_weight_on_input,
+            **({"w1_scale": self.gate_up_proj_scale_inv, "w2_scale": self.down_proj_scale_inv}
+               if self.gate_up_proj_scale_inv is not None else {}),
         )
         if self.tp_size > 1:
             final_hidden_states = self._comm.all_reduce(final_hidden_states)

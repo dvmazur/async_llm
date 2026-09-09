@@ -38,10 +38,15 @@ from test_async_cache_engine import CPU, VOCAB, StubSession
 # =============================================================================
 
 
-def _make_llm():
+def _make_llm(*, batching_yield_rounds: int | None = None):
     session = StubSession()
     engine = AsyncCacheEngine(session=session, sampler=Sampler(CPU, VOCAB))
-    return AsyncLLM(async_engine=engine), session
+    kwargs = (
+        {}
+        if batching_yield_rounds is None
+        else {"batching_yield_rounds": batching_yield_rounds}
+    )
+    return AsyncLLM(async_engine=engine, **kwargs), session
 
 
 def test_public_imports():
@@ -150,6 +155,44 @@ def test_two_streams_batch_together():
         await llm.close()
 
     asyncio.run(main())
+
+
+def test_extra_yield_rounds_coalesce_nested_successor_stages():
+    """A parent behind nested gather callbacks still joins its peer's batch."""
+
+    async def main():
+        llm, session = _make_llm(batching_yield_rounds=3)
+
+        async def pipeline(label: int, nesting: int):
+            first = await llm.create_block()
+            await llm.prefill_block([label], write_to=first)
+
+            async def descend(depth: int):
+                if depth == 0:
+                    successor = await llm.create_block()
+                    await llm.prefill_block([label + 10], write_to=successor)
+                    return
+                await asyncio.gather(descend(depth - 1))
+
+            await descend(nesting)
+
+        # The second pipeline needs three event-loop turns to propagate its
+        # completed first stage through nested gather callbacks.
+        await asyncio.gather(pipeline(1, 0), pipeline(2, 3))
+
+        assert len(session.prefill_batches) == 2
+        assert [block.token_ids for block in session.prefill_batches[0]] == [[1], [2]]
+        assert [block.token_ids for block in session.prefill_batches[1]] == [[11], [12]]
+        await llm.close()
+
+    asyncio.run(main())
+
+
+def test_batching_yield_rounds_must_be_positive():
+    session = StubSession()
+    engine = AsyncCacheEngine(session=session, sampler=Sampler(CPU, VOCAB))
+    with pytest.raises(ValueError, match="batching_yield_rounds"):
+        AsyncLLM(async_engine=engine, batching_yield_rounds=0)
 
 
 def test_break_and_resume():

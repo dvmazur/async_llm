@@ -63,9 +63,18 @@ class CacheBlock:
         # (A_hat [1,H,d_k,d_k], B_hat [1,H,d_v,d_k]).  Composing a worker's chain
         # of these folds into an initial recurrent state (see shared_cache.gdn).
         self.linear_affine: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
+        # Production Qwen blocks keep all square per-layer A/B summaries in one
+        # block-owned slab.  Ownership follows the block lifetime instead of a
+        # heterogeneous prefill batch, so freeing one block never remains pinned
+        # by an unrelated worker that happened to share that batch.
+        self.linear_affine_storage: Optional[torch.Tensor] = None
+        # Monotonic per-layer revisions make persistent compose-cache keys safe
+        # across writes, clear/reuse, allocator pointer reuse, and block merges.
+        self.linear_affine_revision: Dict[int, int] = {}
         # Rolling causal-conv window (last conv_kernel columns) per linear layer,
         # [conv_dim, conv_kernel].  Standard full-attention blocks leave these empty.
         self.linear_conv_state: Dict[int, torch.Tensor] = {}
+
     @property
     def mrope_span(self) -> int:
         """Running-mRoPE advance over this block (== num_tokens unless overridden)."""
@@ -99,17 +108,21 @@ class CacheBlock:
 
     def page_starts_tensor(self) -> torch.Tensor:
         """Page-start token slots as a device tensor ``[num_pages]``."""
-        return torch.tensor(self.page_starts, dtype=torch.int32, device=self.device)
+        from minisgl.kernel.metadata import device_metadata
+        return device_metadata(self.page_starts, dtype=torch.int32, device=self.device)
 
     def page_numbers_tensor(self) -> torch.Tensor:
         """Physical page numbers (= page_start // page_size) for paged kernels."""
-        return self.page_starts_tensor() // self.page_size
+        starts = self.page_starts_tensor()
+        return starts if self.page_size == 1 else starts // self.page_size
 
     def token_slots_tensor(self) -> torch.Tensor:
         """Per-token physical slots ``[num_tokens]`` (flattened paged layout)."""
         if self.num_tokens == 0:
             return torch.empty(0, dtype=torch.int32, device=self.device)
         starts = self.page_starts_tensor()
+        if self.page_size == 1:
+            return starts[: self.num_tokens]
         offsets = torch.arange(self.page_size, dtype=torch.int32, device=self.device)
         return (starts[:, None] + offsets[None, :]).flatten()[: self.num_tokens]
 
@@ -151,9 +164,47 @@ class CacheBlock:
         self.num_tokens = 0
         self.mrope_span_override = None
         self.token_ids.clear()
+        for layer_idx in self.linear_affine:
+            self.linear_affine_revision[layer_idx] = (
+                self.linear_affine_revision.get(layer_idx, 0) + 1
+            )
         self.linear_affine.clear()
+        self.linear_affine_storage = None
         self.linear_conv_state.clear()
         return pages
+
+    def affine_storage_pair(
+        self,
+        layer_idx: int,
+        *,
+        num_layers: int,
+        num_heads: int,
+        d_k: int,
+        d_v: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return contiguous block-owned output views for one GDN layer."""
+
+        if d_k != d_v:
+            raise ValueError("block-owned affine slabs currently require square GDN state")
+        expected = (num_layers, 2, num_heads, d_k, d_k)
+        if self.linear_affine_storage is None:
+            self.linear_affine_storage = torch.empty(
+                expected, dtype=torch.float32, device=self.device
+            )
+        elif self.linear_affine_storage.shape != expected:
+            raise ValueError(
+                "existing GDN affine slab has shape "
+                f"{tuple(self.linear_affine_storage.shape)}, expected {expected}"
+            )
+        A = self.linear_affine_storage[layer_idx, 0].unsqueeze(0)
+        B = self.linear_affine_storage[layer_idx, 1].unsqueeze(0)
+        assert A.is_contiguous() and B.is_contiguous()
+        return A, B
+
+    def set_linear_affine(self, layer_idx: int, pair: Tuple[torch.Tensor, torch.Tensor]) -> None:
+        """Replace one affine summary and advance its persistent cache revision."""
+        self.linear_affine[layer_idx] = pair
+        self.linear_affine_revision[layer_idx] = self.linear_affine_revision.get(layer_idx, 0) + 1
 
     def __repr__(self) -> str:
         return (

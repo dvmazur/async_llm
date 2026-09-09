@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from minisgl.attention import BaseAttnBackend, BaseAttnMetadata
     from minisgl.kvcache import BaseCacheHandle, BaseKVCachePool, GDNStatePool
     from minisgl.moe import BaseMoeBackend
-    from minisgl.shared_cache.gdn import SharedCacheGDN
+    from minisgl.shared_cache.gdn import MixedSharedCacheGDN, SharedCacheGDN
 
 
 @dataclass
@@ -148,7 +148,7 @@ class Context:
     gdn_state: GDNStatePool | None = field(default=None, init=False)
     # Async-reasoning GDN composer; set by SharedCacheSession during a shared-cache
     # forward, None on the normal serving path (GDN layers then use gdn_state).
-    gdn_ar: "SharedCacheGDN | None" = field(default=None, init=False)
+    gdn_ar: "SharedCacheGDN | MixedSharedCacheGDN | None" = field(default=None, init=False)
     _batch: Batch | None = field(default=None, init=False)
 
     @property

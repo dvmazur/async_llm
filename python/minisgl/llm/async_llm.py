@@ -20,8 +20,8 @@ raw logits; ``prefill_block`` and ``async_generate`` remain the convenience
 paths with engine-side sampling.
 
 Everything runs single-threaded: the GPU forward blocks the loop for one tick,
-then every consumer woken by that tick gets to enqueue its next request before
-the following batch is formed (one ``sleep(0)`` round).  Concurrent agents
+then consumers woken by that tick get a configurable number of event-loop turns
+to enqueue their next request before the following batch is formed.  Concurrent agents
 therefore decode in the same ``WorkerGroup`` step, with same-step cross-worker
 visibility, exactly like the lock-step ``SharedCacheSession`` API — and their
 prefill-mode requests likewise share one prefill forward.
@@ -84,8 +84,12 @@ class AsyncLLM:
         engine: "Engine | None" = None,
         async_engine: Optional[AsyncCacheEngine] = None,
         dtype: torch.dtype = torch.bfloat16,
+        batching_yield_rounds: int = 3,
         **engine_kwargs,
     ):
+        if batching_yield_rounds < 1:
+            raise ValueError("batching_yield_rounds must be at least 1")
+        self.batching_yield_rounds = int(batching_yield_rounds)
         self._owns_engine = False
         if async_engine is None:
             if engine is None:
@@ -99,7 +103,19 @@ class AsyncLLM:
                 if "tp_info" not in engine_kwargs:
                     engine_kwargs["tp_info"] = DistributedInfo(rank=0, size=1)
 
-                engine = Engine(EngineConfig(model_path=model_path, dtype=dtype, **engine_kwargs))
+                config = EngineConfig(model_path=model_path, dtype=dtype, **engine_kwargs)
+                if (
+                    "prefer_expandable_segments" not in engine_kwargs
+                    and config.tp_info.size == 1
+                    and config.model_config.is_hybrid
+                ):
+                    # GDN outputs/slabs are large and change with the ready batch.
+                    # Leave supplied engines, TP, other models and explicit
+                    # caller allocator policies unchanged.
+                    from dataclasses import replace
+
+                    config = replace(config, prefer_expandable_segments=True)
+                engine = Engine(config)
                 self._owns_engine = True
             async_engine = AsyncCacheEngine(engine)
         self.engine = engine
@@ -388,10 +404,13 @@ class AsyncLLM:
                 await self._work_event.wait()
                 if self._closed:
                     return
-            # One yield so every consumer woken by the previous tick (or by
-            # the wake-up above) gets to enqueue before the batch is formed —
-            # this is what keeps concurrent agents in the same WorkerGroup.
-            await asyncio.sleep(0)
+            # Let consumers woken by the previous tick (including parents of
+            # nested gather/tasks) enqueue before the next batch is formed.
+            # More than one round can coalesce dependent stages without adding
+            # a wall-clock timer. Three rounds cover the nested-gather depth in
+            # the async-reasoning pipeline and are the measured default.
+            for _ in range(self.batching_yield_rounds):
+                await asyncio.sleep(0)
             try:
                 self.async_engine.tick()
             except Exception:

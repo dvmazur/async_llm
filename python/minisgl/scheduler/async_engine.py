@@ -34,6 +34,7 @@ decode with ``(token_id, raw_logits)``.
 from __future__ import annotations
 
 from collections import deque
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Deque, List, Optional, Sequence
 
@@ -121,8 +122,9 @@ class AsyncCacheEngine:
     prefill tick runs every pending prefill request that can share a forward
     (see ``_take_prefill_group``) in one batch; a decode tick batches every
     pending decode request into a single ``WorkerGroup`` step.  Prefill and
-    decode are still scheduled as separate forwards; mixing them in one is a
-    later tick-policy upgrade.
+    decode normally use separate forwards. ``MINISGL_AR_MIXED_BATCH=1`` opts into
+    a partially mixed model pass when both queues are ready: shared projections
+    and MoE, prefill then decode attention/GDN inside each layer.
     """
 
     def __init__(
@@ -131,6 +133,7 @@ class AsyncCacheEngine:
         *,
         session: "SharedCacheSession | None" = None,
         sampler: "Sampler | None" = None,
+        enable_mixed_batch: bool | None = None,
     ):
         if session is None:
             assert engine is not None, "AsyncCacheEngine needs an engine or a session"
@@ -140,6 +143,10 @@ class AsyncCacheEngine:
             assert engine is not None, "AsyncCacheEngine needs an engine or a sampler"
             sampler = engine.sampler
         self.sampler = sampler
+        self.enable_mixed_batch = (
+            os.environ.get("MINISGL_AR_MIXED_BATCH", "0") == "1"
+            if enable_mixed_batch is None else enable_mixed_batch
+        )
         # Swapped for asyncio's loop.create_future by the asyncio frontend.
         self.future_factory: Callable[[], Any] = SimpleFuture
         self._prefill_queue: Deque[PrefillRequest] = deque()
@@ -241,15 +248,42 @@ class AsyncCacheEngine:
     # ------------------------------------------------------------------
 
     def tick(self) -> Optional[str]:
-        """Run at most one forward; returns ``"prefill"``/``"decode"`` or
+        """Run at most one forward; returns ``"prefill"``/``"decode"``/``"mixed"`` or
         ``None`` when both queues are empty."""
         if self._prefill_queue:
-            self._run_prefill_batch()
+            reqs = self._take_prefill_group()
+            # Do not move decode ahead of another already-queued prefill group.
+            # Its dependencies may require those writes first.
+            if self.enable_mixed_batch and not self._prefill_queue and self._decode_queue:
+                try:
+                    admitted = self._mixed_admitted(reqs)
+                except Exception as exc:
+                    # Prefills have been popped, decodes have not. Never leave
+                    # the popped futures unresolved on a planning failure.
+                    for req in reqs:
+                        if not req.future.done():
+                            req.future.set_exception(exc)
+                    raise
+                if admitted:
+                    self._run_mixed_batch(reqs)
+                    return "mixed"
+            self._run_prefill_batch(reqs)
             return "prefill"
         if self._decode_queue:
             self._run_decode_batch()
             return "decode"
         return None
+
+    def _mixed_admitted(self, prefill_reqs) -> bool:
+        seen = set()
+        candidates = []
+        for req in self._decode_queue:
+            out_id = id(req.context.output_block)
+            if out_id not in seen:
+                seen.add(out_id)
+                candidates.append(req.context)
+        group = WorkerGroup(candidates)
+        return self.session.can_mix(self._prefill_jobs(prefill_reqs), group)
 
     def _take_prefill_group(self) -> List[PrefillRequest]:
         """Pop the longest prefix of the prefill queue that can share one forward.
@@ -279,9 +313,9 @@ class AsyncCacheEngine:
             context_ids |= ctx_ids
         return group
 
-    def _run_prefill_batch(self) -> None:
-        reqs = self._take_prefill_group()
-        jobs = [
+    @staticmethod
+    def _prefill_jobs(reqs):
+        return [
             PrefillJob(
                 block=req.write_to,
                 input_ids=req.input_ids,
@@ -292,6 +326,9 @@ class AsyncCacheEngine:
             )
             for req in reqs
         ]
+    def _run_prefill_batch(self, reqs=None) -> None:
+        reqs = self._take_prefill_group() if reqs is None else reqs
+        jobs = self._prefill_jobs(reqs)
         try:
             logits = self.session.prefill_batch(jobs)
         except Exception as exc:
@@ -304,7 +341,7 @@ class AsyncCacheEngine:
         for req, rows in zip(reqs, logits):
             req.future.set_result(rows[0].clone() if req.return_logits else None)
 
-    def _run_decode_batch(self) -> None:
+    def _take_decode_group(self) -> List[DecodeRequest]:
         # Take everything queued; reject late duplicates of an output block
         # (one agent, two concurrent steps — a user error) without failing the
         # whole tick.
@@ -320,6 +357,32 @@ class AsyncCacheEngine:
                 continue
             seen_outputs.add(out_id)
             reqs.append(req)
+        return reqs
+
+    def _run_mixed_batch(self, prefill_reqs) -> None:
+        decode_reqs = self._take_decode_group()
+        reqs = prefill_reqs + decode_reqs
+        try:
+            group = WorkerGroup([req.context for req in decode_reqs])
+            input_ids = torch.tensor([req.input_id for req in decode_reqs], dtype=torch.int32)
+            prefill_rows, logits = self.session.mixed_step(
+                self._prefill_jobs(prefill_reqs), group, input_ids
+            )
+            raw = {i: logits[i].clone() for i, req in enumerate(decode_reqs) if req.return_logits}
+            with torch.inference_mode():
+                tokens = self._select_tokens(logits, decode_reqs).tolist()
+        except Exception as exc:
+            for req in reqs:
+                if not req.future.done():
+                    req.future.set_exception(exc)
+            raise
+        for req, rows in zip(prefill_reqs, prefill_rows):
+            req.future.set_result(rows[0].clone() if req.return_logits else None)
+        for i, (req, token) in enumerate(zip(decode_reqs, tokens)):
+            req.future.set_result((int(token), raw[i]) if req.return_logits else int(token))
+
+    def _run_decode_batch(self) -> None:
+        reqs = self._take_decode_group()
         if not reqs:
             return
 

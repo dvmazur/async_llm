@@ -16,6 +16,8 @@ def fused_moe_kernel_triton(
     top_k: int,
     config: Dict[str, Any],
     compute_type: torch.dtype,
+    a_scale: torch.Tensor | None = None,
+    b_scale: torch.Tensor | None = None,
 ) -> None:
     import triton
     import triton.language as tl
@@ -35,6 +37,15 @@ def fused_moe_kernel_triton(
     else:
         even_Ks = False
     dtype = tl.bfloat16 if compute_type == torch.bfloat16 else tl.float16
+    use_fp8 = B.dtype == torch.float8_e4m3fn
+    if use_fp8:
+        assert A.dtype == B.dtype and a_scale is not None and b_scale is not None
+        assert B.shape[1] % 128 == B.shape[2] % 128 == 0
+        assert a_scale.shape == (A.shape[0], A.shape[1] // 128)
+        assert b_scale.shape == (B.shape[0], B.shape[1] // 128, B.shape[2] // 128)
+        assert a_scale.dtype == b_scale.dtype == torch.float32
+        assert a_scale.is_contiguous() and b_scale.is_contiguous()
+        assert config["BLOCK_SIZE_K"] == 128
     fused_moe_kernel[grid](
         A,
         B,
@@ -43,6 +54,8 @@ def fused_moe_kernel_triton(
         sorted_token_ids,
         expert_ids,
         num_tokens_post_padded,
+        a_scale,
+        b_scale,
         B.shape[1],
         B.shape[2] - padded_size,
         sorted_token_ids.shape[0],
@@ -58,6 +71,7 @@ def fused_moe_kernel_triton(
         top_k=top_k,  # type: ignore
         compute_type=dtype,  # type: ignore
         even_Ks=even_Ks,  # type: ignore
+        USE_FP8=use_fp8,
         **config,
     )
 

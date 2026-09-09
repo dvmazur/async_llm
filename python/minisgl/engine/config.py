@@ -33,6 +33,9 @@ class EngineConfig:
     # Default query-row budget per shared-cache prefill forward; None disables chunking.
     # Read by SharedCacheSession, not by the engine itself.
     max_prefill_rows: int | None = None
+    # Opt-in default for variable-size recurrent/affine state allocations.
+    # Explicit Torch allocator settings win; no backend switch is performed.
+    prefer_expandable_segments: bool = False
     generation_config: GenerationConfig = None
     distributed_addr: str = "tcp://127.0.0.1:2333"
 

@@ -1,0 +1,8 @@
+# Tested CUDA Graph deployment overlay (Linux, CUDA 13.0 wheels).
+# Apply when provisioning a NEW environment; do not reinstall a running one.
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.13.0+cu130
+torchvision==0.28.0+cu130
+transformers==5.12.1
+flashinfer-python==0.6.17
+flash-linear-attention[cuda]==0.5.2

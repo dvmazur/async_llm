@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Tuple
+import os
+import warnings
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
 from minisgl.core import get_global_ctx
+from minisgl.kernel.gdn_conv import causal_conv1d_silu
+from minisgl.kernel.gdn_norm import gated_rmsnorm
 from minisgl.layers import BaseOP, LinearReplicated
 from minisgl.utils import nvtx_annotate
 
@@ -12,6 +16,11 @@ if TYPE_CHECKING:
     from minisgl.core import Req
 
     from .config import ModelConfig
+
+
+_AFFINE_CAPTURE_MAX_PADDING_RATIO = float(
+    os.environ.get("MINISGL_GDN_AFFINE_CAPTURE_MAX_PADDING_RATIO", "0.0")
+)
 
 # Optional fast Gated DeltaNet kernels (flash-linear-attention, Triton).  When
 # present they replace the pure-torch chunk/recurrent scans below — a large speedup
@@ -23,9 +32,15 @@ try:
     from fla.ops.gated_delta_rule import (
         fused_recurrent_gated_delta_rule as _fla_recurrent,
     )
-except Exception:  # pragma: no cover - fla is optional
+except Exception as exc:  # pragma: no cover - depends on the optional GPU backend
     _fla_chunk = None
     _fla_recurrent = None
+    warnings.warn(
+        "Flash Linear Attention kernels are unavailable; Qwen3.5 GDN is falling back "
+        f"to the much slower pure-PyTorch implementation ({type(exc).__name__}: {exc}).",
+        RuntimeWarning,
+        stacklevel=2,
+    )
 
 
 def _l2norm(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -158,11 +173,23 @@ def _recurrent_gated_delta_rule(
 
 
 # ---- dispatchers: fast fla kernels when available, else pure-torch ----
-# Both take (B, T, H, D) inputs and l2-norm q/k internally; return
-# (core (B, T, H, Dv), final_state (B, H, Dk, Dv)).
+# Both take (B, T, H, D) inputs and l2-norm q/k internally.  State convention
+# is [B,H,Dk,Dv] by default and [B,H,Dv,Dk] when state_v_first=True; input and
+# returned final state always use the same convention.
 
 
-def _chunk_delta(query, key, value, g, beta, initial_state=None):
+def _chunk_delta(
+    query,
+    key,
+    value,
+    g,
+    beta,
+    initial_state=None,
+    *,
+    state_v_first=False,
+    cu_seqlens=None,
+    cu_seqlens_cpu=None,
+):
     if _fla_chunk is not None:
         return _fla_chunk(
             query,
@@ -173,11 +200,195 @@ def _chunk_delta(query, key, value, g, beta, initial_state=None):
             initial_state=initial_state,
             output_final_state=True,
             use_qk_l2norm_in_kernel=True,
+            state_v_first=state_v_first,
+            cu_seqlens=cu_seqlens,
+            cu_seqlens_cpu=cu_seqlens_cpu,
         )
-    return _chunk_gated_delta_rule(query, key, value, g, beta, initial_state=initial_state)
+    initial_state_hf = (
+        initial_state.transpose(-1, -2)
+        if state_v_first and initial_state is not None
+        else initial_state
+    )
+    if cu_seqlens is not None:
+        # FLA's varlen representation is [1, sum(T_i), H, D] plus offsets and
+        # one initial state per sequence.  Preserve the same API in the optional
+        # pure-PyTorch fallback by evaluating those independent spans in order.
+        assert query.shape[0] == 1, "varlen GDN expects a flattened batch dimension of one"
+        offsets = (
+            cu_seqlens_cpu.tolist()
+            if cu_seqlens_cpu is not None
+            else cu_seqlens.detach().cpu().tolist()
+        )
+        outputs = []
+        final_states = []
+        for worker, (start, end) in enumerate(zip(offsets, offsets[1:])):
+            state = (
+                None
+                if initial_state_hf is None
+                else initial_state_hf[worker : worker + 1]
+            )
+            output, final_state = _chunk_gated_delta_rule(
+                query[:, start:end],
+                key[:, start:end],
+                value[:, start:end],
+                g[:, start:end],
+                beta[:, start:end],
+                initial_state=state,
+            )
+            outputs.append(output)
+            final_states.append(final_state)
+        output = torch.cat(outputs, dim=1)
+        final_state_hf = torch.cat(final_states, dim=0)
+        final_state = final_state_hf.transpose(-1, -2) if state_v_first else final_state_hf
+        return output, final_state
+    output, final_state_hf = _chunk_gated_delta_rule(
+        query, key, value, g, beta, initial_state=initial_state_hf
+    )
+    final_state = final_state_hf.transpose(-1, -2) if state_v_first else final_state_hf
+    return output, final_state
 
 
-def _recurrent_delta(query, key, value, g, beta, initial_state):
+def _capture_affine_summary_fla(
+    ar,
+    lin_idx: int,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    *,
+    workers=None,
+    cu_seqlens=None,
+    cu_seqlens_cpu=None,
+) -> bool:
+    """Capture a whole block summary with one augmented FLA recurrence.
+
+    ``state=[A_hat; B_hat]`` and ``value=[0; v]`` make the ordinary GDN
+    recurrence update the two affine components together. Returns ``False``
+    when FLA or the shared-cache scan-state interface is unavailable, allowing
+    the exact token-loop implementation to remain the portable fallback.
+    """
+    if (
+        _fla_chunk is None
+        or not key.is_cuda
+        or not hasattr(ar, "affine_scan_initial_state")
+        or not hasattr(ar, "store_affine_scan_state")
+    ):
+        return False
+    d_k = key.shape[-1]
+    d_v = value.shape[-1]
+    num_heads = key.shape[-2]
+    initial_state = ar.affine_scan_initial_state(
+        lin_idx,
+        num_heads=num_heads,
+        d_k=d_k,
+        d_v=d_v,
+        workers=workers,
+    )
+    augmented_value = torch.cat(
+        [value.new_zeros(*value.shape[:-1], d_k), value], dim=-1
+    )
+    _, final_state = _chunk_delta(
+        key,
+        key,
+        augmented_value,
+        g,
+        beta,
+        initial_state=initial_state,
+        state_v_first=True,
+        cu_seqlens=cu_seqlens,
+        cu_seqlens_cpu=cu_seqlens_cpu,
+    )
+    ar.store_affine_scan_state(lin_idx, final_state, d_k=d_k, workers=workers)
+    return True
+
+
+def _core_and_capture_affine_fla(
+    ar,
+    lin_idx: int,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    *,
+    core_initial_state: Optional[torch.Tensor],
+    workers=None,
+    cu_seqlens=None,
+    cu_seqlens_cpu=None,
+) -> Optional[torch.Tensor]:
+    """Run the real GDN state and its block-affine summary in one FLA scan.
+
+    The old fast capture path launched two scans over the same token rows:
+    ``[S]`` with value ``v`` for model output, then ``[A; B]`` with value
+    ``[0; v]`` for the reusable block summary.  A delta-rule scan updates state
+    rows independently and shares ``k/g/beta``, so one state
+    ``[S; A; B]`` with value ``[v; 0; v]`` is exactly the same recurrence.
+
+    Returns only the model-output component.  ``None`` means that FLA is not
+    available, in which case callers retain the portable two-stage fallback.
+    """
+    if (
+        _fla_chunk is None
+        or not key.is_cuda
+        or not hasattr(ar, "affine_scan_initial_state")
+        or not hasattr(ar, "store_affine_scan_state")
+    ):
+        return None
+
+    d_k = key.shape[-1]
+    d_v = value.shape[-1]
+    num_heads = key.shape[-2]
+    affine_initial_state = ar.affine_scan_initial_state(
+        lin_idx,
+        num_heads=num_heads,
+        d_k=d_k,
+        d_v=d_v,
+        workers=workers,
+    )
+    if core_initial_state is None:
+        core_initial_state = affine_initial_state.new_zeros(
+            affine_initial_state.shape[0], num_heads, d_v, d_k
+        )
+    combined_initial_state = torch.cat(
+        (core_initial_state, affine_initial_state), dim=-2
+    )
+    combined_value = torch.cat(
+        (
+            value,
+            value.new_zeros(*value.shape[:-1], d_k),
+            value,
+        ),
+        dim=-1,
+    )
+    combined_output, combined_final_state = _chunk_delta(
+        query,
+        key,
+        combined_value,
+        g,
+        beta,
+        initial_state=combined_initial_state,
+        state_v_first=True,
+        cu_seqlens=cu_seqlens,
+        cu_seqlens_cpu=cu_seqlens_cpu,
+    )
+    ar.store_affine_scan_state(
+        lin_idx,
+        combined_final_state[..., d_v:, :],
+        d_k=d_k,
+        workers=workers,
+    )
+    return combined_output[..., :d_v]
+
+
+def _recurrent_delta(query, key, value, g, beta, initial_state, *, state_v_first=False):
+    if isinstance(initial_state, list):
+        if (_fla_recurrent is not None and query.is_cuda
+                and state_v_first and query.shape[1] == 1):
+            from minisgl.kernel.gdn_recurrent import recurrent_gdn_pointer
+
+            return recurrent_gdn_pointer(query, key, value, g, beta, initial_state)
+        # Portable/reference paths retain the exact dense recurrence and layout.
+        initial_state = torch.cat(initial_state, dim=0)
     if _fla_recurrent is not None:
         return _fla_recurrent(
             query,
@@ -188,13 +399,37 @@ def _recurrent_delta(query, key, value, g, beta, initial_state):
             initial_state=initial_state,
             output_final_state=True,
             use_qk_l2norm_in_kernel=True,
+            state_v_first=state_v_first,
         )
-    return _recurrent_gated_delta_rule(query, key, value, g, beta, initial_state)
+    initial_state_hf = initial_state.transpose(-1, -2) if state_v_first else initial_state
+    output, final_state_hf = _recurrent_gated_delta_rule(
+        query, key, value, g, beta, initial_state_hf
+    )
+    final_state = final_state_hf.transpose(-1, -2) if state_v_first else final_state_hf
+    return output, final_state
 
 
 # ============================================================================
 # Modules
 # ============================================================================
+
+
+def _gdn_gates_eager(a, b, A_log, dt_bias, *, beta_fp32=False):
+    """Prefill rounds beta to b's dtype; fused-reference decode keeps FP32."""
+    beta = b.float().sigmoid() if beta_fp32 else b.sigmoid()
+    g = -A_log.float().exp() * F.softplus(a.float() + dt_bias.float())
+    return beta, g
+
+
+# Compile a tensor-only function, not a bound method: all GDN layers share the
+# graph despite having different parameter objects. Dynamic row counts cover
+# decode and flattened/ragged prefill. Compilation is lazy; CPU stays eager.
+# Distinct dtype/rank/stride/inference-mode combinations still need separate
+# graphs. Allow those variants locally (including tiny-model regression tests)
+# without changing Dynamo's global limit or silently falling back to eager.
+_compiled_gdn_gates = torch.compile(
+    _gdn_gates_eager, fullgraph=True, dynamic=True, recompile_limit=32
+)
 
 
 class _Conv1d(BaseOP):
@@ -213,13 +448,7 @@ class _GatedRMSNorm(BaseOP):
         self._eps = eps
 
     def forward(self, x: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
-        dtype = x.dtype
-        x = x.to(torch.float32)
-        variance = x.pow(2).mean(-1, keepdim=True)
-        x = x * torch.rsqrt(variance + self._eps)
-        x = self.weight.to(torch.float32) * x
-        x = x * F.silu(gate.to(torch.float32))
-        return x.to(dtype)
+        return gated_rmsnorm(x,self.weight,gate,self._eps)
 
 
 class Qwen3_5GatedDeltaNet(BaseOP):
@@ -251,20 +480,22 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         self.norm = _GatedRMSNorm(self.head_v_dim, eps=config.rms_norm_eps)
         self.out_proj = LinearReplicated(self.value_dim, config.hidden_size, has_bias=False)
 
-    def _gates(self, a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        beta = b.sigmoid()
-        g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias.float())
-        return beta, g
+    def _gates(self, a: torch.Tensor, b: torch.Tensor, *, beta_fp32=False) -> Tuple[torch.Tensor, torch.Tensor]:
+        impl = _compiled_gdn_gates if a.is_cuda else _gdn_gates_eager
+        return impl(a, b, self.A_log, self.dt_bias, beta_fp32=beta_fp32)
 
     def _split_heads(self, qkv: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # qkv: (T, conv_dim) -> q/k (T, num_k_heads, head_k_dim), v (T, num_v_heads, head_v_dim)
+        # qkv: (..., conv_dim) -> q/k (..., num_k_heads, head_k_dim),
+        # v (..., num_v_heads, head_v_dim).  Keeping arbitrary leading dims lets
+        # the async-prefill path retain a real request batch instead of flattening
+        # it into a sequence of one-request kernel launches.
         q, k, v = torch.split(qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
-        q = q.reshape(q.shape[0], self.num_k_heads, self.head_k_dim)
-        k = k.reshape(k.shape[0], self.num_k_heads, self.head_k_dim)
-        v = v.reshape(v.shape[0], self.num_v_heads, self.head_v_dim)
+        q = q.reshape(*q.shape[:-1], self.num_k_heads, self.head_k_dim)
+        k = k.reshape(*k.shape[:-1], self.num_k_heads, self.head_k_dim)
+        v = v.reshape(*v.shape[:-1], self.num_v_heads, self.head_v_dim)
         if self._n_rep > 1:
-            q = q.repeat_interleave(self._n_rep, dim=1)
-            k = k.repeat_interleave(self._n_rep, dim=1)
+            q = q.repeat_interleave(self._n_rep, dim=-2)
+            k = k.repeat_interleave(self._n_rep, dim=-2)
         return q, k, v
 
     @nvtx_annotate("LinearAttn")
@@ -274,8 +505,8 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         # Async-reasoning shared-cache path: compose the initial recurrent state
         # from the worker's block chain and capture per-token affine updates.
         if ctx.gdn_ar is not None:
-            # the shared-cache path drives its own batches and never mixes the two phases
-            assert not batch.is_mixed, "async-reasoning path does not support mixed batches"
+            if batch.is_mixed:
+                return self._forward_ar_mixed(x, ctx.gdn_ar)
             if batch.is_prefill:
                 return self._forward_ar_prefill(x, ctx.gdn_ar)
             return self._forward_ar_decode(x, ctx.gdn_ar)
@@ -300,126 +531,349 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         )
 
     # --- async-reasoning prefill: one block per request, compose prior + capture ---
-    def _forward_ar_prefill(self, x, ar) -> torch.Tensor:
+    def _project_ar(self, x):
+        return tuple(proj.forward(x) for proj in (
+            self.in_proj_qkv, self.in_proj_z, self.in_proj_a, self.in_proj_b
+        ))
+
+    def _ar_output(self, core, project_output=True):
+        rows = core.reshape(-1, self.value_dim)
+        return self.out_proj.forward(rows) if project_output else rows
+
+    def _forward_ar_mixed(self, x, ar) -> torch.Tensor:
+        """Share GEMMs while preserving prefill-before-decode state updates."""
+        projected = self._project_ar(x)
+        split = ar.split
+        prefill = self._forward_ar_prefill(
+            x[:split], ar.prefill,
+            projected=tuple(t[:split] for t in projected), project_output=False,
+        )
+        # Compose decode initial states only AFTER the prefill has captured
+        # this layer's A/B and conv state. Keep the whole decode group together.
+        decode = self._forward_ar_decode(
+            x[split:], ar.decode,
+            projected=tuple(t[split:] for t in projected), project_output=False,
+        )
+        return self.out_proj.forward(torch.cat((prefill, decode), dim=0))
+
+    def _forward_ar_prefill(self, x, ar, *, projected=None, project_output=True) -> torch.Tensor:
         lin = self._lin_idx
-        # Reads are batched over the forward's chains; the recurrent scan is not,
-        # so a batch of prefills runs one scan per request over its own rows.
         prior_conv = ar.prior_conv_states(lin)  # (R, conv_dim, k) | None
         # fp32 initial state: the delta-rule kernels upcast to fp32 anyway, and
         # fp32 composition avoids bf16 error compounding across long chains.
         initial_state = ar.compose_initial_recurrent_state(
-            lin, dtype=torch.float32
-        )  # (R,H,dk,dv)|None
+            lin, dtype=torch.float32, state_v_first=True
+        )  # (R,H,dv,dk)|None
         segments = ar.prefill_segments
         if segments is None or len(segments) == 1:
-            return self._forward_ar_prefill_one(x, ar, 0, prior_conv, initial_state)
-
-        outs = []
-        offset = 0
-        for w, length in enumerate(segments):
-            outs.append(
-                self._forward_ar_prefill_one(
-                    x[offset : offset + length], ar, w, prior_conv, initial_state
-                )
+            return self._forward_ar_prefill_one(
+                x, ar, 0, prior_conv, initial_state,
+                projected=projected, project_output=project_output,
             )
-            offset += length
-        assert offset == x.shape[0], "prefill_segments do not cover the batch"
-        return torch.cat(outs, dim=0)
 
-    def _forward_ar_prefill_one(self, x, ar, w: int, prior_conv, initial_state) -> torch.Tensor:
+        assert segments and all(length > 0 for length in segments), (
+            "prefill_segments must contain positive lengths"
+        )
+        assert sum(segments) == x.shape[0], "prefill_segments do not cover the batch"
+
+        # The scheduler commonly presents many jobs with exactly the same number
+        # of rows (most importantly, batched one-token extends).  Preserve that
+        # request dimension through projections, convolution, FLA and affine
+        # capture.  Previously this path executed the complete GDN layer once per
+        # request, turning e.g. batch 64 into 64 GEMVs and 64 recurrent launches.
+        if segments[0] == 1 and all(length == 1 for length in segments):
+            return self._forward_ar_prefill_equal_length(
+                x, ar, len(segments), segments[0], prior_conv, initial_state,
+                projected=projected, project_output=project_output,
+            )
+
+        return self._forward_ar_prefill_varlen(
+            x, ar, segments, prior_conv, initial_state,
+            projected=projected, project_output=project_output,
+        )
+
+    def _forward_ar_prefill_one(
+        self, x, ar, w: int, prior_conv, initial_state, *, projected=None, project_output=True
+    ) -> torch.Tensor:
         """One request's prefill rows, reading/writing worker slot *w*."""
+        qkv, z, a, b = self._project_ar(x) if projected is None else projected
+        return self._forward_ar_prefill_one_projected(
+            qkv, z, a, b, ar, w, prior_conv, initial_state, project_output=project_output
+        )
+
+    def _forward_ar_prefill_one_projected(
+        self, qkv, z, a, b, ar, w: int, prior_conv, initial_state, *, project_output=True
+    ) -> torch.Tensor:
+        """Reference suffix for one request after the projections are available."""
         lin = self._lin_idx
-        k = self.conv_kernel
-        length = x.shape[0]
-
-        qkv = self.in_proj_qkv.forward(x)  # (L, conv_dim)
-        z = self.in_proj_z.forward(x)
-        a = self.in_proj_a.forward(x)
-        b = self.in_proj_b.forward(x)
-
-        conv_in = qkv.transpose(0, 1).unsqueeze(0)  # (1, conv_dim, L)
-        if prior_conv is not None:
-            ctx_tail = prior_conv[w : w + 1, :, -(k - 1) :]  # (1, conv_dim, k-1)
-            full_input = torch.cat([ctx_tail, conv_in], dim=-1)  # (1, conv_dim, k-1+L)
-            conv_out = F.silu(
-                F.conv1d(full_input, self.conv1d.weight, groups=self.conv_dim, padding=k - 1)
-            )
-            qkv2 = conv_out[..., k - 1 : k - 1 + length]
-            new_conv_state = full_input[..., -k:]
-        else:
-            conv_out = F.conv1d(conv_in, self.conv1d.weight, groups=self.conv_dim, padding=k - 1)[
-                ..., :length
-            ]
-            qkv2 = F.silu(conv_out)
-            pad = k - length
-            new_conv_state = F.pad(conv_in, (pad, 0)) if pad >= 0 else conv_in[..., -k:]
-        qkv2 = qkv2.squeeze(0).transpose(0, 1)  # (L, conv_dim)
+        length = qkv.shape[0]
+        qkv2, new_conv_state = self._forward_ar_prefill_conv_one(qkv, w, prior_conv)
 
         q, kk, v = self._split_heads(qkv2)  # each (L, num_v_heads, d)
         beta, g = self._gates(a, b)
+        worker_initial_state = (
+            None if initial_state is None else initial_state[w : w + 1]
+        )
+        core = None
+        if length > 1:
+            core = _core_and_capture_affine_fla(
+                ar,
+                lin,
+                q.unsqueeze(0),
+                kk.unsqueeze(0),
+                v.unsqueeze(0),
+                g.unsqueeze(0),
+                beta.unsqueeze(0),
+                core_initial_state=worker_initial_state,
+                workers=[w],
+            )
+        if core is None:
+            core, _ = _chunk_delta(
+                q.unsqueeze(0),
+                kk.unsqueeze(0),
+                v.unsqueeze(0),
+                g.unsqueeze(0),
+                beta.unsqueeze(0),
+                initial_state=worker_initial_state,
+                state_v_first=True,
+            )
+            ar.capture_token_affines(
+                lin,
+                kk.unsqueeze(0),
+                v.unsqueeze(0),
+                g.exp().unsqueeze(0),
+                beta.unsqueeze(0),
+                workers=[w],
+            )
+        ar.set_conv_states(lin, new_conv_state, workers=[w])
+
+        core = core.reshape(length, self.num_v_heads, self.head_v_dim)
+        core = self.norm.forward(core, z.reshape(length, self.num_v_heads, self.head_v_dim))
+        return self._ar_output(core, project_output)
+
+    def _forward_ar_prefill_conv_one(self, qkv, w: int, prior_conv):
+        """Causal convolution for one varlen span; returns rows and its new window."""
+        prior = None if prior_conv is None else prior_conv[w : w + 1]
+        rows, window = causal_conv1d_silu(qkv.unsqueeze(0), self.conv1d.weight, prior)
+        return rows.squeeze(0), window
+
+    def _forward_ar_prefill_varlen(
+        self, x, ar, segments, prior_conv, initial_state, *, projected=None, project_output=True
+    ) -> torch.Tensor:
+        """Run ragged request scans in one FLA call using cumulative offsets."""
+        lin = self._lin_idx
+        total = x.shape[0]
+        qkv, z, a, b = self._project_ar(x) if projected is None else projected
+
+        convolved = []
+        conv_states = []
+        offset = 0
+        for worker, length in enumerate(segments):
+            rows, state = self._forward_ar_prefill_conv_one(
+                qkv[offset : offset + length], worker, prior_conv
+            )
+            convolved.append(rows)
+            conv_states.append(state)
+            offset += length
+        qkv2 = torch.cat(convolved, dim=0)
+        q, kk, v = self._split_heads(qkv2)
+        beta, g = self._gates(a, b)
+        core = _core_and_capture_affine_fla(
+            ar,
+            lin,
+            q.unsqueeze(0),
+            kk.unsqueeze(0),
+            v.unsqueeze(0),
+            g.unsqueeze(0),
+            beta.unsqueeze(0),
+            core_initial_state=initial_state,
+            cu_seqlens=ar.prefill_cu_seqlens,
+            cu_seqlens_cpu=ar.prefill_cu_seqlens_cpu,
+        )
+        if core is not None:
+            ar.set_conv_states(lin, torch.cat(conv_states, dim=0))
+            core = core.reshape(total, self.num_v_heads, self.head_v_dim)
+            core = self.norm.forward(core, z.reshape(total, self.num_v_heads, self.head_v_dim))
+            return self._ar_output(core, project_output)
+
         core, _ = _chunk_delta(
             q.unsqueeze(0),
             kk.unsqueeze(0),
             v.unsqueeze(0),
             g.unsqueeze(0),
             beta.unsqueeze(0),
-            initial_state=None if initial_state is None else initial_state[w : w + 1],
+            initial_state=initial_state,
+            state_v_first=True,
+            cu_seqlens=ar.prefill_cu_seqlens,
+            cu_seqlens_cpu=ar.prefill_cu_seqlens_cpu,
         )
 
-        ar.capture_token_affines(
-            lin,
-            kk.unsqueeze(0),
-            v.unsqueeze(0),
-            g.exp().unsqueeze(0),
-            beta.unsqueeze(0),
-            workers=[w],
-        )
-        ar.set_conv_states(lin, new_conv_state, workers=[w])
+        # Portable no-FLA fallback: fold mutable-block summaries together when
+        # padding does not inflate
+        # the work excessively. Padding is an exact affine identity update
+        # (alpha=1, beta=0), but every padded row still consumes GPU work. For a
+        # highly ragged frontier, keep the old per-request capture while retaining
+        # the batched projections, convolution and recurrent scan above.
+        key_spans = []
+        value_spans = []
+        alpha_spans = []
+        beta_spans = []
+        offset = 0
+        alpha = g.exp()
+        for length in segments:
+            span = slice(offset, offset + length)
+            key_spans.append(kk[span])
+            value_spans.append(v[span])
+            alpha_spans.append(alpha[span])
+            beta_spans.append(beta[span])
+            offset += length
+        padded_rows = len(segments) * max(segments)
+        actual_rows = sum(segments)
+        if padded_rows <= _AFFINE_CAPTURE_MAX_PADDING_RATIO * actual_rows:
+            ar.capture_token_affines(
+                lin,
+                torch.nn.utils.rnn.pad_sequence(key_spans, batch_first=True),
+                torch.nn.utils.rnn.pad_sequence(value_spans, batch_first=True),
+                torch.nn.utils.rnn.pad_sequence(
+                    alpha_spans, batch_first=True, padding_value=1.0
+                ),
+                torch.nn.utils.rnn.pad_sequence(beta_spans, batch_first=True),
+            )
+        else:
+            for worker, (key_span, value_span, alpha_span, beta_span) in enumerate(
+                zip(key_spans, value_spans, alpha_spans, beta_spans)
+            ):
+                ar.capture_token_affines(
+                    lin,
+                    key_span.unsqueeze(0),
+                    value_span.unsqueeze(0),
+                    alpha_span.unsqueeze(0),
+                    beta_span.unsqueeze(0),
+                    workers=[worker],
+                )
+        ar.set_conv_states(lin, torch.cat(conv_states, dim=0))
 
-        core = core.reshape(length, self.num_v_heads, self.head_v_dim)
-        core = self.norm.forward(core, z.reshape(length, self.num_v_heads, self.head_v_dim))
-        return self.out_proj.forward(core.reshape(length, self.value_dim))
+        core = core.reshape(total, self.num_v_heads, self.head_v_dim)
+        core = self.norm.forward(core, z.reshape(total, self.num_v_heads, self.head_v_dim))
+        return self._ar_output(core, project_output)
+
+    def _forward_ar_prefill_equal_length(
+        self, x, ar, workers: int, length: int, prior_conv, initial_state,
+        *, projected=None, project_output=True,
+    ) -> torch.Tensor:
+        """Batched async prefill for ``workers`` sequences of the same length."""
+        lin = self._lin_idx
+        k = self.conv_kernel
+
+        # One GEMM per projection over all request rows, rather than one GEMV/GEMM
+        # per request.  The flattened scheduler layout is request-major, so view
+        # restores [W, L, ...] without a copy.
+        qkv, z, a, b = self._project_ar(x) if projected is None else projected
+        qkv = qkv.reshape(workers, length, self.conv_dim)
+        z = z.reshape(workers, length, self.value_dim)
+        a = a.reshape(workers, length, self.num_v_heads)
+        b = b.reshape(workers, length, self.num_v_heads)
+
+        qkv2, new_conv_state = causal_conv1d_silu(qkv, self.conv1d.weight, prior_conv)
+
+        q, kk, v = self._split_heads(qkv2)
+        beta, g = self._gates(a, b)
+        affine_captured = False
+        if length == 1:
+            if initial_state is None:
+                initial_state = torch.zeros(
+                    workers,
+                    self.num_v_heads,
+                    self.head_v_dim,
+                    self.head_k_dim,
+                    device=x.device,
+                    dtype=torch.float32,
+                )
+            core, _ = _recurrent_delta(
+                q,
+                kk,
+                v,
+                g,
+                beta,
+                initial_state,
+                state_v_first=True,
+            )
+        else:  # Kept for direct tests; production dispatch currently uses L=1 only.
+            core = _core_and_capture_affine_fla(
+                ar,
+                lin,
+                q,
+                kk,
+                v,
+                g,
+                beta,
+                core_initial_state=initial_state,
+            )
+            affine_captured = core is not None
+            if core is None:
+                core, _ = _chunk_delta(
+                    q,
+                    kk,
+                    v,
+                    g,
+                    beta,
+                    initial_state=initial_state,
+                    state_v_first=True,
+                )
+
+        if not affine_captured:
+            ar.capture_token_affines(lin, kk, v, g.exp(), beta)
+        ar.set_conv_states(lin, new_conv_state)
+
+        core = core.reshape(workers * length, self.num_v_heads, self.head_v_dim)
+        z = z.reshape(workers * length, self.num_v_heads, self.head_v_dim)
+        core = self.norm.forward(core, z)
+        return self._ar_output(core, project_output)
 
     # --- async-reasoning decode: W workers, one token each, batched ---
-    def _forward_ar_decode(self, x, ar) -> torch.Tensor:
+    def _forward_ar_decode(self, x, ar, *, projected=None, project_output=True) -> torch.Tensor:
         lin = self._lin_idx
         k = self.conv_kernel
         n = x.shape[0]  # num workers
 
-        qkv = self.in_proj_qkv.forward(x)  # (W, conv_dim)
-        z = self.in_proj_z.forward(x)
-        a = self.in_proj_a.forward(x)
-        b = self.in_proj_b.forward(x)
+        qkv, z, a, b = self._project_ar(x) if projected is None else projected
 
         prior_conv = ar.prior_conv_states(lin)
-        if prior_conv is None:
-            prior_conv = torch.zeros(n, self.conv_dim, k, device=x.device, dtype=qkv.dtype)
-        conv_in = torch.cat([prior_conv, qkv.unsqueeze(-1)], dim=-1)  # (W, conv_dim, k+1)
-        new_conv_state = conv_in[..., -k:]
-        conv_out = F.conv1d(conv_in, self.conv1d.weight, groups=self.conv_dim, padding=0)
-        qkv2 = F.silu(conv_out[..., -1:]).squeeze(-1)  # (W, conv_dim)
+        qkv2, new_conv_state = causal_conv1d_silu(qkv.unsqueeze(1), self.conv1d.weight, prior_conv)
+        qkv2 = qkv2.squeeze(1)
 
         q, kk, v = self._split_heads(qkv2)  # (W, num_v_heads, d)
-        beta, g = self._gates(a, b)
-        initial_state = ar.compose_initial_recurrent_state(
-            lin, dtype=torch.float32
-        )  # (W,H,dk,dv)|None
+        beta, g = self._gates(a, b, beta_fp32=True)
+        successor_ticket = None
+        # The low-precision no-FLA fallback normalizes q/k before upcasting,
+        # unlike affine capture's FP32 normalization. Its returned state must
+        # not replace recomposition across tokens. Preserve that legacy path.
+        successor_compatible = _fla_recurrent is not None or kk.dtype == torch.float32
+        if successor_compatible and hasattr(ar, "begin_decode_state"):
+            initial_state, successor_ticket = ar.begin_decode_state(
+                lin, materialize=(_fla_recurrent is None or not x.is_cuda)
+            )
+        else:
+            initial_state = ar.compose_initial_recurrent_state(
+                lin, dtype=torch.float32, state_v_first=True
+            )  # (W,H,dv,dk)|None
         if initial_state is None:
             initial_state = torch.zeros(
                 n,
                 self.num_v_heads,
-                self.head_k_dim,
                 self.head_v_dim,
+                self.head_k_dim,
                 device=x.device,
                 dtype=torch.float32,
             )
-        core, _ = _recurrent_delta(
+        core, final_state = _recurrent_delta(
             q.unsqueeze(1),
             kk.unsqueeze(1),
             v.unsqueeze(1),
             g.unsqueeze(1),
             beta.unsqueeze(1),
             initial_state,
+            state_v_first=True,
         )
 
         ar.capture_token_affines(
@@ -427,9 +881,12 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         )
         ar.set_conv_states(lin, new_conv_state)
 
+        if successor_ticket is not None:
+            ar.finish_decode_state(lin, final_state, successor_ticket)
+
         core = core.reshape(n, self.num_v_heads, self.head_v_dim)
         core = self.norm.forward(core, z.reshape(n, self.num_v_heads, self.head_v_dim))
-        return self.out_proj.forward(core.reshape(n, self.value_dim))
+        return self._ar_output(core, project_output)
 
     # --- prefill: one chunked pass per request, write final state to pool ---
     def _forward_prefill(self, x, reqs: List[Req], gdn) -> torch.Tensor:
@@ -452,15 +909,8 @@ class Qwen3_5GatedDeltaNet(BaseOP):
             a = self.in_proj_a.forward(seg)
             b = self.in_proj_b.forward(seg)
 
-            conv_in = qkv.transpose(0, 1).unsqueeze(0)  # (1, conv_dim, L)
-            conv_out = F.conv1d(conv_in, self.conv1d.weight, groups=self.conv_dim, padding=k - 1)[
-                ..., :length
-            ]
-            qkv = F.silu(conv_out).squeeze(0).transpose(0, 1)  # (L, conv_dim)
-
-            # conv state: last `k` input columns, left-padded if the sequence is shorter
-            pad = k - length
-            conv_state = F.pad(conv_in, (pad, 0)) if pad >= 0 else conv_in[..., -k:]
+            qkv, conv_state = causal_conv1d_silu(qkv.unsqueeze(0), self.conv1d.weight)
+            qkv = qkv.squeeze(0)
             gdn.conv_state[self._lin_idx, req.table_idx] = conv_state.squeeze(0)
 
             q, kk, v = self._split_heads(qkv)
@@ -479,9 +929,7 @@ class Qwen3_5GatedDeltaNet(BaseOP):
 
     # --- decode: single recurrent step, batched across requests ---
     def _forward_decode(self, x, reqs: List[Req], gdn) -> torch.Tensor:
-        table_idx = torch.tensor(
-            [req.table_idx for req in reqs], device=x.device, dtype=torch.long
-        )
+        table_idx = torch.tensor([req.table_idx for req in reqs], device=x.device, dtype=torch.long)
         n = x.shape[0]
         qkv = self.in_proj_qkv.forward(x)  # (N, conv_dim)
         z = self.in_proj_z.forward(x)
@@ -490,13 +938,12 @@ class Qwen3_5GatedDeltaNet(BaseOP):
 
         # causal conv update: append new token, roll the conv window
         conv_state = gdn.conv_state[self._lin_idx, table_idx]  # (N, conv_dim, k)
-        conv_in = torch.cat([conv_state, qkv.unsqueeze(-1)], dim=-1)  # (N, conv_dim, k+1)
-        gdn.conv_state[self._lin_idx, table_idx] = conv_in[..., -self.conv_kernel :]
-        conv_out = F.conv1d(conv_in, self.conv1d.weight, groups=self.conv_dim, padding=0)
-        qkv = F.silu(conv_out[..., -1:]).squeeze(-1)  # (N, conv_dim)
+        qkv, new_conv_state = causal_conv1d_silu(qkv.unsqueeze(1), self.conv1d.weight, conv_state)
+        gdn.conv_state[self._lin_idx, table_idx] = new_conv_state
+        qkv = qkv.squeeze(1)
 
         q, kk, v = self._split_heads(qkv)
-        beta, g = self._gates(a, b)
+        beta, g = self._gates(a, b, beta_fp32=True)
         rec_state = gdn.recurrent_state[self._lin_idx, table_idx]  # (N, num_v_heads, Dk, Dv)
         core, new_state = _recurrent_delta(
             q.unsqueeze(1),

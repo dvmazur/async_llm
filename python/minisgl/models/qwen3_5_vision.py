@@ -16,6 +16,7 @@ import torch
 import torch.nn.functional as F
 from minisgl.layers import BaseOP, LinearReplicated, OPList
 from minisgl.utils import nvtx_annotate
+from minisgl.kernel.vision_attention import prepare_vision_attention, vision_attention
 
 if TYPE_CHECKING:
     from .config import VisionConfig
@@ -92,6 +93,21 @@ def _rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
+def _vision_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """Reference vision RoPE rounds only the final rotated q/k to model dtype."""
+    xf = x.float()
+    return (xf * cos.float().unsqueeze(1) +
+            _rotate_half(xf) * sin.float().unsqueeze(1)).to(x.dtype)
+
+
+_compiled_vision_rope = torch.compile(_vision_rope,fullgraph=True,dynamic=True)
+
+
+def _interpolate_position_embedding(weight, indices, fractions):
+    """SGLang's BF16 position interpolation: weights/products round before sum."""
+    return (weight[indices] * fractions.to(weight.dtype)[..., None]).sum(0)
+
+
 # ----------------------------------------------------------------------------
 # Small building blocks
 # ----------------------------------------------------------------------------
@@ -140,25 +156,16 @@ class _VisionAttention(BaseOP):
         self._num_heads = cfg.num_heads
         self._head_dim = cfg.hidden_size // cfg.num_heads
 
-    def forward(self, x, cos, sin, seg_lens: List[int]) -> torch.Tensor:
+    def forward(self, x, cos, sin, seg_lens: List[int], attention_plan=None) -> torch.Tensor:
         n = x.shape[0]
         H, D = self._num_heads, self._head_dim
         q, k, v = self.qkv.forward(x).reshape(n, 3, H, D).permute(1, 0, 2, 3).unbind(0)  # each (n,H,D)
-        c = cos.unsqueeze(1)  # (n,1,D)
-        s = sin.unsqueeze(1)
-        q = (q * c) + (_rotate_half(q) * s)
-        k = (k * c) + (_rotate_half(k) * s)
-        outs: List[torch.Tensor] = []
-        off = 0
-        for L in seg_lens:
-            sl = slice(off, off + L)
-            qs = q[sl].transpose(0, 1).unsqueeze(0)  # (1,H,L,D)
-            ks = k[sl].transpose(0, 1).unsqueeze(0)
-            vs = v[sl].transpose(0, 1).unsqueeze(0)
-            o = F.scaled_dot_product_attention(qs, ks, vs)  # scale = 1/sqrt(D) default
-            outs.append(o.squeeze(0).transpose(0, 1))  # (L,H,D)
-            off += L
-        o = torch.cat(outs, 0).reshape(n, -1)
+        rope = _compiled_vision_rope if x.is_cuda else _vision_rope
+        q = rope(q, cos, sin)
+        k = rope(k, cos, sin)
+        if attention_plan is None:
+            attention_plan=prepare_vision_attention(seg_lens,x.device)
+        o = vision_attention(q,k,v,attention_plan).reshape(n,-1)
         return self.proj.forward(o)
 
 
@@ -179,8 +186,8 @@ class _VisionBlock(BaseOP):
         self.attn = _VisionAttention(cfg)
         self.mlp = _VisionMLP(cfg)
 
-    def forward(self, x, cos, sin, seg_lens: List[int]) -> torch.Tensor:
-        x = x + self.attn.forward(self.norm1.forward(x), cos, sin, seg_lens)
+    def forward(self, x, cos, sin, seg_lens: List[int], attention_plan=None) -> torch.Tensor:
+        x = x + self.attn.forward(self.norm1.forward(x), cos, sin, seg_lens, attention_plan)
         x = x + self.mlp.forward(self.norm2.forward(x))
         return x
 
@@ -219,9 +226,10 @@ class Qwen3_5VisionModel(BaseOP):
         pos_ids = vision_position_ids(grid_thw, self._merge)  # (N,2)
         cu = vision_cu_seqlens(grid_thw)
         seg_lens = (cu[1:] - cu[:-1]).tolist()
+        attention_plan = prepare_vision_attention(seg_lens,dev,cu)
 
         x = self.patch_embed.forward(pixel_values)  # (N, hidden)
-        pos_embeds = (self.pos_embed.weight[bi] * bw[:, :, None]).sum(0)  # (N, hidden)
+        pos_embeds = _interpolate_position_embedding(self.pos_embed.weight, bi, bw)
         x = x + pos_embeds.to(x.dtype)
 
         # 2D vision rotary: freqs (N, rope_dim) -> cos/sin over full head_dim
@@ -232,11 +240,11 @@ class Qwen3_5VisionModel(BaseOP):
             )
         rot = (pos_ids[..., None].float() * self._inv_freq).flatten(1)  # (N, rope_dim)
         emb = torch.cat((rot, rot), dim=-1)  # (N, head_dim)
-        cos = emb.cos().to(x.dtype)
-        sin = emb.sin().to(x.dtype)
+        cos = emb.cos()
+        sin = emb.sin()
 
         for blk in self.blocks.op_list:
-            x = blk.forward(x, cos, sin, seg_lens)
+            x = blk.forward(x, cos, sin, seg_lens, attention_plan)
         return self.merger.forward(x)  # (N // merge^2, out_hidden)
 
 

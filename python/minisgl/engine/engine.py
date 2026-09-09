@@ -16,6 +16,7 @@ from minisgl.utils import div_even, init_logger, is_sm90_supported, is_sm100_sup
 from .config import EngineConfig
 from .graph import GraphRunner, get_free_memory, mem_GB
 from .sample import BatchSamplingArgs, Sampler
+from .memory import prefer_expandable_segments
 
 logger = init_logger(__name__)
 
@@ -30,6 +31,8 @@ class Engine:
     def __init__(self, config: EngineConfig):
         assert not torch.cuda.is_initialized()
         set_tp_info(rank=config.tp_info.rank, size=config.tp_info.size)
+        if prefer_expandable_segments(config.prefer_expandable_segments):
+            logger.info_rank0("Dynamic GDN buffers: enabled native expandable allocator segments")
         _adjust_config(config)
 
         self.config = config
@@ -159,7 +162,11 @@ class Engine:
                 for k, v in self.model.state_dict().items()
             }
         else:
-            return {k: v.to(self.dtype) for k, v in load_weight(config.model_path, self.device)}
+            return {
+                k: (v if v.dtype == torch.float8_e4m3fn
+                    else v.float() if k.endswith("_scale_inv") else v.to(self.dtype))
+                for k, v in load_weight(config.model_path, self.device)
+            }
 
     def _determine_num_pages(self, old_free_memory: int, config: EngineConfig) -> int:
         new_free_memory = self._sync_get_memory()[1]

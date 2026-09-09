@@ -66,6 +66,46 @@ def _as_head_scalar(x: Tensor, *, reference: Tensor) -> Tensor:
     return x.reshape(b, h).unsqueeze(-1)
 
 
+def _update_affine_summary_reduction(
+    *,
+    A_hat: Tensor,
+    B_hat: Tensor,
+    k: Tensor,
+    v: Tensor,
+    alpha: Tensor,
+    beta: Tensor,
+) -> Tuple[Tensor, Tensor]:
+    """Tensor expression for one token's affine-summary update.
+
+    The matvecs are deliberately expressed as row-wise multiply-reductions.
+    Inductor can fuse both reductions and all dependent pointwise updates into
+    one Triton kernel; opaque ``torch.matmul`` calls remain separate GEMVs.
+    """
+
+    alpha_b = _as_head_scalar(alpha, reference=k)  # [B,H,1]
+    beta_b = _as_head_scalar(beta, reference=k)
+
+    A_k = (A_hat * k.unsqueeze(-2)).sum(dim=-1)  # [B,H,d_k]
+    A_hat_new = alpha_b.unsqueeze(-1) * A_hat - (
+        alpha_b.unsqueeze(-1) * beta_b.unsqueeze(-1) * A_k.unsqueeze(-1) * k.unsqueeze(-2)
+    )
+
+    B_k = (B_hat * k.unsqueeze(-2)).sum(dim=-1)  # [B,H,d_v]
+    B_hat_new = alpha_b.unsqueeze(-1) * B_hat - (
+        alpha_b.unsqueeze(-1) * beta_b.unsqueeze(-1) * B_k.unsqueeze(-1) * k.unsqueeze(-2)
+    )
+    B_t = beta_b.unsqueeze(-1) * v.unsqueeze(-1) * k.unsqueeze(-2)  # [B,H,d_v,d_k]
+    return A_hat_new, B_hat_new + B_t
+
+
+# One dynamic graph covers changing worker-batch sizes in the Hogwild scheduler.
+# Compilation is lazy: CPU-only imports pay no compile cost, and the first CUDA
+# execution builds the kernel that later calls reuse.
+_compiled_update_affine_summary = torch.compile(
+    _update_affine_summary_reduction, fullgraph=True, dynamic=True
+)
+
+
 def update_affine_summary(
     *,
     A_hat: Tensor,
@@ -83,21 +123,15 @@ def update_affine_summary(
 
     Shapes: ``A_hat [B,H,d_k,d_k]``, ``B_hat [B,H,d_v,d_k]``, ``k [B,H,d_k]``,
     ``v [B,H,d_v]``, ``alpha/beta`` broadcastable to ``[B,H]``.
+
+    CUDA uses a dynamic ``torch.compile`` graph which fuses both row reductions
+    and the pointwise update. CPU retains the same eager tensor expression for
+    portability and high-precision algebra tests.
     """
-    alpha_b = _as_head_scalar(alpha, reference=k)  # [B,H,1]
-    beta_b = _as_head_scalar(beta, reference=k)
-
-    A_k = torch.matmul(A_hat, k.unsqueeze(-1)).squeeze(-1)  # [B,H,d_k]
-    A_hat_new = alpha_b.unsqueeze(-1) * A_hat - (
-        alpha_b.unsqueeze(-1) * beta_b.unsqueeze(-1) * A_k.unsqueeze(-1) * k.unsqueeze(-2)
+    implementation = (
+        _compiled_update_affine_summary if A_hat.is_cuda else _update_affine_summary_reduction
     )
-
-    B_k = torch.matmul(B_hat, k.unsqueeze(-1)).squeeze(-1)  # [B,H,d_v]
-    B_hat_new = alpha_b.unsqueeze(-1) * B_hat - (
-        alpha_b.unsqueeze(-1) * beta_b.unsqueeze(-1) * B_k.unsqueeze(-1) * k.unsqueeze(-2)
-    )
-    B_t = beta_b.unsqueeze(-1) * v.unsqueeze(-1) * k.unsqueeze(-2)  # [B,H,d_v,d_k]
-    return A_hat_new, B_hat_new + B_t
+    return implementation(A_hat=A_hat, B_hat=B_hat, k=k, v=v, alpha=alpha, beta=beta)
 
 
 def compose_gdn_affines(

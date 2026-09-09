@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional
 
 import torch
+from minisgl.kernel.qwen_pointwise import rotate_fp32
 from minisgl.attention import BaseAttnMetadata
 
 from .rope_correction import apply_rope_correction
@@ -111,6 +112,25 @@ class PrefillSpec:
     self_prefix_len: int = 0
     self_prefix_span: Optional[int] = None
     mrope_rel: Optional[torch.Tensor] = None
+
+
+@dataclass
+class MixedSharedCacheAttnMetadata(BaseAttnMetadata):
+    """Two plans, one model pass; the leading prefill runs before decode.
+
+    The sub-batches retain their own positions, output slots and plan references.
+    The four FlashInfer wrappers already have separate plan workspaces.
+    """
+
+    shared_cache_op: SharedCacheAttention
+    prefill: Batch
+    decode: Batch
+    split: int
+    last_indices: torch.Tensor
+
+    def get_last_indices(self, bs: int) -> torch.Tensor:
+        assert bs == self.last_indices.numel()
+        return self.last_indices
 
 
 def _rel_positions(mrope_rel: Optional[torch.Tensor], num_new: int, use_3d: bool) -> torch.Tensor:
@@ -241,10 +261,13 @@ class SharedCacheAttention:
             idx = slice(offset, length, 3)
             freqs[..., idx] = freqs3[dim][..., idx]
         emb = torch.cat((freqs, freqs), dim=-1)  # (N, rotary_dim)
-        cos = emb.cos().to(x.dtype)[:, None, :]
-        sin = emb.sin().to(x.dtype)[:, None, :]
+        # CUDA serving references retain FP32 trigonometric values and rotate
+        # before the final cast. Early BF16 cos/sin/products add rounding that
+        # can be amplified by the following FP8 projection.
+        cos = emb.cos()[:, None, :]
+        sin = emb.sin()[:, None, :]
         x_rot, x_pass = x[..., : self.rotary_dim], x[..., self.rotary_dim :]
-        x_rot = x_rot * cos + _rotate_half_last(x_rot) * sin
+        x_rot = rotate_fp32(x_rot,cos,sin)
         return torch.cat([x_rot, x_pass], dim=-1)
 
     def prepare(
@@ -595,6 +618,12 @@ class SharedCacheAttention:
         Returns ``[num_workers, num_qo_heads * head_dim]``.
         """
         meta = batch.attn_metadata
+        if isinstance(meta, MixedSharedCacheAttnMetadata):
+            split = meta.split
+            # Do not store decode KV before prefill has read its old contexts.
+            prefill = self.forward(q[:split], k[:split], v[:split], layer_id, meta.prefill)
+            decode = self.forward(q[split:], k[split:], v[split:], layer_id, meta.decode)
+            return torch.cat((prefill, decode), dim=0)
         assert isinstance(meta, SharedCacheAttnMetadata)
         W, Hq, D = meta.num_workers, self.num_qo_heads, self.head_dim
 

@@ -31,15 +31,17 @@ Usage::
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from copy import copy
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 import torch
 from minisgl.core import Batch, Req
+from minisgl.kernel.metadata import device_metadata
 from minisgl.utils import div_ceil
 
-from .attention import PrefillSpec, SharedCacheAttention
-from .gdn import SharedCacheGDN
+from .attention import MixedSharedCacheAttnMetadata, PrefillSpec, SharedCacheAttention
+from .gdn import MixedSharedCacheGDN, SharedCacheGDN
 from .gdn_affine import compose_gdn_affines
 from .shared_block import NULL_CACHE_HANDLE, CacheBlock
 from .worker_group import WorkerGroup
@@ -82,6 +84,23 @@ class PrefillPlan:
     rel_pos: Optional[torch.Tensor] = None  # [3, L] int64 cpu
     embeds: Optional[torch.Tensor] = None  # [n_img_tokens, hidden]
     base_span: int = 0  # the write block's mRoPE span before the first chunk
+
+
+@dataclass
+class _PreparedPrefill:
+    batch: Batch
+    jobs: List[PrefillJob]
+    chains: List[List[CacheBlock]]
+    ids: List[torch.Tensor]
+    pages: List[torch.Tensor]
+    spans: List[int]
+
+
+@dataclass
+class _PreparedDecode:
+    batch: Batch
+    new_pages: Dict[int, Optional[int]]
+    input_ids: torch.Tensor
 
 
 def _job_rows(job: PrefillJob) -> int:
@@ -198,6 +217,7 @@ class SharedCacheSession:
         self.page_size: int = engine.ctx.page_size
         self.attn_backend = engine.attn_backend
         self.page_allocator = engine.page_allocator
+        self.page_allocator.enable_host_metadata()
 
         max_table = engine.page_table.shape[0] - 1  # last row is dummy
         self._free_table_indices: List[int] = list(range(max_table))
@@ -237,6 +257,7 @@ class SharedCacheSession:
             sc_mrope = attn0._mrope_section
             sc_rope_base = attn0._rope_base
             gdn0 = _first_gdn(engine)  # Qwen3_5GatedDeltaNet
+            assert engine.ctx.gdn_state is not None
             self.sc_gdn: SharedCacheGDN | None = SharedCacheGDN(
                 num_heads=gdn0.num_v_heads,
                 head_k_dim=gdn0.head_k_dim,
@@ -244,6 +265,8 @@ class SharedCacheSession:
                 conv_dim=gdn0.conv_dim,
                 conv_kernel=gdn0.conv_kernel,
                 device=self.device,
+                gdn_storage_bytes=engine.ctx.gdn_state.storage_bytes,
+                num_linear_layers=engine.config.model_config.num_linear_layers,
             )
         else:
             attn0 = engine.model.model.layers.op_list[0].self_attn.attn
@@ -283,11 +306,11 @@ class SharedCacheSession:
     def free_block(self, block: CacheBlock) -> None:
         """Return a block's pages to the engine's page allocator and reset it."""
         self._validate_block(block)
+        if self.sc_gdn is not None and self.sc_gdn.successor_state_cache is not None:
+            self.sc_gdn.successor_state_cache.discard_block(block)
         page_starts = block.clear()
         if page_starts:
-            self.page_allocator.free_pages(
-                torch.tensor(page_starts, dtype=torch.int32, device=self.device)
-            )
+            self.page_allocator.free_pages_cpu(page_starts)
 
     @torch.inference_mode()
     def merge_blocks(
@@ -312,7 +335,7 @@ class SharedCacheSession:
         merged = self.create_block()
         num_pages = div_ceil(total_tokens, self.page_size)
         if num_pages:
-            merged.page_starts = self.page_allocator.alloc_pages(num_pages).tolist()
+            merged.page_starts = self.page_allocator.alloc_pages_cpu(num_pages).tolist()
         merged.num_tokens = total_tokens
 
         if left_tokens:
@@ -358,7 +381,7 @@ class SharedCacheSession:
             # when both arguments are the same object: grow_pages changes its
             # num_tokens and therefore the slots returned by token_slots_tensor.
             source_slots = right.token_slots_tensor().to(torch.int64)
-            new_pages = self.page_allocator.alloc_pages(left.pages_needed(right_tokens))
+            new_pages = self.page_allocator.alloc_pages_cpu(left.pages_needed(right_tokens))
             left.grow_pages(new_pages, right_tokens)
             self._copy_slots(source_slots, left, destination_start=left_tokens)
             if left_span:
@@ -407,9 +430,7 @@ class SharedCacheSession:
                 merged_affine[layer_idx] = (right_pair[0].clone(), right_pair[1].clone())
             elif right_pair is None:
                 merged_affine[layer_idx] = (
-                    left_pair
-                    if keep_left_state
-                    else (left_pair[0].clone(), left_pair[1].clone())
+                    left_pair if keep_left_state else (left_pair[0].clone(), left_pair[1].clone())
                 )
             else:
                 merged_affine[layer_idx] = compose_gdn_affines(
@@ -418,7 +439,7 @@ class SharedCacheSession:
                     A_second=right_pair[0],
                     B_second=right_pair[1],
                 )
-        destination.linear_affine = merged_affine
+        self._store_merged_linear_affines(destination, merged_affine)
 
         merged_conv: Dict[int, torch.Tensor] = {}
         conv_layers = set(left.linear_conv_state) | set(right.linear_conv_state)
@@ -431,6 +452,64 @@ class SharedCacheSession:
                 state if keep_left_state and right_state is None else state.clone()
             )
         destination.linear_conv_state = merged_conv
+
+    def _store_merged_linear_affines(
+        self,
+        destination: CacheBlock,
+        merged_affine: Dict[int, Tuple[torch.Tensor, torch.Tensor]],
+    ) -> None:
+        """Put merge/append results back under the destination block's ownership.
+
+        A decode/prefill block normally owns one all-layer affine slab.  In-place
+        ``append_block`` must not replace its dictionary with independently
+        allocated compose results while leaving the old slab attached, and a
+        freshly merged block must not retain views into either source block.
+        """
+
+        destination.linear_affine = {}
+        gdn = self.sc_gdn
+        use_block_slab = (
+            gdn is not None
+            and gdn.num_linear_layers is not None
+            and all(
+                A.shape[-2] == A.shape[-1]
+                and B.shape[-2] == A.shape[-1]
+                and A.shape[:-2] == B.shape[:-2]
+                for A, B in merged_affine.values()
+            )
+        )
+        if use_block_slab:
+            for layer_idx, (A_source, B_source) in merged_affine.items():
+                A_out, B_out = destination.affine_storage_pair(
+                    layer_idx,
+                    num_layers=gdn.num_linear_layers,
+                    num_heads=A_source.shape[-3],
+                    d_k=A_source.shape[-1],
+                    d_v=B_source.shape[-2],
+                )
+                # ``append(left, right)`` can preserve a left-only layer that is
+                # already exactly this view.  Avoid copying the whole layer in
+                # that case; composed/right-only layers are copied into the slab.
+                if A_out.data_ptr() != A_source.data_ptr():
+                    A_out.copy_(A_source)
+                if B_out.data_ptr() != B_source.data_ptr():
+                    B_out.copy_(B_source)
+                destination.set_linear_affine(layer_idx, (A_out, B_out))
+            if not merged_affine:
+                destination.linear_affine_storage = None
+            return
+
+        # This is the generic rectangular/reference path.  It should not carry
+        # a production square-state slab; clone first if callers mixed the two
+        # representations so no stored pair can keep a detached old slab alive.
+        if destination.linear_affine_storage is not None:
+            merged_affine = {
+                layer_idx: (A.clone(), B.clone())
+                for layer_idx, (A, B) in merged_affine.items()
+            }
+            destination.linear_affine_storage = None
+        for layer_idx, pair in merged_affine.items():
+            destination.set_linear_affine(layer_idx, pair)
 
     def _validate_block(self, block: CacheBlock) -> None:
         if block.device != self.device:
@@ -482,9 +561,9 @@ class SharedCacheSession:
         for layer_idx in range(self.kv_cache.num_layers):
             k_cache = self.kv_cache.k_cache(layer_idx)
             k_flat = k_cache.reshape(-1, *k_cache.shape[2:])
-            keys = self.sc_attn._rope(
-                k_flat.index_select(0, slots).float(), corrections
-            ).to(k_flat.dtype)
+            keys = self.sc_attn._rope(k_flat.index_select(0, slots).float(), corrections).to(
+                k_flat.dtype
+            )
             k_flat.index_copy_(0, slots, keys)
 
     @torch.inference_mode()
@@ -661,6 +740,17 @@ class SharedCacheSession:
         keeps the well-trodden page-table path for the common case), so this is
         called directly only by the batched path and by tests isolating it.
         """
+        plan = self._prepare_prefill_batch(jobs)
+        logits = self._forward(
+            plan.batch,
+            cache_structure=plan.chains,
+            write_to=[job.block for job in plan.jobs],
+            prefill_segments=[len(ids) for ids in plan.ids],
+        )
+        self._commit_prefill(plan)
+        return [logits[i : i + 1] for i in range(len(plan.jobs))]
+
+    def _prepare_prefill_batch(self, jobs, *, allocations=None) -> _PreparedPrefill:
         jobs = list(jobs)
         write_ids = {id(job.block) for job in jobs}
         assert len(write_ids) == len(jobs), "two prefills write the same block in one batch"
@@ -711,8 +801,12 @@ class SharedCacheSession:
             if mrope_rel is None and job.pixel_values is not None:
                 mrope_rel = self._mrope_rel(input_ids, job.mm_token_type_ids, job.image_grid_thw)
             page_starts, token_slots = self._alloc_token_storage(seq_len, write_to=block)
+            if allocations is not None:
+                allocations.append(page_starts)
             # The self segment reads the block's whole post-write page list.
-            self_pages = torch.cat([block.page_starts_tensor(), page_starts.to(self.device)])
+            self_pages = device_metadata(
+                block.page_starts + page_starts.tolist(), device=self.device, dtype=torch.int32
+            )
             specs.append(
                 PrefillSpec(
                     context=context,
@@ -798,20 +892,13 @@ class SharedCacheSession:
             if embed_parts:
                 batch.image_embeds = torch.cat(embed_parts)
 
-        logits = self._forward(
-            batch,
-            cache_structure=chains,
-            write_to=[job.block for job in jobs],
-            prefill_segments=[len(ids) for ids in ids_list],
-        )
+        return _PreparedPrefill(batch, jobs, chains, ids_list, new_pages, new_spans)
 
-        for job, ids, pages, span in zip(jobs, ids_list, new_pages, new_spans):
+    def _commit_prefill(self, plan: _PreparedPrefill) -> None:
+        for job, ids, pages, span in zip(plan.jobs, plan.ids, plan.pages, plan.spans):
             job.block.grow_pages(pages, len(ids))
             job.block.token_ids.extend(ids.tolist())
             self._commit_mrope_span(job.block, span)
-
-        # ParallelLMHead already extracted the per-request last-token rows.
-        return [logits[i : i + 1] for i in range(len(jobs))]
 
     # ------------------------------------------------------------------
     # Chunked prefill
@@ -898,9 +985,9 @@ class SharedCacheSession:
         from minisgl.models.qwen3_5_mrope import get_rope_index
 
         assert mm_token_type_ids is not None and image_grid_thw is not None
-        assert self._model_config is not None and self._model_config.is_multimodal, (
-            "multimodal prefill on a model without a vision config"
-        )
+        assert (
+            self._model_config is not None and self._model_config.is_multimodal
+        ), "multimodal prefill on a model without a vision config"
         return get_rope_index(
             input_ids.cpu(),
             mm_token_type_ids.cpu(),
@@ -968,12 +1055,22 @@ class SharedCacheSession:
             self._validate_block(context.output_block)
             for block in context.cache_view:
                 self._validate_block(block)
+        plan = self._prepare_decode(group, input_ids)
+        logits = self._forward(
+            plan.batch, cache_structure=group.cache_structure, write_to=group.write_to
+        )
+        self._commit_decode(group, plan)
+        return logits[:group.num_workers]
+
+    def _prepare_decode(self, group, input_ids, *, allocations=None) -> _PreparedDecode:
         num_workers = group.num_workers
         input_ids = input_ids.to(dtype=torch.int32).reshape(num_workers).cpu()
 
         # Decide, per (distinct) write block, whether the new token starts a
         # fresh page, then borrow all needed pages from the engine in one shot.
-        new_page_for_block, new_token_slots, write_pos = self._plan_decode_writes(group)
+        new_page_for_block, new_token_slots, write_pos = self._plan_decode_writes(
+            group, allocations=allocations
+        )
 
         # Reqs are bookkeeping only here (batch size / phase); the page table
         # is bypassed entirely, so they point at the engine's dummy row.
@@ -1003,15 +1100,125 @@ class SharedCacheSession:
         batch.out_loc = new_token_slots
         batch.attn_metadata = self.sc_attn.prepare(group, new_page_for_block, new_token_slots)
 
-        logits = self._forward(
-            batch, cache_structure=group.cache_structure, write_to=group.write_to
-        )
+        return _PreparedDecode(batch, new_page_for_block, input_ids)
 
+    def _commit_decode(self, group, plan: _PreparedDecode) -> None:
         # Commit growth now that the forward (which read post-append lengths) is done.
         for wi, wt in enumerate(group.write_to):
-            wt.append_token(new_page_for_block[id(wt)])
-            wt.token_ids.append(int(input_ids[wi]))
-        return logits[:num_workers]
+            wt.append_token(plan.new_pages[id(wt)])
+            wt.token_ids.append(int(plan.input_ids[wi]))
+
+    # ------------------------------------------------------------------
+    # Mixed prefill/decode
+    # ------------------------------------------------------------------
+
+    def can_mix(self, jobs: Sequence[PrefillJob], group: WorkerGroup) -> bool:
+        """Admission only: never split a decode group or chunk a mixed prefill."""
+        if not jobs or not group.num_workers:
+            return False
+        if {id(j.block) for j in jobs} & {id(b) for b in group.write_to}:
+            return False
+        if self.max_prefill_rows is not None:
+            if sum(_job_rows(j) for j in jobs) > self.max_prefill_rows:
+                return False
+        if any(j.pixel_values is not None for j in jobs) and any(
+            j.image_embeds is not None for j in jobs
+        ):
+            return False
+        return True
+
+    @staticmethod
+    def _post_prefill_group(group: WorkerGroup, plan: _PreparedPrefill) -> WorkerGroup:
+        """Non-owning page/length snapshots for decode ATTENTION planning only.
+
+        Live blocks are not committed early. GDN still reads the original block
+        objects, whose layer-local summaries are updated before decode composition.
+        Snapshots must never be registered, written by GDN, or freed as blocks.
+        """
+        snapshots = {}
+        for job, ids, pages, span in zip(plan.jobs, plan.ids, plan.pages, plan.spans):
+            block = copy(job.block)
+            block.page_starts = list(job.block.page_starts)
+            block.grow_pages(pages, len(ids))
+            block.mrope_span_override = span
+            snapshots[id(job.block)] = block
+        return WorkerGroup(
+            cache_structure=[
+                [snapshots.get(id(b), b) for b in chain] for chain in group.cache_structure
+            ],
+            write_to=group.write_to,
+        )
+
+    @torch.inference_mode()
+    def mixed_step(self, jobs, group: WorkerGroup, input_ids: torch.Tensor):
+        """One pass equivalent to prefill_batch(jobs), then decode_step(group).
+
+        Different groups may read each other's outputs: prefill sees old decode
+        contents, decode sees new prefill contents. Two writes to the same block
+        are deliberately excluded. Returns (prefill rows, decode logits).
+        """
+        jobs = list(jobs)
+        if not self.can_mix(jobs, group):
+            raise ValueError("mixed step needs disjoint writes and an unchunked prefill")
+        for job in jobs:
+            self._validate_block(job.block)
+            for block in job.context:
+                self._validate_block(block)
+        for worker in group:
+            self._validate_block(worker.output_block)
+            for block in worker.cache_view:
+                self._validate_block(block)
+
+        allocations = []
+        try:
+            pf = self._prepare_prefill_batch(jobs, allocations=allocations)
+            metadata_group = self._post_prefill_group(group, pf)
+            dec = self._prepare_decode(metadata_group, input_ids, allocations=allocations)
+            split = int(pf.batch.input_ids.numel())
+            reqs = pf.batch.reqs + dec.batch.reqs
+            batch = Batch(reqs=reqs, phase="prefill", num_decode=group.num_workers)
+            batch.padded_reqs = reqs
+            batch.input_ids = torch.cat((pf.batch.input_ids, dec.batch.input_ids))
+            batch.positions = torch.cat((pf.batch.positions, dec.batch.positions))
+            batch.out_loc = torch.cat((pf.batch.out_loc, dec.batch.out_loc))
+            # Vision runs once for prefill image tokens; decode rows are all text.
+            for name in ("pixel_values", "image_grid_thw", "image_embeds"):
+                setattr(batch, name, getattr(pf.batch, name))
+            if pf.batch.mm_token_type_ids is not None:
+                batch.mm_token_type_ids = torch.cat((
+                    pf.batch.mm_token_type_ids,
+                    torch.zeros(group.num_workers, dtype=torch.int64, device=self.device),
+                ))
+            if pf.batch.mrope_positions is not None:
+                batch.mrope_positions = torch.cat((
+                    pf.batch.mrope_positions, dec.batch.positions.expand(3, -1)
+                ), dim=1)
+            batch.attn_metadata = MixedSharedCacheAttnMetadata(
+                shared_cache_op=self.sc_attn, prefill=pf.batch, decode=dec.batch, split=split,
+                last_indices=torch.cat((
+                    pf.batch.attn_metadata.get_last_indices(len(jobs)),
+                    torch.arange(split, split + group.num_workers, device=self.device),
+                )),
+            )
+            mixed_gdn = None
+            if self.sc_gdn is not None:
+                mixed_gdn = MixedSharedCacheGDN(
+                    split,
+                    self.sc_gdn.context_view(
+                        pf.chains, [j.block for j in jobs], [len(ids) for ids in pf.ids]
+                    ),
+                    self.sc_gdn.context_view(group.cache_structure, group.write_to),
+                )
+            logits = self._forward(batch, mixed_gdn=mixed_gdn)
+        except Exception:
+            # New uncommitted pages must not leak. As with a failed ordinary
+            # forward, layer-local writes are not rollbackable: reset before retry.
+            if allocations:
+                self.page_allocator.free_pages_cpu(torch.cat(allocations))
+            raise
+        self._commit_prefill(pf)
+        self._commit_decode(group, dec)
+        return [logits[i:i+1] for i in range(len(jobs))], logits[len(jobs):]
 
     # ------------------------------------------------------------------
     # Page / table-index management
@@ -1030,19 +1237,23 @@ class SharedCacheSession:
         (mirrors how ``append_token`` grows a block during decode)."""
         free_tail = write_to.free_tail if write_to is not None else 0
         n_pages = div_ceil(max(0, seq_len - free_tail), self.page_size)
-        page_starts = self.page_allocator.alloc_pages(n_pages)
+        page_starts = self.page_allocator.alloc_pages_cpu(n_pages)
         new_slots = self.page_allocator.pages_to_tokens(page_starts)
         if free_tail == 0:
-            return page_starts, new_slots[:seq_len]
-        assert write_to is not None
-        tail_start = write_to.page_starts[-1] + write_to.last_page_len
-        tail_slots = torch.arange(
-            tail_start, tail_start + free_tail, dtype=new_slots.dtype, device=self.device
-        )
-        return page_starts, torch.cat([tail_slots, new_slots])[:seq_len]
+            slots = new_slots[:seq_len]
+        else:
+            assert write_to is not None
+            tail_start = write_to.page_starts[-1] + write_to.last_page_len
+            tail_slots = torch.arange(
+                tail_start, tail_start + free_tail, dtype=new_slots.dtype, device='cpu'
+            )
+            slots = torch.cat([tail_slots, new_slots])[:seq_len]
+        if self.device.type == 'cuda' and not slots.is_pinned():
+            slots = slots.pin_memory()
+        return page_starts, slots.to(self.device, non_blocking=True)
 
     def _plan_decode_writes(
-        self, group: WorkerGroup
+        self, group: WorkerGroup, *, allocations=None
     ) -> Tuple[Dict[int, Optional[int]], torch.Tensor, List[int]]:
         """For one decode step, choose the destination slot of each worker's new
         token and which write blocks need a freshly-allocated page.
@@ -1066,9 +1277,11 @@ class SharedCacheSession:
                 blocks_needing_page.append(wt)
 
         if blocks_needing_page:
-            fresh = self.page_allocator.alloc_pages(len(blocks_needing_page))
-            for k, wt in enumerate(blocks_needing_page):
-                new_page_for_block[id(wt)] = int(fresh[k].item())
+            fresh = self.page_allocator.alloc_pages_cpu(len(blocks_needing_page))
+            if allocations is not None:
+                allocations.append(fresh)
+            for wt, page_start in zip(blocks_needing_page, fresh.tolist()):
+                new_page_for_block[id(wt)] = page_start
 
         out_loc: List[int] = []
         write_pos: List[int] = []
@@ -1079,7 +1292,7 @@ class SharedCacheSession:
             out_loc.append(page_start + (t % self.page_size))
             write_pos.append(wt.mrope_span)
 
-        new_token_slots = torch.tensor(out_loc, dtype=torch.int32, device=self.device)
+        new_token_slots = device_metadata(out_loc, dtype=torch.int32, device=self.device)
         return new_page_for_block, new_token_slots, write_pos
 
     def _allocate_table_idx(self) -> int:
@@ -1123,6 +1336,7 @@ class SharedCacheSession:
         cache_structure: "List[List[CacheBlock]] | None" = None,
         write_to: "List[CacheBlock] | None" = None,
         prefill_segments: "List[int] | None" = None,
+        mixed_gdn: "MixedSharedCacheGDN | None" = None,
     ) -> torch.Tensor:
         ctx = self.engine.ctx
         # For hybrid (Qwen3.5) models, hand the GDN layers the worker chains so
@@ -1137,6 +1351,8 @@ class SharedCacheSession:
                 prefill_segments=prefill_segments,
             )
             ctx.gdn_ar = self.sc_gdn
+        if mixed_gdn is not None:
+            ctx.gdn_ar = mixed_gdn
         try:
             with ctx.forward_batch(batch):
                 return self.engine.model.forward()

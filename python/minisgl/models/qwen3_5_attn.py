@@ -4,8 +4,9 @@ from typing import TYPE_CHECKING
 
 import torch
 from minisgl.core import get_global_ctx
-from minisgl.layers import BaseOP, LinearOProj, LinearReplicated, RMSNorm
+from minisgl.layers import BaseOP, GemmaRMSNorm, LinearOProj, LinearReplicated
 from minisgl.utils import nvtx_annotate
+from minisgl.kernel.qwen_pointwise import rotate_fp32,output_gate
 
 if TYPE_CHECKING:
     from .config import ModelConfig
@@ -15,6 +16,11 @@ def _rotate_half(x: torch.Tensor) -> torch.Tensor:
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
+
+
+def _apply_output_gate(output: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
+    """Match fused-reference gating: no BF16 sigmoid intermediate."""
+    return output_gate(output,gate)
 
 
 class Qwen3_5Attention(BaseOP):
@@ -41,8 +47,8 @@ class Qwen3_5Attention(BaseOP):
         self.qkv_proj = LinearReplicated(
             config.hidden_size, 2 * self.qo_dim + 2 * self.kv_dim, has_bias=False
         )
-        self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.q_norm = GemmaRMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.k_norm = GemmaRMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.o_proj = LinearOProj(self.qo_dim, config.hidden_size, has_bias=False)
 
     def _apply_rope(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
@@ -80,10 +86,10 @@ class Qwen3_5Attention(BaseOP):
 
     def _apply_from_freqs(self, x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
         emb = torch.cat((freqs, freqs), dim=-1)  # (T, rotary_dim)
-        cos = emb.cos().to(x.dtype)[:, None, :]
-        sin = emb.sin().to(x.dtype)[:, None, :]
+        cos = emb.cos()[:, None, :]
+        sin = emb.sin()[:, None, :]
         x_rot, x_pass = x[..., : self.rotary_dim], x[..., self.rotary_dim :]
-        x_rot = x_rot * cos + _rotate_half(x_rot) * sin
+        x_rot = rotate_fp32(x_rot,cos,sin)
         return torch.cat((x_rot, x_pass), dim=-1)
 
     @nvtx_annotate("FullAttn")
@@ -122,7 +128,7 @@ class Qwen3_5Attention(BaseOP):
                 k = self._apply_rope(k, ctx.batch.positions)
             o = ctx.attn_backend.forward(q, k.reshape(-1, self.kv_dim), v, self._kv_idx, ctx.batch)
 
-        o = o.view(-1, self.num_qo_heads, self.head_dim) * torch.sigmoid(gate)
+        o = _apply_output_gate(o.view(-1, self.num_qo_heads, self.head_dim), gate)
         return self.o_proj.forward(o.reshape(-1, self.qo_dim))
 
 

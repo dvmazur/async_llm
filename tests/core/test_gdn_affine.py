@@ -25,8 +25,8 @@ No GPU, no engine, no HF.
 
 from __future__ import annotations
 
+import pytest
 import torch
-
 from minisgl.shared_cache.gdn_affine import (
     apply_gdn_affine,
     compose_gdn_affines,
@@ -36,6 +36,25 @@ from minisgl.shared_cache.gdn_affine import (
 
 DEV = torch.device("cpu")
 F64 = torch.float64
+
+
+def _reference_update_affine_summary(A_hat, B_hat, k, v, alpha, beta):
+    """Literal pre-compile matmul implementation retained as an independent oracle."""
+
+    batch, heads = k.shape[:2]
+    alpha_b = alpha.reshape(batch, heads).unsqueeze(-1)
+    beta_b = beta.reshape(batch, heads).unsqueeze(-1)
+
+    A_k = torch.matmul(A_hat, k.unsqueeze(-1)).squeeze(-1)
+    A_hat_new = alpha_b.unsqueeze(-1) * A_hat - (
+        alpha_b.unsqueeze(-1) * beta_b.unsqueeze(-1) * A_k.unsqueeze(-1) * k.unsqueeze(-2)
+    )
+    B_k = torch.matmul(B_hat, k.unsqueeze(-1)).squeeze(-1)
+    B_hat_new = alpha_b.unsqueeze(-1) * B_hat - (
+        alpha_b.unsqueeze(-1) * beta_b.unsqueeze(-1) * B_k.unsqueeze(-1) * k.unsqueeze(-2)
+    )
+    B_t = beta_b.unsqueeze(-1) * v.unsqueeze(-1) * k.unsqueeze(-2)
+    return A_hat_new, B_hat_new + B_t
 
 
 def _rel(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -192,6 +211,65 @@ def test_split_compose_equals_full_fold():
     Ac, Bc = compose_gdn_affines(A_first=A1, B_first=B1, A_second=A2, B_second=B2)
     assert _rel(Ac, Af) < 1e-10
     assert _rel(Bc, Bf) < 1e-10
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("batch", [1, 8, 64])
+def test_compiled_cuda_update_matches_matmul_reference_for_dynamic_batches(batch):
+    heads, d_k, d_v = 4, 32, 24
+    generator = torch.Generator(device="cuda").manual_seed(100 + batch)
+    A = torch.randn(batch, heads, d_k, d_k, device="cuda", generator=generator)
+    B = torch.randn(batch, heads, d_v, d_k, device="cuda", generator=generator)
+    k = torch.randn(batch, heads, d_k, device="cuda", generator=generator)
+    v = torch.randn(batch, heads, d_v, device="cuda", generator=generator)
+    alpha = torch.rand(batch, heads, device="cuda", generator=generator)
+    beta = torch.rand(batch, heads, device="cuda", generator=generator)
+
+    expected = _reference_update_affine_summary(A, B, k, v, alpha, beta)
+    actual = update_affine_summary(A_hat=A, B_hat=B, k=k, v=v, alpha=alpha, beta=beta)
+    torch.testing.assert_close(actual[0], expected[0], rtol=2e-5, atol=3.1e-5)
+    torch.testing.assert_close(actual[1], expected[1], rtol=2e-5, atol=3.1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_compiled_cuda_update_long_chain_matches_matmul_reference():
+    batch, heads, d_k, d_v, length = 2, 3, 17, 11, 256
+    generator = torch.Generator(device="cuda").manual_seed(812)
+    keys = torch.randn(length, batch, heads, d_k, device="cuda", generator=generator)
+    values = torch.randn(length, batch, heads, d_v, device="cuda", generator=generator)
+    # Model-like decay keeps the long recurrence numerically bounded.
+    alphas = 0.95 + 0.05 * torch.rand(length, batch, heads, device="cuda", generator=generator)
+    betas = 0.1 * torch.rand(length, batch, heads, device="cuda", generator=generator)
+    actual = init_gdn_affine(
+        batch_size=batch,
+        num_heads=heads,
+        d_k=d_k,
+        d_v=d_v,
+        dtype=torch.float32,
+        device="cuda",
+    )
+    expected = tuple(t.clone() for t in actual)
+
+    for token in range(length):
+        expected = _reference_update_affine_summary(
+            expected[0],
+            expected[1],
+            keys[token],
+            values[token],
+            alphas[token],
+            betas[token],
+        )
+        actual = update_affine_summary(
+            A_hat=actual[0],
+            B_hat=actual[1],
+            k=keys[token],
+            v=values[token],
+            alpha=alphas[token],
+            beta=betas[token],
+        )
+
+    torch.testing.assert_close(actual[0], expected[0], rtol=2e-4, atol=2e-5)
+    torch.testing.assert_close(actual[1], expected[1], rtol=2e-4, atol=2e-5)
 
 
 if __name__ == "__main__":

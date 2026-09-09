@@ -31,3 +31,20 @@ env/
 # .vscode
 .vscode/
 .coverage
+
+# Local tests, profiling, deployments and model artifacts
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+coverage.xml
+results/
+checkpoints/
+models/
+*.safetensors
+*.pt
+*.pth
+*.log
+.env
+_vizdoom/
+_vizdoom.ini
