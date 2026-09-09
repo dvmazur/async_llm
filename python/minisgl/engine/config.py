@@ -33,6 +33,8 @@ class EngineConfig:
     # Default query-row budget per shared-cache prefill forward; None disables chunking.
     # Read by SharedCacheSession, not by the engine itself.
     max_prefill_rows: int | None = None
+    # Opt-in loading of serialized dynamic block-FP8 checkpoints. None keeps BF16/FP16.
+    quantization: str | None = None
     generation_config: GenerationConfig = None
     distributed_addr: str = "tcp://127.0.0.1:2333"
 

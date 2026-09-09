@@ -107,6 +107,8 @@ exclude = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["python", "."]
+markers = ["fp8_e2e: opt-in fresh full-model FP8 correctness tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

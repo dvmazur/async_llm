@@ -153,13 +153,23 @@ class Engine:
         return tp_cpu_group
 
     def _load_weight_state_dict(self, config: EngineConfig) -> Dict[str, torch.Tensor]:
+        if config.quantization not in (None, "fp8"):
+            raise ValueError(f"Unsupported quantization: {config.quantization}")
         if config.use_dummy_weight:
+            if config.quantization is not None:
+                raise ValueError("FP8 requires a serialized checkpoint, not dummy weights")
             return {
                 k: torch.randn_like(v, device=self.device)
                 for k, v in self.model.state_dict().items()
             }
         else:
-            return {k: v.to(self.dtype) for k, v in load_weight(config.model_path, self.device)}
+            return {
+                k: (v if v.dtype == torch.float8_e4m3fn else
+                    v.float() if config.quantization == "fp8" and k.endswith("_scale_inv")
+                    else v.to(self.dtype))
+                for k, v in load_weight(config.model_path, self.device,
+                                        quantization=config.quantization)
+            }
 
     def _determine_num_pages(self, old_free_memory: int, config: EngineConfig) -> int:
         new_free_memory = self._sync_get_memory()[1]
