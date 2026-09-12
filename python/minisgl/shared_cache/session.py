@@ -1185,6 +1185,8 @@ class SharedCacheSession:
         # request runs its own scan.  No-op for standard models (sc_gdn is None).
         success = False
         try:
+            if self.graph_io is not None:
+                self.graph_io.retire_completed()
             if self.sc_gdn is not None and cache_structure is not None:
                 self.sc_gdn.set_context(
                     cache_structure,

@@ -74,6 +74,12 @@ class SharedGraphIO:
         self.prefill_attention, self.prefill_gdn, self.prefill_batches = {}, {}, {}
         self.prefill_inputs = None
 
+    def retire_completed(self):
+        # A profile may not be selected again for many steps. Its completed
+        # pointer-input/output references must not pin an old whole topology.
+        for buffers in (*self.gdn.values(), *self.prefill_gdn.values()):
+            buffers.retire_completed()
+
     def init_capture_graph(self, max_seq_len, bs_list):
         s = self.session
         self.dummy_slots = s.page_allocator.alloc_pages(max(bs_list))
