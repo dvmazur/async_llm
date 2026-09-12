@@ -3,7 +3,8 @@
 import torch
 import torch.nn.functional as F
 
-from minisgl.kernel.gdn_prefill import capture_affine_scan, chunk_gdn
+from minisgl.kernel.gdn_prefill import capture_affine_scan, chunk_gdn, chunk_gdn_final_state
+from minisgl.kernel.gdn_affine_io import pack_affine_initial, store_affine_final
 from .gdn_decode import GDNDecodeBuffers
 
 
@@ -20,6 +21,10 @@ class GDNPrefillBuffers(GDNDecodeBuffers):
         self.state_indices = torch.zeros(workers, self.conv_shape[1], dtype=torch.int64, **args)
         self.row_worker = torch.zeros(rows, dtype=torch.int64, **args)
         self.row_local = torch.zeros(rows, dtype=torch.int64, **args)
+        self.affine_initial = torch.empty(workers, self.h, self.dk, self.dk+self.dv,
+                                           dtype=torch.float32, **args)
+        self.affine_values = torch.empty(1, rows, self.h, self.dk+self.dv,
+                                          dtype=torch.float32, **args)
         self.prefill_count = 0
 
     def prepare(self, chains, targets, lengths):
@@ -97,5 +102,22 @@ class GDNPrefillBuffers(GDNDecodeBuffers):
         result = out[self.row_worker, self.row_local]
         return result.masked_fill((torch.arange(self.rows, device=self.device) >= self.cu[-1])[:, None, None], 0)
 
-    def capture_prefill(self, layer, k, v, alpha, beta):
-        capture_affine_scan(self.read_ptrs[layer], self.write_ptrs[layer], k, v, alpha, beta, self.cu)
+    def capture_prefill(self, layer, k, v, alpha, beta, *, g=None):
+        if g is None:
+            # No-FLA keeps the existing pointer scan and its original arithmetic.
+            capture_affine_scan(self.read_ptrs[layer], self.write_ptrs[layer], k, v, alpha, beta, self.cu)
+            return
+        # A follows GDN with zero values; B follows it with real values. Pack
+        # both as value channels of ONE additional FLA pass, initialized from
+        # the write block, not from the composed context S. Preserve FP32 key
+        # normalization before making the strided input contiguous.
+        key = k.float()
+        key = key * torch.rsqrt((key*key).sum(-1, keepdim=True) + 1e-6)
+        pack_affine_initial(self.read_ptrs[layer], self.write_ptrs[layer],
+                            self.affine_initial, self.dk, self.dv)
+        self.affine_values[..., :self.dk].zero_()
+        self.affine_values[0, ..., self.dk:].copy_(v)
+        final = chunk_gdn_final_state(key[None].contiguous(), self.affine_values,
+            g[None].float().contiguous(), beta[None].float().contiguous(), self.affine_initial,
+            self.cu, self.chunk_indices, self.chunk_offsets)
+        store_affine_final(self.write_ptrs[layer], final, self.dk, self.dv)

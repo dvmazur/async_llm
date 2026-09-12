@@ -371,7 +371,7 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         beta, g = self._gates(a, b)
         core = buffers.core(q, k, v, g, beta, buffers.compose(lin),
                              _fla_chunk is not None, _chunk_gated_delta_rule)
-        buffers.capture_prefill(lin, k, v, g.exp(), beta)
+        buffers.capture_prefill(lin, k, v, g.exp(), beta, g=g if _fla_chunk is not None else None)
         core = core.reshape(length, self.num_v_heads, self.head_v_dim)
         core = self.norm.forward(core, z.reshape(length, self.num_v_heads, self.head_v_dim))
         return self.out_proj.forward(core.reshape(length, self.value_dim))

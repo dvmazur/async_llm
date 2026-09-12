@@ -109,7 +109,7 @@ def test_ragged_prefill_replay_and_updated_targets(use_fla):
         conv = buf.convolve(0, qkv, weight)
         q, k, v = [t.reshape(256, 2, 128) for t in conv.split(256, -1)]
         output.copy_(buf.core(q, k, v, g, beta, buf.compose(0), use_fla, _chunk_gated_delta_rule))
-        buf.capture_prefill(0, k, v, g.exp(), beta)
+        buf.capture_prefill(0, k, v, g.exp(), beta, g=g if use_fla else None)
 
     dummy = [CacheBlock(ar.device) for _ in range(3)]
     buf.prepare([[b] for b in dummy], dummy, [32, 32, 32])

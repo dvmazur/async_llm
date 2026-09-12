@@ -43,6 +43,46 @@ def chunk_gdn(q, k, v, g, beta, initial, cu, chunk_indices, chunk_offsets,
     return out, final
 
 
+def chunk_gdn_final_state(k, v, g, beta, initial, cu, chunk_indices, chunk_offsets):
+    """One auxiliary FLA pass for packed A/B, with already-normalized FP32 k.
+
+    Use installed FLA math, not a copy of its kernels. The fused64 KKT solver
+    explicitly requests TF32, so use FLA's separate KKT + triangular solve.
+    Restrict dot precision per launch: Triton's tl.dot default ignores the
+    compiler's default_dot_input_precision option. No global knobs are changed.
+    Main model chunk_gdn stays unchanged. Auxiliary token outputs are unused.
+    """
+    from fla.ops.utils import chunk_local_cumsum, solve_tril
+    from fla.ops.utils.constant import RCP_LN2
+    from fla.ops.common.chunk_scaled_dot_kkt import chunk_scaled_dot_kkt_fwd_kernel
+    from fla.ops.gated_delta_rule.wy_fast import recompute_w_u_fwd_kernel
+    from fla.ops.common.chunk_delta_h import chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+
+    _, t, h, dk = k.shape
+    hv, dv = v.shape[-2:]
+    gc = chunk_local_cumsum(g, chunk_size=64, scale=RCP_LN2,
+                            cu_seqlens=cu, chunk_indices=chunk_indices)
+    coefficients = k.new_zeros(1, t, hv, 64)
+    chunk_scaled_dot_kkt_fwd_kernel[(len(chunk_indices), hv)](
+        k=k, g=gc, beta=beta, A=coefficients, cu_seqlens=cu, chunk_indices=chunk_indices,
+        T=t, H=h, HV=hv, K=dk, BT=64, allowed_dot_input_precisions=('ieee',))
+    coefficients = solve_tril(coefficients, cu_seqlens=cu, chunk_indices=chunk_indices,
+                               output_dtype=torch.float32)
+    w, u = k.new_empty(1, t, hv, dk), torch.empty_like(v)
+    recompute_w_u_fwd_kernel[(len(chunk_indices), hv)](
+        k=k, v=v, beta=beta, w=w, u=u, A=coefficients, g=gc,
+        cu_seqlens=cu, chunk_indices=chunk_indices, T=t, H=h, HV=hv, K=dk, V=dv,
+        BT=64, BK=64, BV=64, allowed_dot_input_precisions=('ieee',))
+    states = k.new_empty(1, len(chunk_indices), hv, dk, dv)
+    final = torch.empty_like(initial)
+    chunk_gated_delta_rule_fwd_kernel_h_blockdim64[
+        lambda meta: (tr.cdiv(dv, meta['BV']), (len(cu)-1)*hv)](
+            k=k, v=u, w=w, v_new=None, g=gc, gk=None, h=states, h0=initial, ht=final,
+            cu_seqlens=cu, chunk_offsets=chunk_offsets, T=t, H=h, HV=hv, K=dk, V=dv,
+            BT=64, STATE_V_FIRST=False, allowed_dot_input_precisions=('ieee',))
+    return final
+
+
 @tr.jit
 def _affine_scan(Read, Write, Key, Value, Alpha, Beta, Cu,
                  H: tl.constexpr, DK: tl.constexpr, DV: tl.constexpr,
