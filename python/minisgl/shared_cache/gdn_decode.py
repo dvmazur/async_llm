@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import torch
 
+from minisgl.kernel.gdn_compose import compose_first, compose_level
 from minisgl.kernel.gdn_io import collect_states, gather_rows, scatter_rows
 from .gdn_affine import update_affine_summary
 
@@ -52,9 +53,13 @@ class GDNDecodeBuffers:
         self.read_ptrs = torch.zeros(layers, workers, 3, dtype=torch.int64, **args)
         self.write_ptrs = torch.zeros_like(self.read_ptrs)
         self.parents = torch.zeros(depth, workers, dtype=torch.int64, **args)
+        self.level_counts = torch.zeros(depth, dtype=torch.int32, **args)
         self.terminals = torch.full((depth, workers), -1, dtype=torch.int32, **args)
         self.a = torch.empty(workers, self.h, self.dk, self.dk, dtype=torch.float32, **args)
         self.b = torch.empty(workers, self.h, self.dv, self.dk, dtype=torch.float32, **args)
+        # Compose ping-pongs between b and frontier; capture can reuse b once
+        # all terminal states have been collected into the independent initial.
+        self.frontier = torch.empty_like(self.b)
         self.initial = torch.empty(workers, self.h, self.dk, self.dv, dtype=torch.float32, **args)
         self.conv_input = torch.empty(workers, *self.conv_shape, dtype=dtype, **args)
         self._pending = []
@@ -122,6 +127,7 @@ class GDNDecodeBuffers:
                                     out_b[w][layer].data_ptr(), out_conv[w][layer].data_ptr()]
         for dst, src in ((self.affine_ptrs, affine), (self.read_ptrs, reads),
                          (self.write_ptrs, writes), (self.parents, parents),
+                         (self.level_counts, [len(nodes) for nodes in levels]),
                          (self.terminals, terminals)):
             host = torch.tensor(src, dtype=dst.dtype, pin_memory=True)
             refs.append(host)
@@ -149,15 +155,14 @@ class GDNDecodeBuffers:
     def compose(self, layer):
         self.compose_count += 1  # capture counts host execution; replay counted by runner
         self.initial.zero_()
-        state = None
+        state, output = self.b, self.frontier
         for level in range(self.depth):
-            gather_rows(self.affine_ptrs[layer, level, :, 1], self.b)
             if level == 0:
-                state = self.b.clone()
+                compose_first(self.affine_ptrs[layer, level], self.level_counts, state)
             else:
-                gather_rows(self.affine_ptrs[layer, level, :, 0], self.a, self.dk)
-                state = torch.matmul(state.index_select(0, self.parents[level]), self.a)
-                state.add_(self.b)
+                compose_level(self.affine_ptrs[layer, level], self.parents[level],
+                              self.level_counts, level, state, output)
+                state, output = output, state
             collect_states(state, self.terminals[level], self.initial)
         return self.initial
 
