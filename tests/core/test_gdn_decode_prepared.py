@@ -54,6 +54,47 @@ def test_links_share_prefixes_not_equal_suffixes():
         prefix_links([[a], [b]], 1, 1)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA state ownership')
+@pytest.mark.parametrize('prefill', [False, True])
+@torch.inference_mode()
+def test_frozen_worker_does_not_retain_other_workers_output_storage(prefill):
+    from minisgl.shared_cache.gdn_prefill import GDNPrefillBuffers
+    ar = SharedCacheGDN(num_heads=2, head_k_dim=8, head_v_dim=6,
+                         conv_dim=7, conv_kernel=4, device=torch.device('cuda'))
+    targets = [CacheBlock(ar.device) for _ in range(4)]
+    cls = GDNPrefillBuffers if prefill else GDNDecodeBuffers
+    buf = cls(ar, 2, 4, 1, torch.bfloat16, **({'rows': 4} if prefill else {}))
+
+    def publish(group, value):
+        args = ([[t] for t in group], group)
+        buf.prepare(*args, **({'lengths': [1]*len(group)} if prefill else {}))
+        for outputs in buf._current[1:4]:
+            for tensor in outputs:
+                tensor.fill_(value)
+        buf.publish()
+        torch.cuda.synchronize()
+        buf.retire_completed()
+        assert not buf._pending
+
+    publish(targets, 1)
+    expected = (2*2*8*8*4, 2*2*6*8*4, 2*7*4*2)
+    for kind, size in enumerate(expected):
+        storages = []
+        for target in targets:
+            rows = [(*target.linear_affine[layer], target.linear_conv_state[layer])[kind]
+                    for layer in range(2)]
+            # Layers share a worker's storage, but workers never share storage.
+            assert rows[0].untyped_storage().data_ptr() == rows[1].untyped_storage().data_ptr()
+            assert rows[0].untyped_storage().nbytes() == size
+            storages.append(rows[0].untyped_storage().data_ptr())
+        assert len(set(storages)) == len(targets)
+    saved = targets[1].linear_affine[0][0]
+    publish(targets[1:], 2)  # worker0 freezes while the others keep decoding
+    assert torch.all(saved == 1)
+    assert torch.all(targets[0].linear_affine[1][0] == 1)
+    assert torch.all(targets[1].linear_affine[0][0] == 2)
+
+
 def make_case(dtype, dk=8, dv=6):
     torch.manual_seed(718)
     ar = SharedCacheGDN(num_heads=2, head_k_dim=dk, head_v_dim=dv,

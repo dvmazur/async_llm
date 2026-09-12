@@ -76,16 +76,16 @@ class GDNDecodeBuffers:
         reads = [[[0, 0, 0] for _ in range(self.workers)] for _ in range(self.layers)]
         writes = [[[0, 0, 0] for _ in range(self.workers)] for _ in range(self.layers)]
         refs = []
-        # New packed outputs retain the old API's replace-not-overwrite behaviour:
-        # readers saved before this step still refer to the previous tensors.
-        count = len(targets)
-        out_a = torch.empty(self.layers, count, self.h, self.dk, self.dk,
-                            dtype=torch.float32, device=self.device)
-        out_b = torch.empty(self.layers, count, self.h, self.dv, self.dk,
-                            dtype=torch.float32, device=self.device)
-        out_conv = torch.empty(self.layers, count, *self.conv_shape,
-                               dtype=self.dtype, device=self.device)
-        refs.extend((out_a, out_b, out_conv))
+        # One all-layer allocation per worker: a frozen/stopped worker must
+        # not retain the outputs of an entire previous batch through its view.
+        # New outputs still preserve readers of the previous tensors.
+        out_a = [torch.empty(self.layers, 1, self.h, self.dk, self.dk,
+                             dtype=torch.float32, device=self.device) for _ in targets]
+        out_b = [torch.empty(self.layers, 1, self.h, self.dv, self.dk,
+                             dtype=torch.float32, device=self.device) for _ in targets]
+        out_conv = [torch.empty(self.layers, *self.conv_shape,
+                                dtype=self.dtype, device=self.device) for _ in targets]
+        refs.extend((*out_a, *out_b, *out_conv))
 
         def address(tensor, dtype, shape):
             if tensor is None:
@@ -118,8 +118,8 @@ class GDNDecodeBuffers:
                 prior = next((b.linear_conv_state[layer] for b in reversed(chains[w])
                               if layer in b.linear_conv_state), None)
                 reads[layer][w][2] = address(prior, self.dtype, self.conv_shape)
-                writes[layer][w] = [out_a[layer, w].data_ptr(),
-                                    out_b[layer, w].data_ptr(), out_conv[layer, w].data_ptr()]
+                writes[layer][w] = [out_a[w][layer].data_ptr(),
+                                    out_b[w][layer].data_ptr(), out_conv[w][layer].data_ptr()]
         for dst, src in ((self.affine_ptrs, affine), (self.read_ptrs, reads),
                          (self.write_ptrs, writes), (self.parents, parents),
                          (self.terminals, terminals)):
@@ -139,8 +139,8 @@ class GDNDecodeBuffers:
         if success:
             for layer in range(self.layers):
                 for w, target in enumerate(targets):
-                    target.linear_affine[layer] = (out_a[layer, w:w + 1], out_b[layer, w:w + 1])
-                    target.linear_conv_state[layer] = out_conv[layer, w]
+                    target.linear_affine[layer] = (out_a[w][layer], out_b[w][layer])
+                    target.linear_conv_state[layer] = out_conv[w][layer]
         event = torch.cuda.Event()
         event.record(torch.cuda.current_stream(self.device))
         self._pending.append((event, refs))

@@ -146,7 +146,8 @@ def test_same_prepared_full_forward_matches_eager_before_publication(runtime):
             saved = result.clone()
             rows = batch.attn_metadata.graph_buffers.rows
             buffers = io.prefill_gdn[rows]
-            states = [tensor.clone() for tensor in buffers._current[1:4]]
+            outputs = [tensor for workers in buffers._current[1:4] for tensor in workers]
+            states = [tensor.clone() for tensor in outputs]
             slots = batch.out_loc.long()
             kv = [cache(layer).flatten(0, 1).index_select(0, slots).clone()
                   for layer in range(session.kv_cache.num_layers)
@@ -156,7 +157,7 @@ def test_same_prepared_full_forward_matches_eager_before_publication(runtime):
             with patch.object(ctx, '_batch', io.prefill_batches[rows]):
                 expected = session.engine.model.forward()
             torch.testing.assert_close(saved, expected[:batch.size].float(), atol=0, rtol=0)
-            for actual, reference in zip(buffers._current[1:4], states):
+            for actual, reference in zip(outputs, states):
                 torch.testing.assert_close(actual, reference, atol=0, rtol=0)
             after = [cache(layer).flatten(0, 1).index_select(0, slots)
                      for layer in range(session.kv_cache.num_layers)
