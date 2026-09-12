@@ -1130,15 +1130,23 @@ class SharedCacheSession:
         # affine updates.  ``prefill_segments`` splits a batched prefill's rows
         # per request, since a GDN chain is inherently sequential and each
         # request runs its own scan.  No-op for standard models (sc_gdn is None).
-        if self.sc_gdn is not None and cache_structure is not None:
-            self.sc_gdn.set_context(
-                cache_structure,
-                write_to or [c[-1] for c in cache_structure],
-                prefill_segments=prefill_segments,
-            )
-            ctx.gdn_ar = self.sc_gdn
+        success = False
         try:
+            if self.sc_gdn is not None and cache_structure is not None:
+                self.sc_gdn.set_context(
+                    cache_structure,
+                    write_to or [c[-1] for c in cache_structure],
+                    prefill_segments=prefill_segments,
+                )
+                ctx.gdn_ar = self.sc_gdn
+                if batch.is_decode:
+                    self.sc_gdn.prepare_decode(
+                        self._model_config.num_linear_layers, self.engine.config.dtype)
             with ctx.forward_batch(batch):
-                return self.engine.model.forward()
+                logits = self.engine.model.forward()
+            success = True
+            return logits
         finally:
+            if self.sc_gdn is not None:
+                self.sc_gdn.finish_decode(success)
             ctx.gdn_ar = None
