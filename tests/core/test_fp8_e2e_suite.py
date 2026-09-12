@@ -167,8 +167,10 @@ def test_profiles_remain_explicit():
 def test_accuracy_thresholds_are_relative_to_transformers(tmp_path):
     artifacts = _collect(tmp_path, [])
     external = compare(artifacts.mini("mixed"), artifacts.root / "sglang", artifacts.root / "transformers")
-    assert external["additive_margins"] == dict(
-        mean_tv=.005, p95_tv=.01, mean_centered_relative_l2=.005, p95_centered_relative_l2=.01)
+    assert external["relative_tolerance_percent"] == 5.0
+    assert "additive_margins" not in external
+    assert all(value == 0 for phase in external["relative_error_delta_percent"].values()
+               for value in phase.values())
     path = artifacts.mini("mixed") / "text_0_decode.pt"
     logits = torch.load(path, weights_only=True)
     logits[1:] = logits[1:].flip(-1)

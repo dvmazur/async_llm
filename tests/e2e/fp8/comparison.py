@@ -1,9 +1,14 @@
 """Compare teacher-forced logits; initial prefill is NOT counted as decode."""
 import json
+import math
 
 import torch
 
 from .serving import check_schedule
+
+
+ERROR_METRICS = ('mean_tv', 'p95_tv', 'mean_centered_relative_l2', 'p95_centered_relative_l2')
+RELATIVE_ERROR_TOLERANCE = 0.05
 
 
 def distances(actual, reference):
@@ -25,6 +30,31 @@ def aggregate(rows):
         max_tv=float(tv.max()),mean_centered_relative_l2=float(relative.mean()),
         p95_centered_relative_l2=float(relative.quantile(.95)),
         top1_agreement=float(agreement.float().mean()))
+
+
+def relative_error_summary(metrics):
+    """Compare two errors to SGLang, not mini-to-Transformers distance.
+
+    User-approved 5% relative allowance replaces the old additive margins:
+    error(mini, SG) <= 1.05 * error(Transformers, SG). For example, prefill
+    p95 L2 0.207365 / 0.201603 - 1 is about +2.86%, not +2.86 probability pp.
+    Top1 agreement is diagnostic only and never participates in these gates.
+    """
+    gates, deltas = {}, {}
+    for phase in ('prefill', 'decode'):
+        gates[phase], deltas[phase] = {}, {}
+        for key in ERROR_METRICS:
+            actual, baseline = metrics['mini'][phase][key], metrics['transformers'][phase][key]
+            valid = math.isfinite(actual) and math.isfinite(baseline) and actual >= 0 and baseline >= 0
+            gates[phase][key] = valid and actual <= baseline * (1 + RELATIVE_ERROR_TOLERANCE)
+            # No epsilon/additive floor: exact TF/SG equality permits only zero
+            # error. Report an undefined ratio as JSON null, never as NaN/Inf.
+            delta = (100 * (actual / baseline - 1) if baseline > 0 else
+                     0.0 if actual == 0 else None) if valid else None
+            deltas[phase][key] = delta if delta is None or math.isfinite(delta) else None
+    return dict(gates=gates, passed=all(v for phase in gates.values() for v in phase.values()),
+                relative_tolerance_percent=100 * RELATIVE_ERROR_TOLERANCE,
+                relative_error_delta_percent=deltas)
 
 
 def compare(mini,sglang,transformers):
@@ -58,22 +88,20 @@ def compare(mini,sglang,transformers):
             per_case.setdefault(path.stem,{})[name]=aggregate([row])
     metrics={name:{phase:aggregate(rows) for phase,rows in phases.items()}
              for name,phases in results.items()}
-    # Reference-relative quality limits. Set before examining model results.
-    limits=dict(mean_tv=.005,p95_tv=.01,mean_centered_relative_l2=.005,
-                p95_centered_relative_l2=.01)
-    gates={phase:{key:metrics['mini'][phase][key]<=metrics['transformers'][phase][key]+margin
-            for key,margin in limits.items()} for phase in ('prefill','decode')}
+    quality = relative_error_summary(metrics)
     schedule=None
     if scheduling in ('mixed','sequential'):
         schedule=json.loads((mini/'schedule.json').read_text())
         assert schedule['mode']==scheduling
         check_schedule(schedule['forwards'],scheduling)
-    return dict(metrics=metrics,gates=gates,passed=all(v for p in gates.values() for v in p.values()),
+    return dict(metrics=metrics,**quality,
         mini_scheduling=scheduling,mixed_schedule=schedule,
-        additive_margins=limits,per_case=per_case,fixtures_sha256=manifests[0]['fixtures_sha256'],
+        per_case=per_case,fixtures_sha256=manifests[0]['fixtures_sha256'],
         quant_output_ablation=manifests[0]['arguments'].get('reference_quant_outputs',False),
         sglang_native_mrope_override=manifests[1]['arguments'].get('sglang_native_mrope',False),
-        notes='Distances to SGLang, not task accuracy. See mini_scheduling/mixed_schedule for mixed coverage; '
+        notes='Distances to SGLang, not task accuracy. Numerical errors may exceed Transformers errors by '
+              'at most 5% relatively, not by an additive 0.05; top1 agreement is diagnostic only. '
+              'See mini_scheduling/mixed_schedule for mixed coverage; '
               'the SGLang/Transformers references remain sequential, with identical teacher histories. '
               'Check quant_output_ablation: an explicit benchmark override is not production validation. '
               'Check sglang_native_mrope_override: if true, the reference uses SGLang native mRoPE '
