@@ -46,8 +46,11 @@ def chunk_gdn(q, k, v, g, beta, initial, cu, chunk_indices, chunk_offsets,
 @tr.jit
 def _affine_scan(Read, Write, Key, Value, Alpha, Beta, Cu,
                  H: tl.constexpr, DK: tl.constexpr, DV: tl.constexpr,
-                 BK: tl.constexpr, R: tl.constexpr):
+                 BK: tl.constexpr, R: tl.constexpr, ONE_TOKEN: tl.constexpr):
     worker, head, tile = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    oa, ob = tl.load(Write + worker * 3), tl.load(Write + worker * 3 + 1)
+    if (oa == 0) & (ob == 0):
+        return
     rows = tile * R + tl.arange(0, R)
     columns = tl.arange(0, BK)
     is_a = rows < DK
@@ -61,7 +64,10 @@ def _affine_scan(Read, Write, Key, Value, Alpha, Beta, Cu,
     state = tl.load(pointer[:, None] + offset, mask & present[:, None], other=0)
     identity = (local_row[:, None] == columns[None, :]) & is_a[:, None]
     state = tl.where(present[:, None], state, identity.to(tl.float32))
-    start, end = tl.load(Cu + worker), tl.load(Cu + worker + 1)
+    if ONE_TOKEN:
+        start, end = worker, worker + 1
+    else:
+        start, end = tl.load(Cu + worker), tl.load(Cu + worker + 1)
     for t in range(start, end):
         key = tl.load(Key + (t * H + head) * DK + columns, columns < DK, other=0)
         value = tl.load(Value + (t * H + head) * DV + local_row,
@@ -98,18 +104,19 @@ def _affine_scan(Read, Write, Key, Value, Alpha, Beta, Cu,
             constraints="=f,f,f,f,f,f,f",
             args=[state, alpha, beta, dot[:, None], key[None, :], value[:, None]],
             dtype=tl.float32, is_pure=True, pack=1)
-    oa, ob = tl.load(Write + worker * 3), tl.load(Write + worker * 3 + 1)
     destination = tl.where(is_a, oa, ob).to(tl.pointer_type(tl.float32))
     enabled = tl.where(is_a, oa != 0, ob != 0)
     tl.store(destination[:, None] + offset, state, mask & enabled[:, None])
 
 
-def capture_affine_scan(read, write, key, value, alpha, beta, cu):
+def capture_affine_scan(read, write, key, value, alpha, beta, cu=None, *, l2norm_eps=1e-6):
+    """Pointer update; absent cu means one token per worker (decode)."""
     key = key.float()
-    key = key * torch.rsqrt((key * key).sum(-1, keepdim=True) + 1e-6)
+    key = key * torch.rsqrt((key * key).sum(-1, keepdim=True) + l2norm_eps)
     value, alpha, beta = value.float().contiguous(), alpha.float().contiguous(), beta.float().contiguous()
     _, h, dk = key.shape
     dv = value.shape[-1]
-    _affine_scan[(len(cu)-1, h, tr.cdiv(dk + dv, 8))](
+    _affine_scan[(read.shape[0], h, tr.cdiv(dk + dv, 8))](
         read, write, key.contiguous(), value, alpha, beta, cu,
-        h, dk, dv, max(8, tr.next_power_of_2(dk)), 8, num_warps=2, enable_fp_fusion=False)
+        h, dk, dv, max(8, tr.next_power_of_2(dk)), 8, cu is None,
+        num_warps=2, enable_fp_fusion=False)

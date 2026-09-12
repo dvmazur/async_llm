@@ -9,8 +9,8 @@ from __future__ import annotations
 import torch
 
 from minisgl.kernel.gdn_compose import compose_first, compose_level
+from minisgl.kernel.gdn_prefill import capture_affine_scan
 from minisgl.kernel.gdn_io import collect_states, gather_rows, scatter_rows
-from .gdn_affine import update_affine_summary
 
 
 def prefix_links(chains, workers: int, depth: int):
@@ -55,10 +55,9 @@ class GDNDecodeBuffers:
         self.parents = torch.zeros(depth, workers, dtype=torch.int64, **args)
         self.level_counts = torch.zeros(depth, dtype=torch.int32, **args)
         self.terminals = torch.full((depth, workers), -1, dtype=torch.int32, **args)
-        self.a = torch.empty(workers, self.h, self.dk, self.dk, dtype=torch.float32, **args)
         self.b = torch.empty(workers, self.h, self.dv, self.dk, dtype=torch.float32, **args)
-        # Compose ping-pongs between b and frontier; capture can reuse b once
-        # all terminal states have been collected into the independent initial.
+        # Compose ping-pongs between b and frontier. Capture writes directly
+        # into block-owned outputs, without staging dense A/B scratch.
         self.frontier = torch.empty_like(self.b)
         self.initial = torch.empty(workers, self.h, self.dk, self.dv, dtype=torch.float32, **args)
         self.conv_input = torch.empty(workers, *self.conv_shape, dtype=dtype, **args)
@@ -170,15 +169,8 @@ class GDNDecodeBuffers:
         return gather_rows(self.read_ptrs[layer, :, 2], self.conv_input)
 
     def capture(self, layer, key, value, alpha, beta, eps):
-        key_f = key.float()
-        key_f = key_f * torch.rsqrt((key_f * key_f).sum(-1, keepdim=True) + eps)
-        gather_rows(self.read_ptrs[layer, :, 0], self.a, self.dk)
-        gather_rows(self.read_ptrs[layer, :, 1], self.b)
-        a, b = update_affine_summary(A_hat=self.a, B_hat=self.b, k=key_f[:, 0],
-                                     v=value[:, 0].float(), alpha=alpha[:, 0].float(),
-                                     beta=beta[:, 0].float())
-        scatter_rows(self.write_ptrs[layer, :, 0], a)
-        scatter_rows(self.write_ptrs[layer, :, 1], b)
+        capture_affine_scan(self.read_ptrs[layer], self.write_ptrs[layer],
+                            key[:, 0], value[:, 0], alpha[:, 0], beta[:, 0], l2norm_eps=eps)
 
     def store_conv(self, layer, conv):
         scatter_rows(self.write_ptrs[layer, :, 2], conv)

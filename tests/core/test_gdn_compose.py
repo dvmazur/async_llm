@@ -60,6 +60,8 @@ def test_compose_changing_trie_matches_both_references(dk, dv, captured):
                         conv_dim=7, conv_kernel=4, device=torch.device('cuda'))
     buf = GDNDecodeBuffers(ar, 2, 8, 7, torch.bfloat16)
     dense = GDNDecodeBuffers(ar, 2, 8, 7, torch.bfloat16)
+    # Only the frozen dense reference needs an A staging allocation.
+    dense.a = torch.empty(8, 2, dk, dk, device='cuda', dtype=torch.float32)
     blocks = [CacheBlock(ar.device) for _ in range(7)]
     targets = [CacheBlock(ar.device) for _ in range(8)]
     for i, block in enumerate(blocks):
