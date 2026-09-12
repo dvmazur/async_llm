@@ -416,7 +416,7 @@ class SharedCacheAttention:
         meta._plan_refs = tuple(plan_refs)
         return meta
 
-    def prepare_prefill_batch(self, specs: List[PrefillSpec]) -> SharedCacheAttnMetadata:
+    def prepare_prefill_batch(self, specs: List[PrefillSpec], graph_buffers=None) -> SharedCacheAttnMetadata:
         """
         Plan several prefills as one forward, laid out request-major: request
         ``r`` owns output rows ``[offset_r, offset_r + num_new_r)``.
@@ -438,6 +438,8 @@ class SharedCacheAttention:
         grouping and ``SharedCacheSession.prefill_batch`` both refuse it).
         """
         assert specs, "prepare_prefill_batch needs at least one request"
+        if graph_buffers is not None:
+            return graph_buffers.plan(specs)
         P = self.page_size
         # A single 3-D request forces every row onto the 3-axis mRoPE path, since
         # ``sub_loc`` is one tensor; text rows simply repeat their position thrice.
@@ -680,11 +682,18 @@ class SharedCacheAttention:
         n_ctx_rows = meta.n_ctx_rows
 
         kv = (self.kv_cache.k_cache(layer_id), self.kv_cache.v_cache(layer_id))
-        out_self, lse_self = self.prefill_self_wrapper.run(q_sub[n_ctx_rows:], kv, return_lse=True)
+        buffers = meta.graph_buffers
+        self_wrapper = self.prefill_self_wrapper if buffers is None else buffers.aux
+        ctx_wrapper = self.prefill_ctx_wrapper if buffers is None else buffers.main
+        out_self, lse_self = (self_wrapper.run(q_sub[n_ctx_rows:], kv, return_lse=True)
+                             if buffers is None else buffers.run(
+                                 self_wrapper, q_sub[n_ctx_rows:], kv, buffers.used_self_rows))
         if n_ctx_rows == 0:
             # No request has context: the causal self segment is the whole answer.
             return out_self.view(N, -1)
-        out_ctx, lse_ctx = self.prefill_ctx_wrapper.run(q_sub[:n_ctx_rows], kv, return_lse=True)
+        out_ctx, lse_ctx = (ctx_wrapper.run(q_sub[:n_ctx_rows], kv, return_lse=True)
+                           if buffers is None else buffers.run(
+                               ctx_wrapper, q_sub[:n_ctx_rows], kv, buffers.used_ctx_rows))
 
         from flashinfer import merge_states
 
@@ -698,7 +707,12 @@ class SharedCacheAttention:
         # kernel seeds its accumulator with (``triton/kernels/cascade.py``), and
         # staying finite keeps an all-padding row from going NaN.
         s_pad = torch.full((N * M, Hq), -5.0e4, dtype=torch.float32, device=self.device)
-        v_pad[meta.pad_slot] = torch.cat([out_ctx, out_self], dim=0)
-        s_pad[meta.pad_slot] = torch.cat([lse_ctx, lse_self], dim=0)
+        out = torch.cat([out_ctx, out_self], dim=0)
+        lse = torch.cat([lse_ctx, lse_self], dim=0)
+        if buffers is not None:
+            out = torch.where(buffers.valid[:, None, None], out, 0)
+            lse = torch.where(buffers.valid[:, None], lse, -5.0e4)
+        v_pad[meta.pad_slot] = out
+        s_pad[meta.pad_slot] = lse
         merged, _ = merge_states(v_pad.view(N, M, Hq, D), s_pad.view(N, M, Hq))
         return merged.view(N, -1)

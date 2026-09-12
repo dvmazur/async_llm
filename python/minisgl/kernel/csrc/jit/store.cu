@@ -41,12 +41,16 @@ __global__ __launch_bounds__(kNumThreads, kMaxOccupancy) void //
   // each warp handles one element
   if (warp_id < length) {
     const auto pos = static_cast<const T *>(indices)[warp_id];
-    const auto dst_k = pointer::offset(k_cache, pos * kv_cache_stride);
-    const auto src_k = pointer::offset(k, warp_id * kv_input_stride);
-    warp::copy<kElementSize>(dst_k, src_k);
-    const auto dst_v = pointer::offset(v_cache, pos * kv_cache_stride);
-    const auto src_v = pointer::offset(v, warp_id * kv_input_stride);
-    warp::copy<kElementSize>(dst_v, src_v);
+    // Negative slots are inactive graph rows, not writes to a shared dummy.
+    // Keep the PDL completion below unconditional, including all-padding warps.
+    if (pos >= 0) {
+      const auto dst_k = pointer::offset(k_cache, pos * kv_cache_stride);
+      const auto src_k = pointer::offset(k, warp_id * kv_input_stride);
+      warp::copy<kElementSize>(dst_k, src_k);
+      const auto dst_v = pointer::offset(v_cache, pos * kv_cache_stride);
+      const auto src_v = pointer::offset(v, warp_id * kv_input_stride);
+      warp::copy<kElementSize>(dst_v, src_v);
+    }
   }
 
   PDL::launch<kUsePDL>();
