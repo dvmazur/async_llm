@@ -85,6 +85,7 @@ class SharedCacheAttnMetadata(BaseAttnMetadata):
     last_indices: Optional[torch.Tensor] = None
     phase: Literal["decode", "prefill_batch"] = "decode"
     _plan_refs: tuple = field(default=(), repr=False)
+    graph_buffers: object | None = field(default=None, repr=False)
 
     def get_last_indices(self, bs: int) -> torch.Tensor:
         if self.phase == "prefill_batch":
@@ -252,6 +253,7 @@ class SharedCacheAttention:
         group: WorkerGroup,
         new_page_for_block: Dict[int, Optional[int]],
         new_token_slots: torch.Tensor,
+        graph_buffers=None,
     ) -> SharedCacheAttnMetadata:
         """
         Build per-(worker, segment) sub-requests for one decode step and plan
@@ -338,6 +340,11 @@ class SharedCacheAttention:
 
         n_main = len(main_sub_worker)
         n_aux = len(aux_sub_worker)
+        if graph_buffers is not None:
+            return graph_buffers.plan(
+                main_sub_worker, main_sub_loc, main_sub_slot, main_kv_parts,
+                main_page_counts, main_seq_lens, main_last_page,
+                aux_sub_worker, aux_sub_loc, aux_kv_slots)
         CPU_KWARGS = {"device": "cpu", "dtype": torch.int32, "pin_memory": True}
         plan_refs: List[torch.Tensor] = []
 
@@ -618,8 +625,10 @@ class SharedCacheAttention:
 
         outs: List[torch.Tensor] = []
         lses: List[torch.Tensor] = []
+        main_wrapper = self.wrapper if meta.graph_buffers is None else meta.graph_buffers.main
+        aux_wrapper = self.aux_wrapper if meta.graph_buffers is None else meta.graph_buffers.aux
         if meta.n_main > 0:
-            out_m, lse_m = self.wrapper.run(
+            out_m, lse_m = main_wrapper.run(
                 q=q_sub[: meta.n_main], paged_kv_cache=(k_paged, v_paged), return_lse=True
             )
             outs.append(out_m)
@@ -629,7 +638,7 @@ class SharedCacheAttention:
             # offset -> read it through the flattened (page_size=1) pool.
             kflat = k_paged.view(-1, 1, self.num_kv_heads, D)
             vflat = v_paged.view(-1, 1, self.num_kv_heads, D)
-            out_a, lse_a = self.aux_wrapper.run(
+            out_a, lse_a = aux_wrapper.run(
                 q=q_sub[meta.n_main :], paged_kv_cache=(kflat, vflat), return_lse=True
             )
             outs.append(out_a)
@@ -637,6 +646,10 @@ class SharedCacheAttention:
 
         out = outs[0] if len(outs) == 1 else torch.cat(outs, dim=0)
         lse = lses[0] if len(lses) == 1 else torch.cat(lses, dim=0)
+        if meta.graph_buffers is not None:
+            mask = meta.graph_buffers.valid
+            out = torch.where(mask[:, None, None], out, 0)
+            lse = torch.where(mask[:, None], lse, -5.0e4)
 
         if meta.max_segments == 1 and meta.n_aux == 0:
             # Every worker has exactly one paged segment, emitted in worker order.

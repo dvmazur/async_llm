@@ -137,7 +137,7 @@ def _recurrent_gated_delta_rule(
     scale = 1 / (query.shape[-1] ** 0.5)
     query = query * scale
 
-    core_attn_out = torch.zeros(batch_size, num_heads, sequence_length, v_head_dim).to(value)
+    core_attn_out = value.new_zeros((batch_size, num_heads, sequence_length, v_head_dim))
     last_recurrent_state = initial_state.to(value)
 
     for i in range(sequence_length):

@@ -26,21 +26,36 @@ pytestmark = pytest.mark.skipif(not MODEL or not torch.cuda.is_available(),
 @pytest.fixture(scope='module')
 def runtime(tmp_path_factory):
     from transformers import AutoConfig
+    from minisgl.engine import Engine, EngineConfig
+    from minisgl.distributed import DistributedInfo
     quantization = 'fp8' if getattr(AutoConfig.from_pretrained(MODEL), 'quantization_config', None) else None
     with pytest.MonkeyPatch.context() as patch:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        llm = AsyncLLM(MODEL, quantization=quantization, max_running_req=8, num_page_override=8192,
-                       max_seq_len_override=8192, attention_backend='fi',
-                       distributed_addr=(tmp_path_factory.mktemp('gdn_e2e')/'nccl').as_uri())
+        graphs = os.environ.get('MINISGL_TEST_SHARED_GRAPHS') == '1'
+        engine = Engine(EngineConfig(
+            model_path=MODEL, dtype=torch.bfloat16, tp_info=DistributedInfo(0, 1),
+            quantization=quantization, max_running_req=8, num_page_override=8192,
+            max_seq_len_override=8192, attention_backend='fi',
+            cuda_graph_bs=[1, 2, 4] if graphs else [], cuda_graph_max_bs=4 if graphs else 0,
+            shared_cuda_graph_max_depth=8,
+            distributed_addr=(tmp_path_factory.mktemp('gdn_e2e')/'nccl').as_uri()))
         import minisgl.models.qwen3_5_delta as delta
         if os.environ.get('MINISGL_TEST_NO_FLA') == '1':
             patch.setattr(delta, '_fla_chunk', None)
             patch.setattr(delta, '_fla_recurrent', None)
+        llm = AsyncLLM(MODEL, engine=engine)
+        if graphs:
+            assert all(not b._pending and b._current is None
+                       for b in llm.async_engine.session.graph_io.gdn.values())
         try:
             yield loop, llm
         finally:
             loop.run_until_complete(llm.close())
+            engine.shutdown()
+            for result, saved in getattr(llm, '_test_retained_logits', []):
+                assert result.is_cuda and not result.is_inference()
+                torch.testing.assert_close(result, saved, atol=0, rtol=0)
             loop.close()
             asyncio.set_event_loop(None)
 
@@ -50,6 +65,8 @@ def test_learned_history_states_and_logits(runtime, record_property):
     _, llm = runtime
     session = llm.async_engine.session
     prepared = session.sc_gdn
+    graph_runner = session.graph_runner
+    initial_graphs = {} if graph_runner is None else dict(graph_runner.graph_map)
     reference = ReferenceGDN(num_heads=prepared.num_heads, head_k_dim=prepared.head_k_dim,
                              head_v_dim=prepared.head_v_dim, conv_dim=prepared.conv_dim,
                              conv_kernel=prepared.conv_kernel, device=prepared.device)
@@ -88,6 +105,7 @@ def test_learned_history_states_and_logits(runtime, record_property):
         outputs = []
         for side, backend in enumerate((reference, prepared)):
             session.sc_gdn = backend
+            session.graph_runner = None if side == 0 else graph_runner
             torch.cuda.synchronize()
             start = time.perf_counter()
             outputs.append(operation(side).clone())
@@ -143,8 +161,13 @@ def test_learned_history_states_and_logits(runtime, record_property):
         record_property('max_probability_error', max_probability_error)
         record_property('forward_wall_seconds', times)
         record_property('peak_allocated_bytes', torch.cuda.max_memory_allocated())
+        if graph_runner is not None:
+            assert graph_runner.graph_map == initial_graphs
+            assert graph_runner.replay_count == 6
+            record_property('full_decode_replays', graph_runner.replay_count)
     finally:
         session.sc_gdn = prepared
+        session.graph_runner = graph_runner
         for pair in pairs:
             for block in pair:
                 session.free_block(block)
@@ -166,8 +189,30 @@ def test_async_generation_retains_logits(runtime):
         for result, copy in zip(first, saved):
             assert not result.logits.is_inference()
             torch.testing.assert_close(result.logits, copy, atol=0, rtol=0)
+        llm._test_retained_logits = [(r.logits, c) for r, c in zip(first, saved)]
         assert llm.async_engine.session.sc_gdn.decode_buffers.compose_count > 0
         await llm.free_block(prompt.block)
         for tail in tails:
             await llm.free_block(tail)
     loop.run_until_complete(run())
+
+
+def test_graph_overflow_is_not_silent_fallback(runtime):
+    _, llm = runtime
+    session = llm.async_engine.session
+    if session.graph_runner is None:
+        pytest.skip('Graph-only capacity contract')
+    blocks = [session.create_block() for _ in range(5)]
+    before_pages = session.page_allocator.num_free_pages
+    before_replays = session.graph_runner.replay_count
+    with pytest.raises(ValueError, match='batch exceeds'):
+        session.decode_step(WorkerGroup(cache_structure=[[b] for b in blocks], write_to=blocks),
+                            torch.ones(5, dtype=torch.int32))
+    with pytest.raises(ValueError, match='depth capacity'):
+        session.decode_step(WorkerGroup(cache_structure=[[blocks[0]] * 9], write_to=[blocks[0]]),
+                            torch.ones(1, dtype=torch.int32))
+    assert session.page_allocator.num_free_pages == before_pages
+    assert session.graph_runner.replay_count == before_replays
+    assert all(b.num_tokens == 0 and not b.linear_affine for b in blocks)
+    for block in blocks:
+        session.free_block(block)

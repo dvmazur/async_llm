@@ -51,6 +51,8 @@ def _determine_cuda_graph_bs(
     cuda_graph_max_bs: int | None,
     free_memory: int,
 ) -> List[int]:
+    if cuda_graph_max_bs == 0:
+        return []
     if cuda_graph_bs is not None:
         return cuda_graph_bs
 
@@ -64,7 +66,8 @@ def _determine_cuda_graph_bs(
     if cuda_graph_max_bs < 1:
         return []
 
-    return [1, 2, 4] + list(range(8, cuda_graph_max_bs + 1, 8))
+    return [bs for bs in [1, 2, 4] + list(range(8, cuda_graph_max_bs + 1, 8))
+            if bs <= cuda_graph_max_bs]
 
 
 def mem_GB(size: int) -> str:
@@ -100,6 +103,7 @@ class GraphRunner:
         self.dummy_req = dummy_req
         self.stream = stream
         self.device = device
+        self.replay_count = 0
         self._capture_graphs(max_seq_len, vocab_size, model)
 
     def _capture_graphs(self, max_seq_len: int, vocab_size: int, model: BaseLLMModel):
@@ -133,12 +137,16 @@ class GraphRunner:
             graph = torch.cuda.CUDAGraph()
             batch = Batch(reqs=[self.dummy_req] * bs, phase="decode")
             batch.padded_reqs = batch.reqs
-            self.attn_backend.prepare_for_capture(batch)
             self.buffer.set_batch(batch)
-            with get_global_ctx().forward_batch(batch):
-                self.buffer.logits[:bs] = model.forward()
-                with torch.cuda.graph(graph, pool=pool, stream=self.stream):
+            self.attn_backend.prepare_for_capture(batch)
+            try:
+                with get_global_ctx().forward_batch(batch):
                     self.buffer.logits[:bs] = model.forward()
+                    with torch.cuda.graph(graph, pool=pool, stream=self.stream):
+                        self.buffer.logits[:bs] = model.forward()
+            finally:
+                if finish := getattr(self.attn_backend, "finish_capture", None):
+                    finish(batch)
             if pool is None:
                 pool = graph.pool()  # reuse cuda graph handle to reduce memory
             self.graph_map[bs] = graph
@@ -155,6 +163,7 @@ class GraphRunner:
         g = self.graph_map[batch.padded_size]
         self.attn_backend.prepare_for_replay(batch)
         g.replay()
+        self.replay_count += 1
         return self.buffer.logits[: batch.size]
 
     def pad_batch(self, batch: Batch) -> None:
@@ -167,5 +176,7 @@ class GraphRunner:
 
     # NOTE: This must be called before freeing NCCL resources to prevent program hang
     def destroy_cuda_graphs(self) -> None:
-        del self.graph_map
+        self.graph_map.clear()
         gc.collect()
+        if destroy := getattr(self.attn_backend, "destroy_capture_graph", None):
+            destroy()

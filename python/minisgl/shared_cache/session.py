@@ -272,6 +272,36 @@ class SharedCacheSession:
             mrope_section=sc_mrope,
             rope_base=sc_rope_base,
         )
+        self.graph_runner = None
+        self.graph_io = None
+        # Shared graphs are explicit opt-in with the existing EngineConfig
+        # sizes (or a positive max); max=0 is global OFF. Prefill stays eager.
+        # Unsupported capacities raise instead of silently switching execution.
+        sizes = engine.config.cuda_graph_bs
+        limit = engine.config.cuda_graph_max_bs
+        if sizes is None and limit is not None and limit > 0:
+            from minisgl.engine.graph import _determine_cuda_graph_bs
+            sizes = _determine_cuda_graph_bs(None, limit, 0)
+        if sizes and limit != 0:
+            from minisgl.engine.graph import GraphRunner
+            from .graph import SharedGraphIO
+            if any(bs <= 0 or bs > engine.config.max_running_req for bs in sizes):
+                raise ValueError("Shared graph sizes must be within max_running_req")
+            depth = engine.config.shared_cuda_graph_max_depth
+            if depth < 1:
+                raise ValueError("shared_cuda_graph_max_depth must be positive")
+            self.graph_io = SharedGraphIO(self, depth)
+            try:
+                self.graph_runner = GraphRunner(
+                    stream=engine.stream, device=self.device, model=engine.model,
+                    attn_backend=self.graph_io, cuda_graph_bs=sorted(set(sizes)),
+                    cuda_graph_max_bs=max(sizes), free_memory=0,
+                    max_seq_len=engine.max_seq_len, vocab_size=engine.config.model_config.vocab_size,
+                    dummy_req=engine.dummy_req)
+            except BaseException:
+                self.graph_io.destroy_capture_graph()
+                raise
+            engine._shared_graph_runners.append(self.graph_runner)
 
     # ------------------------------------------------------------------
     # Public API
@@ -969,6 +999,13 @@ class SharedCacheSession:
             for block in context.cache_view:
                 self._validate_block(block)
         num_workers = group.num_workers
+        if self.graph_runner is not None:
+            if num_workers > self.graph_runner.max_graph_bs:
+                raise ValueError("Decode batch exceeds shared CUDA graph capacity")
+            if any(len(c) > self.graph_io.depth for c in group.cache_structure):
+                raise ValueError("Decode chain exceeds shared CUDA graph depth capacity")
+            if group.max_cache_length() + 1 > self.engine.max_seq_len:
+                raise ValueError("Decode context exceeds shared CUDA graph context capacity")
         input_ids = input_ids.to(dtype=torch.int32).reshape(num_workers).cpu()
 
         # Decide, per (distinct) write block, whether the new token starts a
@@ -1001,7 +1038,13 @@ class SharedCacheSession:
         batch.positions = torch.tensor(write_pos, dtype=torch.int64, device=self.device)
         batch.input_ids = input_ids.to(self.device)
         batch.out_loc = new_token_slots
-        batch.attn_metadata = self.sc_attn.prepare(group, new_page_for_block, new_token_slots)
+        graph_buffers = None
+        if self.graph_runner is not None:
+            self.graph_runner.pad_batch(batch)
+            graph_buffers = self.graph_io.attention[batch.padded_size]
+            self.graph_io.pad_inputs(batch)
+        batch.attn_metadata = self.sc_attn.prepare(
+            group, new_page_for_block, new_token_slots, graph_buffers)
 
         logits = self._forward(
             batch, cache_structure=group.cache_structure, write_to=group.write_to
@@ -1140,10 +1183,17 @@ class SharedCacheSession:
                 )
                 ctx.gdn_ar = self.sc_gdn
                 if batch.is_decode:
+                    buffers = (self.graph_io.gdn[batch.padded_size]
+                               if self.graph_runner is not None else None)
                     self.sc_gdn.prepare_decode(
-                        self._model_config.num_linear_layers, self.engine.config.dtype)
+                        self._model_config.num_linear_layers, self.engine.config.dtype,
+                        **({"buffers": buffers} if buffers is not None else {}))
             with ctx.forward_batch(batch):
-                logits = self.engine.model.forward()
+                if batch.is_decode and self.graph_runner is not None:
+                    # Public Session results must not alias replay's reusable logits.
+                    logits = self.graph_runner.replay(batch).clone()
+                else:
+                    logits = self.engine.model.forward()
             success = True
             return logits
         finally:

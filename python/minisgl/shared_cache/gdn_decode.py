@@ -70,7 +70,7 @@ class GDNDecodeBuffers:
         levels, parents, terminals = prefix_links(chains, self.workers, self.depth)
         # Keep tensor and pinned upload storage alive until its last raw-pointer
         # consumer completes. This does not synchronize or delay enqueueing.
-        self._pending = [(event, refs) for event, refs in self._pending if not event.query()]
+        self.retire_completed()
         affine = [[[(0, 0)] * self.workers for _ in range(self.depth)]
                   for _ in range(self.layers)]
         reads = [[[0, 0, 0] for _ in range(self.workers)] for _ in range(self.layers)]
@@ -128,6 +128,9 @@ class GDNDecodeBuffers:
             dst.copy_(host, non_blocking=True)
         self._current = (list(targets), out_a, out_b, out_conv, refs)
         self.prepare_count += 1
+
+    def retire_completed(self):
+        self._pending = [(event, refs) for event, refs in self._pending if not event.query()]
 
     def publish(self, success=True):
         if self._current is None:

@@ -23,6 +23,8 @@ class EngineConfig:
     moe_backend: str = "auto"
     cuda_graph_bs: List[int] | None = None
     cuda_graph_max_bs: int | None = None
+    # Shared decode uses explicit graph sizes; topology stays device metadata.
+    shared_cuda_graph_max_depth: int = 16
     page_size: int = 1
     memory_ratio: float = 0.9
     distributed_timeout: float = 60.0

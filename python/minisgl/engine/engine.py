@@ -117,13 +117,14 @@ class Engine:
             device=self.device,
             model=self.model,
             attn_backend=self.attn_backend,
-            cuda_graph_bs=config.cuda_graph_bs,
-            cuda_graph_max_bs=config.cuda_graph_max_bs,
+            cuda_graph_bs=[] if config.model_config.is_hybrid else config.cuda_graph_bs,
+            cuda_graph_max_bs=0 if config.model_config.is_hybrid else config.cuda_graph_max_bs,
             free_memory=init_free_memory,
             max_seq_len=aligned_max_seq_len,
             vocab_size=config.model_config.vocab_size,
             dummy_req=self.dummy_req,
         )
+        self._shared_graph_runners = []
 
     def _init_communication(self, config: EngineConfig) -> torch.distributed.ProcessGroup:
         if config.tp_info.size == 1 or config.use_pynccl:
@@ -232,6 +233,9 @@ class Engine:
         return ForwardOutput(next_tokens_gpu, next_tokens_cpu, copy_done_event)
 
     def shutdown(self) -> None:
+        for runner in self._shared_graph_runners:
+            runner.destroy_cuda_graphs()
+        self._shared_graph_runners.clear()
         self.graph_runner.destroy_cuda_graphs()
         torch.distributed.destroy_process_group()
         destroy_distributed()
@@ -251,10 +255,10 @@ def _adjust_config(config: EngineConfig):
         logger.info_rank0(f"Auto-selected attention backend: {config.attention_backend}")
 
     if config.model_config.is_hybrid and config.cuda_graph_max_bs != 0:
-        # Recurrent-state capture is not wired up yet; run hybrid decode eagerly.
-        override("cuda_graph_max_bs", 0)
-        override("cuda_graph_bs", [])
-        logger.info_rank0("Hybrid model detected: CUDA graph disabled (eager decode).")
+        # Ordinary serving still has dynamic recurrent-pool indexing. Preserve
+        # the user's capture sizes so a SharedCacheSession can initialize its
+        # graph-compatible backends later, after the engine is constructed.
+        logger.info_rank0("Hybrid serving uses eager decode; shared graphs initialize in Session.")
 
     if "trtllm" in config.attention_backend and config.page_size not in [16, 32, 64]:
         override("page_size", 64)
