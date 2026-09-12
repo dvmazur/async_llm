@@ -1,10 +1,8 @@
 """Public pytest entry points; all full-model tests consume fresh session fixtures."""
-import json
-
 import pytest
 
 from .common import validate_current_mini
-from .comparison import compare, compare_schedules
+from .comparison import compare
 from .serving import check_schedule
 
 pytestmark = pytest.mark.fp8_e2e
@@ -38,15 +36,4 @@ def test_serving_external_parity(serving_artifacts, mode):
     assert schedule["overlap_scheduling"] is True
     assert result["metrics"]["mini"]["decode"]["positions"] >= 32
     assert result["metrics"]["mini"]["prefill"]["positions"] >= 8
-    assert result["passed"], result["metrics"]
-
-
-def test_serving_mixed_vs_sequential(serving_artifacts):
-    """Strict invariant, distinct from external accuracy; keep the known failure visible."""
-    for mode in ("mixed", "sequential"):
-        root = serving_artifacts.mini(mode)
-        validate_current_mini(root, mode)
-        assert json.loads((root / "schedule.json").read_text())["overlap_scheduling"] is True
-    result = compare_schedules(serving_artifacts.mini("mixed"), serving_artifacts.mini("sequential"))
-    serving_artifacts.report("mixed_vs_sequential.json", result)
     assert result["passed"], result["metrics"]

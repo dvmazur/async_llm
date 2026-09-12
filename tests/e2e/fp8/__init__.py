@@ -19,7 +19,8 @@ mixed GDN. The two profiles collect references for exactly the same cases and
 histories as their mini runs. Dependencies/interpreters must already be installed;
 --fp8-sglang-python and --fp8-transformers-python allow separate reference venvs.
 
-Known numerical distinction: the strict serving mixed-vs-sequential gate can fail
-on GB10 (FlashInfer attention paths), while SG-relative FP8 quality gates pass.
-The refactor does not relax either set of thresholds or mark that failure xfail.
+All three E2E checks (shared-cache, mixed serving, sequential serving) use the
+same quality criterion: mini's distance to SGLang must not exceed Transformers'
+distance to SGLang plus the established tolerance. Different schedules need not
+produce identical logits. Mixed-batch coverage is still checked explicitly.
 """

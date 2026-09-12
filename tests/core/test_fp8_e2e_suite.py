@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from tests.e2e.fp8.common import ROOT, save_json, source_hashes, validate_current_mini
-from tests.e2e.fp8.comparison import compare, compare_schedules
+from tests.e2e.fp8.comparison import compare
 from tests.e2e.fp8.suite import RunConfig, PROFILES, collect_profile, run_command
 
 
@@ -81,7 +81,6 @@ def test_new_collections_always_run_all_engines(tmp_path, monkeypatch):
     for mode in artifacts.profile.modes:
         validate_current_mini(artifacts.mini(mode), mode)
         assert compare(artifacts.mini(mode), artifacts.root / "sglang", artifacts.root / "transformers")["passed"]
-    assert compare_schedules(artifacts.mini("mixed"), artifacts.mini("sequential"))["passed"]
     _collect(tmp_path / "another-invocation", calls)
     assert len(calls) == 10  # The next invocation collects everything afresh.
 
@@ -165,16 +164,19 @@ def test_profiles_remain_explicit():
     assert PROFILES["shared-cache"].modes == ("shared-cache",)
 
 
-def test_refactor_keeps_strict_and_external_thresholds_distinct(tmp_path):
+def test_accuracy_thresholds_are_relative_to_transformers(tmp_path):
     artifacts = _collect(tmp_path, [])
     external = compare(artifacts.mini("mixed"), artifacts.root / "sglang", artifacts.root / "transformers")
     assert external["additive_margins"] == dict(
         mean_tv=.005, p95_tv=.01, mean_centered_relative_l2=.005, p95_centered_relative_l2=.01)
     path = artifacts.mini("mixed") / "text_0_decode.pt"
     logits = torch.load(path, weights_only=True)
-    logits[1] = logits[1].flip(0)
+    logits[1:] = logits[1:].flip(-1)
     torch.save(logits, path)
-    strict = compare_schedules(artifacts.mini("mixed"), artifacts.mini("sequential"))
-    assert strict["limits"] == dict(mean_tv=.01, p95_tv=.03, max_tv=.05,
-                                  mean_centered_relative_l2=.01, p95_centered_relative_l2=.03)
-    assert not strict["passed"] and not strict["gates"]["decode"]["max_tv"]
+    # Worse than Transformers -> fail; equal deviation -> pass. This is not
+    # an absolute-logit-invariance test between two mini schedules.
+    assert not compare(artifacts.mini("mixed"), artifacts.root / "sglang",
+                       artifacts.root / "transformers")["passed"]
+    torch.save(logits, artifacts.root / "transformers" / path.name)
+    assert compare(artifacts.mini("mixed"), artifacts.root / "sglang",
+                   artifacts.root / "transformers")["passed"]

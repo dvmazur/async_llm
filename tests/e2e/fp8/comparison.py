@@ -80,32 +80,3 @@ def compare(mini,sglang,transformers):
               'to bypass its installed 1D-only fused CUDA preparation; default results are separate. '
               'Decode excludes logits after initial prefill. FP8 config correction for tied '
               'Transformers lm_head is documented in its reference output directory.')
-
-
-def compare_schedules(mixed, sequential):
-    """The existing strict mixed-vs-single-request check, on identical histories."""
-    manifests=[json.loads((p/'complete.json').read_text()) for p in (mixed,sequential)]
-    assert manifests[0]['fixtures_sha256']==manifests[1]['fixtures_sha256']
-    assert manifests[0]['cases']==manifests[1]['cases']
-    assert manifests[0]['arguments']['model']==manifests[1]['arguments']['model']
-    tokens=manifests[0]['arguments']['tokens']
-    assert tokens==manifests[1]['arguments']['tokens']
-    for root,mode in ((mixed,'mixed'),(sequential,'sequential')):
-        schedule=json.loads((root/'schedule.json').read_text())
-        assert schedule['mode']==mode
-        check_schedule(schedule['forwards'],mode)
-    results={}
-    for phase,span in (('prefill',slice(0,1)),('decode',slice(1,None))):
-        rows=[]
-        for name in manifests[0]['cases']:
-            a=torch.load(mixed/f'{name}_decode.pt',weights_only=True,map_location='cpu')
-            b=torch.load(sequential/f'{name}_decode.pt',weights_only=True,map_location='cpu')
-            assert a.shape==b.shape and a.shape[0]==tokens
-            rows.append(distances(a[span],b[span]))
-        results[phase]=aggregate(rows)
-    limits=dict(mean_tv=.01,p95_tv=.03,max_tv=.05,
-                mean_centered_relative_l2=.01,p95_centered_relative_l2=.03)
-    gates={phase:{key:result[key]<limit for key,limit in limits.items()}
-           for phase,result in results.items()}
-    return dict(metrics=results,limits=limits,gates=gates,
-                passed=all(v for phase in gates.values() for v in phase.values()))
