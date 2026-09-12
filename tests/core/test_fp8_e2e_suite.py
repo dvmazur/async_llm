@@ -38,7 +38,7 @@ def _fake_worker(command, log_path, env, timeout):
         mode = option("--mini-scheduling")
         args.update(mini_scheduling=mode, quantization="fp8")
         save_json(out / "storage.json", dict(fp8_tensors=1, source=str(ROOT)))
-        if mode != "shared-cache":
+        if mode in ("mixed", "sequential"):
             forwards = [dict(label="decode", mixed=False, rows=[dict(phase="decode")])]
             if mode == "mixed":
                 forwards.append(dict(label="decode", mixed=True,
@@ -162,6 +162,39 @@ def test_invalid_cli_fails_before_model_start(args):
 def test_profiles_remain_explicit():
     assert PROFILES["serving"].modes == ("mixed", "sequential")
     assert PROFILES["shared-cache"].modes == ("shared-cache",)
+    assert PROFILES["shared-batched"].modes == ("shared-batched",)
+
+
+def test_batched_shared_collection_keeps_full_numerical_coverage(tmp_path):
+    calls = []
+    artifacts = _collect(tmp_path, calls, "shared-batched")
+    assert len(calls) == 4
+    mini_command = calls[1][0]
+    assert mini_command[mini_command.index('--mini-scheduling')+1] == 'shared-batched'
+    result = compare(artifacts.mini('shared-batched'), artifacts.root/'sglang', artifacts.root/'transformers')
+    assert result['metrics']['mini']['prefill']['positions'] == 48
+    assert result['metrics']['mini']['decode']['positions'] == 496
+    assert result['passed']
+
+
+@pytest.mark.parametrize('broken', [None, 'eager_decode', 'old_prefill', 'single_prefill', 'extra_graph'])
+def test_batched_coverage_rejects_silent_fallback(broken):
+    from tests.e2e.fp8.shared_batch import check_coverage
+    coverage = dict(forwards=[dict(phase='prefill', workers=4), dict(phase='decode', workers=4)],
+                    linear_layers=18, prefill_layer_calls=18, decode_replays=1, capture_profiles=[1, 2, 4])
+    if broken == 'eager_decode':
+        coverage['decode_replays'] = 0
+    elif broken == 'old_prefill':
+        coverage['prefill_layer_calls'] = 0
+    elif broken == 'single_prefill':
+        coverage['forwards'][0]['workers'] = 1
+    elif broken == 'extra_graph':
+        coverage['capture_profiles'].append(8)
+    if broken:
+        with pytest.raises(AssertionError):
+            check_coverage(coverage)
+    else:
+        check_coverage(coverage)
 
 
 def test_accuracy_thresholds_are_relative_to_transformers(tmp_path):

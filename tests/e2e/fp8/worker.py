@@ -312,7 +312,7 @@ def main():
     p.add_argument('--sglang-native-mrope',action='store_true',
         help='Explicit diagnostic reference: existing SGLang native mRoPE for 3D positions, not default SGLang')
     p.add_argument('--mini-repo',type=Path)
-    p.add_argument('--mini-scheduling',choices=['shared-cache','mixed','sequential'],default='shared-cache',
+    p.add_argument('--mini-scheduling',choices=['shared-cache','shared-batched','mixed','sequential'],default='shared-cache',
         help='Mini adapter: shared-cache (existing parity) or ordinary text-only serving with/without mixing')
     p.add_argument('--quantization',choices=['fp8'])
     p.add_argument('--audit-linear',action='store_true',help='Test-only SGLang GEMM comparison on identical model inputs')
@@ -346,6 +346,9 @@ def main():
     if args.engine=='mini':
         hashes=source_hashes(args.mini_repo or ROOT)
         if args.mini_scheduling=='shared-cache':mini(args,cases)
+        elif args.mini_scheduling=='shared-batched':
+            from .shared_batch import mini_shared_batch
+            mini_shared_batch(args,cases)
         else:
             from .serving import mini_serving
             mini_serving(args,cases)

@@ -1188,6 +1188,9 @@ class SharedCacheSession:
                     self.sc_gdn.prepare_decode(
                         self._model_config.num_linear_layers, self.engine.config.dtype,
                         **({"buffers": buffers} if buffers is not None else {}))
+                else:
+                    self.sc_gdn.prepare_prefill(self._model_config.num_linear_layers,
+                                                self.engine.config.dtype, batch.input_ids.numel())
             with ctx.forward_batch(batch):
                 if batch.is_decode and self.graph_runner is not None:
                     # Public Session results must not alias replay's reusable logits.
@@ -1199,4 +1202,5 @@ class SharedCacheSession:
         finally:
             if self.sc_gdn is not None:
                 self.sc_gdn.finish_decode(success)
+                self.sc_gdn.finish_prefill(success)
             ctx.gdn_ar = None

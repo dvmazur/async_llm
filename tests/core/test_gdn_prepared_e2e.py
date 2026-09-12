@@ -14,7 +14,7 @@ import torch
 from PIL import Image
 
 from minisgl.llm import AsyncLLM
-from minisgl.shared_cache import AsyncContext, WorkerGroup
+from minisgl.shared_cache import AsyncContext, WorkerGroup, PrefillJob
 from _gdn_reference import SharedCacheGDN as ReferenceGDN
 
 
@@ -60,13 +60,26 @@ def runtime(tmp_path_factory):
             asyncio.set_event_loop(None)
 
 
-@torch.inference_mode()
 def test_learned_history_states_and_logits(runtime, record_property):
+    # Preserve the original Linear geometry for strict state/math regression.
+    _exercise_history(runtime, record_property, batched_prefill=False)
+
+
+def test_batched_legacy_drift_diagnostic(runtime, record_property):
+    # Batching BF16 Linear changes its rounding. User-approved quality gates for
+    # actual batched execution live in test_shared_batched_external_parity;
+    # here retain the complete old-history comparison as a numerical diagnostic.
+    _exercise_history(runtime, record_property, batched_prefill=True)
+
+
+@torch.inference_mode()
+def _exercise_history(runtime, record_property, *, batched_prefill):
     _, llm = runtime
     session = llm.async_engine.session
     prepared = session.sc_gdn
     graph_runner = session.graph_runner
     initial_graphs = {} if graph_runner is None else dict(graph_runner.graph_map)
+    initial_replays = 0 if graph_runner is None else graph_runner.replay_count
     reference = ReferenceGDN(num_heads=prepared.num_heads, head_k_dim=prepared.head_k_dim,
                              head_v_dim=prepared.head_v_dim, conv_dim=prepared.conv_dim,
                              conv_kernel=prepared.conv_kernel, device=prepared.device)
@@ -74,8 +87,17 @@ def test_learned_history_states_and_logits(runtime, record_property):
     # from the frozen file. No production arithmetic or model method patched.
     reference.prepare_decode = lambda *args: None
     reference.finish_decode = lambda *args: None
+    reference.prepare_prefill = lambda *args: None
+    reference.finish_prefill = lambda *args: None
     pairs, times = [], {'reference': [], 'prepared': []}
     max_probability_error = 0.0
+    max_tv = 0.0
+
+    def compare_state(a, b, *, atol, rtol):
+        assert a.shape == b.shape and a.dtype == b.dtype
+        assert torch.isfinite(a).all() and torch.isfinite(b).all()
+        if not batched_prefill:
+            torch.testing.assert_close(a, b, atol=atol, rtol=rtol)
 
     def pair_block():
         pair = (session.create_block(), session.create_block())
@@ -89,19 +111,19 @@ def test_learned_history_states_and_logits(runtime, record_property):
             assert left.linear_conv_state.keys() == right.linear_conv_state.keys()
             for l in left.linear_affine:
                 for a, b in zip(left.linear_affine[l], right.linear_affine[l]):
-                    torch.testing.assert_close(a, b, atol=3e-4, rtol=3e-4)
+                    compare_state(a, b, atol=3e-4, rtol=3e-4)
             for l in left.linear_conv_state:
-                torch.testing.assert_close(left.linear_conv_state[l], right.linear_conv_state[l],
-                                           atol=3e-3, rtol=3e-3)
+                compare_state(left.linear_conv_state[l], right.linear_conv_state[l],
+                              atol=3e-3, rtol=3e-3)
             for l in range(session.kv_cache.num_layers):
                 for cache in (session.kv_cache.k_cache(l), session.kv_cache.v_cache(l)):
                     rows = cache.reshape(-1, *cache.shape[2:])
                     a = rows.index_select(0, left.token_slots_tensor().long())
                     b = rows.index_select(0, right.token_slots_tensor().long())
-                    torch.testing.assert_close(a, b, atol=3e-3, rtol=3e-3)
+                    compare_state(a, b, atol=3e-3, rtol=3e-3)
 
     def compare(operation):
-        nonlocal max_probability_error
+        nonlocal max_probability_error, max_tv
         outputs = []
         for side, backend in enumerate((reference, prepared)):
             session.sc_gdn = backend
@@ -111,10 +133,15 @@ def test_learned_history_states_and_logits(runtime, record_property):
             outputs.append(operation(side).clone())
             torch.cuda.synchronize()
             times['reference' if side == 0 else 'prepared'].append(time.perf_counter() - start)
-        error = (outputs[0].float().softmax(-1) - outputs[1].float().softmax(-1)).abs().max().item()
+        assert outputs[0].shape == outputs[1].shape
+        assert all(torch.isfinite(output).all() for output in outputs)
+        difference = (outputs[0].float().softmax(-1) - outputs[1].float().softmax(-1)).abs()
+        error = difference.max().item()
         max_probability_error = max(max_probability_error, error)
-        torch.testing.assert_close(outputs[0].float().softmax(-1), outputs[1].float().softmax(-1),
-                                   atol=2.5e-3, rtol=0)
+        max_tv = max(max_tv, .5 * difference.sum(-1).max().item())
+        if not batched_prefill:
+            torch.testing.assert_close(outputs[0].float().softmax(-1), outputs[1].float().softmax(-1),
+                                       atol=2.5e-3, rtol=0)
         check_states()
 
     try:
@@ -129,10 +156,19 @@ def test_learned_history_states_and_logits(runtime, record_property):
         compare(lambda side: session.prefill_block(common[side], image_inputs['input_ids'][0],
                     **{k: image_inputs[k] for k in ('pixel_values', 'image_grid_thw', 'mm_token_type_ids')}))
         tails = [pair_block() for _ in range(3)]
-        for i, tail in enumerate(tails):
-            ids = llm.tokenizer.encode(f'\nObservation {i}: the color changed.', add_special_tokens=False)
-            compare(lambda side, tail=tail, ids=ids: session.prefill_block(
-                tail[side], torch.tensor(ids), context=[common[side]]))
+        ids = [torch.tensor(llm.tokenizer.encode(
+            f'\nObservation {i}: the color changed.' + ' Look again.' * i, add_special_tokens=False))
+            for i in range(3)]
+        if batched_prefill:
+            compare(lambda side: torch.stack(session.prefill_batch([
+                PrefillJob(block=tail[side], input_ids=tokens, context=[common[side]])
+                for tail, tokens in zip(tails, ids)])))
+        else:
+            for tail, tokens in zip(tails, ids):
+                compare(lambda side, tail=tail, tokens=tokens: session.prefill_block(
+                    tail[side], tokens, context=[common[side]]))
+        if hasattr(prepared, 'prefill_buffers'):
+            assert prepared.prefill_buffers.prefill_count > 0
         # Repeated mutable tails, shared prefixes, cross-reading writers,
         # changing batch width, and teacher forcing keep both histories equal.
         for width in (1, 3, 2, 3):
@@ -159,12 +195,14 @@ def test_learned_history_states_and_logits(runtime, record_property):
             WorkerGroup(cache_structure=[[merged[side], tails[1][side]]], write_to=[tails[1][side]]),
             torch.tensor([65], dtype=torch.int32)))
         record_property('max_probability_error', max_probability_error)
+        record_property('max_tv_to_legacy', max_tv)
+        record_property('legacy_numerical_gate', not batched_prefill)
         record_property('forward_wall_seconds', times)
         record_property('peak_allocated_bytes', torch.cuda.max_memory_allocated())
         if graph_runner is not None:
             assert graph_runner.graph_map == initial_graphs
-            assert graph_runner.replay_count == 6
-            record_property('full_decode_replays', graph_runner.replay_count)
+            assert graph_runner.replay_count - initial_replays == 6
+            record_property('full_decode_replays', graph_runner.replay_count - initial_replays)
     finally:
         session.sc_gdn = prepared
         session.graph_runner = graph_runner

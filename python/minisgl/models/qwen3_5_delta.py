@@ -334,6 +334,8 @@ class Qwen3_5GatedDeltaNet(BaseOP):
 
     # --- async-reasoning prefill: one block per request, compose prior + capture ---
     def _forward_ar_prefill(self, x, ar) -> torch.Tensor:
+        if getattr(ar, '_prepared_prefill', False):
+            return self._forward_ar_prefill_prepared(x, ar.prefill_buffers)
         lin = self._lin_idx
         # Reads are batched over the forward's chains; the recurrent scan is not,
         # so a batch of prefills runs one scan per request over its own rows.
@@ -358,6 +360,21 @@ class Qwen3_5GatedDeltaNet(BaseOP):
             offset += length
         assert offset == x.shape[0], "prefill_segments do not cover the batch"
         return torch.cat(outs, dim=0)
+
+    def _forward_ar_prefill_prepared(self, x, buffers):
+        lin, length = self._lin_idx, x.shape[0]
+        qkv = self.in_proj_qkv.forward(x)
+        z = self.in_proj_z.forward(x)
+        a = self.in_proj_a.forward(x)
+        b = self.in_proj_b.forward(x)
+        q, k, v = self._split_heads(buffers.convolve(lin, qkv, self.conv1d.weight))
+        beta, g = self._gates(a, b)
+        core = buffers.core(q, k, v, g, beta, buffers.compose(lin),
+                             _fla_chunk is not None, _chunk_gated_delta_rule)
+        buffers.capture_prefill(lin, k, v, g.exp(), beta)
+        core = core.reshape(length, self.num_v_heads, self.head_v_dim)
+        core = self.norm.forward(core, z.reshape(length, self.num_v_heads, self.head_v_dim))
+        return self.out_proj.forward(core.reshape(length, self.value_dim))
 
     def _forward_ar_prefill_one(self, x, ar, w: int, prior_conv, initial_state) -> torch.Tensor:
         """One request's prefill rows, reading/writing worker slot *w*."""

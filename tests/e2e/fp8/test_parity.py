@@ -1,4 +1,5 @@
 """Public pytest entry points; all full-model tests consume fresh session fixtures."""
+import json
 import pytest
 
 from .common import validate_current_mini
@@ -21,10 +22,22 @@ def _external_result(artifacts, mode):
 
 def test_shared_cache_external_parity(shared_cache_artifacts):
     result = _external_result(shared_cache_artifacts, "shared-cache")
-    # Original full-parity coverage and numerical thresholds, unchanged.
+    # Original full-parity coverage; the shared numerical helper owns the gates.
     assert result["metrics"]["mini"]["decode"]["positions"] >= 400
     assert result["metrics"]["mini"]["prefill"]["positions"] >= 32
     assert result["passed"], result["metrics"]
+
+
+def test_shared_batched_external_parity(shared_batched_artifacts):
+    from .shared_batch import check_coverage
+    mode = 'shared-batched'
+    result = _external_result(shared_batched_artifacts, mode)
+    coverage = json.loads((shared_batched_artifacts.mini(mode)/'batch_coverage.json').read_text())
+    check_coverage(coverage)
+    assert result['metrics']['mini']['prefill']['positions'] >= 32
+    assert result['metrics']['mini']['decode']['positions'] >= 400
+    assert result['relative_tolerance_percent'] == 5
+    assert result['passed'], result['relative_error_delta_percent']
 
 
 @pytest.mark.parametrize("mode", ["mixed", "sequential"])

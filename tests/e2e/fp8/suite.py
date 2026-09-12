@@ -24,6 +24,8 @@ PROFILES = {
     "serving": Profile("serving", tuple(f"text_{i}" for i in range(8)), 12, ("mixed", "sequential")),
     "shared-cache": Profile("shared-cache", tuple(f"{kind}_{i}" for i in range(8)
                                                  for kind in ("text", "image")), 32, ("shared-cache",)),
+    "shared-batched": Profile("shared-batched", tuple(f"{kind}_{i}" for i in range(8)
+                                                     for kind in ("text", "image")), 32, ("shared-batched",)),
 }
 
 
