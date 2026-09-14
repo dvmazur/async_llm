@@ -84,7 +84,12 @@ def init_logger(
             message = record.getMessage()
 
             # Pretty format: [timestamp] LEVEL message
-            return f"{self.BOLD}{timestamp}{self.RESET} {colored_level} {message}"
+            line = f"{self.BOLD}{timestamp}{self.RESET} {colored_level} {message}"
+            if record.exc_info:
+                line = f"{line}\n{self.formatException(record.exc_info)}"
+            if record.stack_info:
+                line = f"{line}\n{self.formatStack(record.stack_info)}"
+            return line
 
     logger = logging.getLogger(name)
     logger.setLevel(_LOG_LEVEL)

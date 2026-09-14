@@ -10,19 +10,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Names on the Engine class we never copy over during a live reload: __init__
-# is deliberately never re-run against a live instance (that would defeat the
-# whole point -- state like cache blocks must survive), and the rest are
-# Python bookkeeping attributes every class carries that have nothing to do
-# with the agent's own behavior.
+# Names never copied over during a live reload: __init__ is deliberately
+# never re-run against a live instance (state like cache blocks must
+# survive), and the rest are Python bookkeeping every class carries.
 _RELOAD_SKIP_NAMES = {"__init__", "__module__", "__qualname__", "__dict__", "__weakref__", "__doc__"}
 
 
 class SelfEditEnv:
     """Holds one live, persistent Engine instance for the whole process.
     Unlike a plain module reload, `reload_engine_methods` patches new method
-    bodies onto the instance's own class in place -- the instance itself
-    (and everything it holds: cache blocks, memory, counters, ...) is never
+    bodies onto the instance's own class in place -- the instance is never
     torn down or reconstructed after the first successful load."""
 
     def __init__(
@@ -32,6 +29,19 @@ class SelfEditEnv:
         prompt_path: str = "mutable/prompt.py",
     ) -> None:
         self.llm = llm
+        # Counts real forward passes through llm.forward() -- every worked
+        # example in seeds/prompt_seed*.py routes inference through this one
+        # method, so wrapping it gives an objective, agent-can't-fake signal
+        # of whether a task run actually used the LLM (see start_task below
+        # and agent.py's build_env_turn), unlike the latency heuristic alone.
+        self._llm_forward_calls = 0
+        _original_forward = self.llm.forward
+
+        async def _counting_forward(*args, **kwargs):
+            self._llm_forward_calls += 1
+            return await _original_forward(*args, **kwargs)
+
+        self.llm.forward = _counting_forward
         self.engine_path = Path(engine_path)
         self.prompt_path = Path(prompt_path)
         self.screen: Optional[str] = None
@@ -42,31 +52,29 @@ class SelfEditEnv:
         self.load_error: Optional[str] = None
         self.prompt_load_error: Optional[str] = None
 
-        # Not agent-editable -- set externally (e.g. by run_persistent.py),
-        # exactly like engine_path/prompt_path. task_env is a doom_basic-style
-        # GymEnv (see tasks/math_env.py); on_episode_start is an optional
-        # duck-typed heartbeat hook (same pattern as TTFTEnv.on_token) so a
-        # caller's hang-watchdog keeps getting touched during a long
-        # start_task()/restart_task() call.
+        # Not agent-editable -- set externally (e.g. by run_persistent.py).
+        # on_episode_start is a duck-typed heartbeat hook so a caller's
+        # hang-watchdog keeps getting touched during a long start_task() call.
         self.task_env: Optional[Any] = None
         self.on_episode_start: Optional[Callable[[], None]] = None
         self.on_step: Optional[Callable[[], None]] = None
+        # See tasks/runner.py's run_episodes for what each hook fires on.
+        self.on_frame: Optional[Callable[[Any], None]] = None
+        self.on_episode_end: Optional[Callable[[], None]] = None
         self.last_task_result: Optional[dict[str, Any]] = None
 
     def _compile_engine_class(self, source: str) -> type:
         """Exec source into a throwaway namespace (never touching
-        sys.modules) and return its Engine class, without instantiating it."""
+        sys.modules) and return its Engine class, without instantiating."""
         namespace: dict[str, Any] = {"__name__": "engine"}
         code = compile(source, str(self.engine_path), "exec")
         exec(code, namespace)
         return namespace["Engine"]
 
     def _compile_prompt_class(self, source: str) -> Any:
-        """Exec source into a throwaway namespace, extract its top-level
-        Prompting class, and construct Prompting(self.llm). Unlike
-        _compile_engine_class this also constructs the instance -- Prompting
-        holds no persistent state worth preserving across reloads (see
-        reload_prompt), so there is no reason to hand back the bare class."""
+        """Exec source, extract its Prompting class, and construct
+        Prompting(self.llm) directly -- unlike _compile_engine_class, since
+        Prompting holds no state worth preserving across reloads."""
         namespace: dict[str, Any] = {"__name__": "prompt"}
         code = compile(source, str(self.prompt_path), "exec")
         exec(code, namespace)
@@ -75,10 +83,9 @@ class SelfEditEnv:
         text = getattr(instance, "system_prompt", None)
         if not isinstance(text, str):
             raise TypeError(f"Prompting.system_prompt must be a str, got {type(text).__name__}")
-        # A real prompt is thousands of chars and documents the <use_tool>
-        # syntax -- reject anything that looks like a stub/placeholder
-        # instead of silently accepting it and leaving the agent unable to
-        # call any tool on the next round.
+        # A real prompt is thousands of chars and documents <use_tool> --
+        # reject a stub/placeholder instead of leaving the agent unable to
+        # call any tool next round.
         if len(text) < 500:
             raise ValueError(f"Prompting.system_prompt looks broken: only {len(text)} chars "
                               f"(expected a real prompt)")
@@ -130,12 +137,9 @@ class SelfEditEnv:
         return {"ok": True}
 
     def reload_prompt(self) -> dict[str, Any]:
-        """Tool 4: recompile the on-disk prompt.py, extract its Prompting
-        class, and construct a fresh Prompting(llm) instance for the next
-        round. There is no live instance state to preserve here (unlike
-        reload_engine_methods) -- Prompting holds nothing but strings derived
-        from llm, so reload just rebuilds it from scratch each time rather
-        than patching methods onto an old instance."""
+        """Tool 4: recompile the on-disk prompt.py and rebuild a fresh
+        Prompting(llm) instance. Unlike reload_engine_methods there's no
+        state to preserve, so this rebuilds from scratch each time."""
         source = self.prompt_path.read_text()
         try:
             new_prompt = self._compile_prompt_class(source)
@@ -150,9 +154,9 @@ class SelfEditEnv:
 
     def reload_engine_methods(self) -> dict[str, Any]:
         """Tool 2: recompile the on-disk engine.py and patch its methods onto
-        the already-live Engine instance in place. __init__ is never re-run
-        once an instance exists -- only method bodies are swapped, so
-        instance state (cache blocks, memory, ...) survives untouched."""
+        the live Engine instance in place. __init__ never re-runs once an
+        instance exists -- only method bodies are swapped, so instance
+        state survives untouched."""
         source = self.engine_path.read_text()
         try:
             new_cls = self._compile_engine_class(source)
@@ -184,25 +188,28 @@ class SelfEditEnv:
         return {"ok": True, "changed": changed}
 
     async def start_task(self) -> dict[str, Any]:
-        """Tool 5: run the currently-live Engine's act() against task_env
-        end-to-end (all episodes) and report the score. No guardrails --
-        callable any time, in any state, just like every other tool here;
-        a bad/no-op engine just scores poorly rather than being blocked."""
+        """Tool 5: run the live Engine's act() against task_env end-to-end
+        and report the score. No guardrails -- a bad/no-op engine just
+        scores poorly rather than being blocked."""
         if self.task_env is None:
             return {"ok": False, "error": "no task_env configured"}
         from tasks.runner import run_episodes
+        calls_before = self._llm_forward_calls
         result = await run_episodes(self.task_env, self.engine,
-                                     on_episode_start=self.on_episode_start, on_step=self.on_step)
+                                     on_episode_start=self.on_episode_start, on_step=self.on_step,
+                                     on_frame=self.on_frame, on_episode_end=self.on_episode_end)
+        result["llm_forward_calls"] = self._llm_forward_calls - calls_before
+        result["episode_steps_total"] = sum(e.get("steps", 0) for e in result["episodes"])
         self.last_task_result = result
-        logger.info("start_task on %s: avg_reward=%.3f", result["env"], result["avg_reward"])
+        logger.info("start_task on %s: avg_reward=%.3f, llm_forward_calls=%d over %d env steps",
+                    result["env"], result["avg_reward"], result["llm_forward_calls"],
+                    result["episode_steps_total"])
         return {"ok": True, "result": result}
 
     async def restart_task(self) -> dict[str, Any]:
         """Tool 6: like start_task, but first resets task_env's episode
-        cursor back to the beginning (see MathEnv.restart()) so the re-run
-        is a clean, comparable full pass instead of resuming mid-cycle --
-        the natural thing to call after adjusting Engine in response to a
-        start_task score."""
+        cursor so the re-run is a clean, comparable full pass instead of
+        resuming mid-cycle."""
         if self.task_env is None:
             return {"ok": False, "error": "no task_env configured"}
         restart = getattr(self.task_env, "restart", None)
@@ -213,6 +220,5 @@ class SelfEditEnv:
     async def end_task(self) -> dict[str, Any]:
         """Tool 7: no-op marker the agent can call to say "done evaluating
         for this round" -- returns the last score for reference. Nothing
-        else keys off having been called; there is no hidden state machine
-        gating start_task/restart_task on this."""
+        else keys off having been called."""
         return {"ok": True, "result": self.last_task_result}

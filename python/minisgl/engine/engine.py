@@ -35,7 +35,8 @@ class Engine:
         self.config = config
         self.device = torch.device(f"cuda:{config.tp_info.rank}")
         torch.cuda.set_device(self.device)
-        torch.manual_seed(42)
+        if config.seed is not None:
+            torch.manual_seed(config.seed)
         self.stream = torch.cuda.Stream()
         torch.cuda.set_stream(self.stream)
         self.dtype = config.dtype

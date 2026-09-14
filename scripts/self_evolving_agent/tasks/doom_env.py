@@ -1,22 +1,19 @@
 from __future__ import annotations
 
+import random
 import time
 from typing import Any, Optional
 
 import gymnasium
 import vizdoom.gymnasium_wrapper  # noqa: F401  registers the Vizdoom gymnasium env ids
 
-# Same action set, same order, as doom_basic/doom_prompting.py's DoomPrompting.actions
-# -- confirmed to line up with VizdoomDefendLine-v1's actual Discrete(4) button_map
-# (index 0 = no button pressed, 1 = ATTACK, 2 = TURN_RIGHT, 3 = TURN_LEFT).
+# Matches VizdoomDefendLine-v1's actual Discrete(4) button_map (index 0 = no
+# button pressed, 1 = ATTACK, 2 = TURN_RIGHT, 3 = TURN_LEFT).
 ACTION_NAMES = ["wait", "fire", "right", "left"]
 
-# Surfaced verbatim into the round prompt via agent.py's generic task_env.doc hook
-# (see SelfEvolvingAgent.run_step), same mechanism as tasks/ttft_env.py's DOC. This
-# is prose, not code, on purpose: nothing here is enforced by the harness, and
-# engine.py/prompt.py stay entirely the agent's own design surface. Kept short --
-# the full cache-block architecture writeup this used to carry is not repeated
-# every round; doom_basic/agent.py remains the from-scratch reference if wanted.
+# Surfaced verbatim into the round prompt via agent.py's task_env.doc hook.
+# Prose, not code, on purpose: nothing here is enforced by the harness, and
+# engine.py/prompt.py stay entirely the agent's own design surface.
 DOC = (
     "`doom` observations are raw game screenshots (images), not text. Actions: "
     f"{ACTION_NAMES!r} (or their index, 0-3 in that order) -- wait / fire / turn right / turn "
@@ -36,7 +33,20 @@ DOC = (
     "mean over the episode so far). This is visible to you next round as an average over the task "
     "run. It isn't part of the reward and nothing enforces a target -- purely diagnostic, e.g. to "
     "see the actual cost of an architecture change (more cache blocks per act(), a generation loop "
-    "instead of a logit probe, etc.) rather than reasoning about it in the abstract."
+    "instead of a logit probe, etc.) rather than reasoning about it in the abstract.\n"
+    "Reward is the only thing this experiment scores on. A fast policy that scores low is not an "
+    "improvement over a slower one that scores high -- act() latency should only be a concern if "
+    "it's genuinely blocking something that would raise reward, never a goal in its own right.\n"
+    "That said, this experiment is about designing an LLM-driven inference structure, not about "
+    "maximizing game score by whatever means happens to work. act() should actually invoke the "
+    "model (a real forward pass through `llm(...)`/`llm.forward(...)`, whether directly or via "
+    "generate()) for its decisions on close to every step -- not a purely scripted/heuristic "
+    "action-selector that never touches the LLM at all, even one that happens to score as well as "
+    "or better than a real inference pass would. Next round's prompt reports how many real LLM "
+    "forward passes actually ran during the task versus how many env steps it took; a policy that "
+    "mostly or entirely avoids calling the LLM is treated as a failed round regardless of its score "
+    "and will not be reported as a working result, so don't route around real inference for speed "
+    "or reliability -- a real, if imperfect, LLM-driven decision is what's being evaluated here."
 )
 
 
@@ -48,7 +58,9 @@ class DoomEnv:
 
     name = "doom"
     doc = DOC
-    max_episodes = 2
+    # Matches run_baseline.py's DEFAULT_EPISODES=5 and health_gathering_env.py's
+    # max_episodes -- keeps evolution rounds comparable to baselines.
+    max_episodes = 5
     max_steps_per_episode = 100
 
     def __init__(
@@ -56,11 +68,15 @@ class DoomEnv:
         env_id: str = "VizdoomDefendLine-v1",
         frame_skip: int = 4,
         episode_timeout: int = 1000,
-        seed: int = 1337,
+        seed: Optional[int] = None,
     ) -> None:
         self.env = gymnasium.make(env_id, render_mode="rgb_array", frame_skip=frame_skip,
                                    episode_timeout=episode_timeout)
-        self.seed = seed
+        # A fixed seed pins vizdoom's native RNG for every episode (useful to
+        # reproduce a specific run); `seed=None` (default) means reset() below
+        # draws a fresh seed each episode instead.
+        self._fixed_seed = seed
+        self.seed = seed if seed is not None else random.SystemRandom().randrange(1, 2**31 - 1)
         self.screen: Optional[Any] = None
         self._last_ts: Optional[float] = None
         self._latencies: list[float] = []
@@ -77,6 +93,13 @@ class DoomEnv:
         return index
 
     def reset(self) -> Any:
+        # Fresh seed every episode (unless one was pinned at construction) --
+        # otherwise every episode across every round of a run replays the
+        # exact same scripted scenario.
+        self.seed = (
+            self._fixed_seed if self._fixed_seed is not None
+            else random.SystemRandom().randrange(1, 2**31 - 1)
+        )
         obs, _info = self.env.reset(seed=self.seed)
         self.screen = obs["screen"]
         self._last_ts = time.monotonic()
@@ -84,10 +107,8 @@ class DoomEnv:
         return self.screen
 
     def step(self, action: Any) -> tuple[Any, float, bool, dict[str, Any]]:
-        # Time between handing back the last observation and this action
-        # arriving is (almost entirely) time spent inside the agent's own
-        # act() -- tasks/runner.py's loop is `action = await engine.act(obs,
-        # ...); obs, ... = env.step(action)`, nothing else runs in between.
+        # Time since the last observation was handed back is (almost
+        # entirely) time spent inside the agent's own act().
         now = time.monotonic()
         latency = (now - self._last_ts) if self._last_ts is not None else None
         if latency is not None:

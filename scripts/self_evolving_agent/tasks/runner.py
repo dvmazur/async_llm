@@ -13,6 +13,8 @@ async def run_episodes(
     max_steps_per_episode: int = 8,
     on_episode_start: Optional[Callable[[], None]] = None,
     on_step: Optional[Callable[[], None]] = None,
+    on_frame: Optional[Callable[[Any], None]] = None,
+    on_episode_end: Optional[Callable[[], None]] = None,
 ) -> dict[str, Any]:
     """Fixed harness, not agent-editable: drives `env` (a doom_basic-style
     GymEnv -- reset()/step() -- see tasks/math_env.py, tasks/ttft_env.py,
@@ -31,7 +33,15 @@ async def run_episodes(
     `max_steps_per_episode` is only a default -- an env can define its own
     `max_steps_per_episode` attribute to override it (e.g. a real multi-step
     game episode needs far more than 8 steps to show anything meaningful,
-    unlike math/ttft's single-shot prompt-then-done episodes)."""
+    unlike math/ttft's single-shot prompt-then-done episodes).
+    `on_frame`, if given, is called with every raw observation this episode
+    sees (the reset() observation, then each step() observation) -- envs
+    with image observations (doom, health_gathering, my_way_home) use this
+    to let a caller record a replay; text-observation envs (math/ttft) just
+    get called with their text, which a caller can ignore. `on_episode_end`,
+    if given, fires once per episode right after its loop ends, before the
+    next episode's on_episode_start -- the natural point to flush/save
+    whatever `on_frame` accumulated."""
     episodes: list[dict[str, Any]] = []
     n_episodes = getattr(env, "max_episodes", 1)
     on_token = getattr(env, "on_token", None)
@@ -41,6 +51,8 @@ async def run_episodes(
         if on_episode_start is not None:
             on_episode_start()
         obs = env.reset()
+        if on_frame is not None:
+            on_frame(obs)
         total_reward = 0.0
         info: dict[str, Any] = {}
         done = False
@@ -51,13 +63,17 @@ async def run_episodes(
                     on_step()
                 action = await engine.act(obs, on_token=on_token)
                 obs, reward, done, *rest = env.step(action)
+                if on_frame is not None:
+                    on_frame(obs)
                 total_reward += reward
                 info = rest[0] if rest else {}
                 steps += 1
         except Exception:
             info = {"error": traceback.format_exc()}
             total_reward = 0.0
-        episodes.append({"reward": total_reward, "info": info})
+        if on_episode_end is not None:
+            on_episode_end()
+        episodes.append({"reward": total_reward, "info": info, "steps": steps})
 
     avg_reward = sum(e["reward"] for e in episodes) / len(episodes) if episodes else 0.0
     return {"env": getattr(env, "name", "task"), "avg_reward": avg_reward, "episodes": episodes}

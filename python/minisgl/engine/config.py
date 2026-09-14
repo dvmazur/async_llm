@@ -35,6 +35,10 @@ class EngineConfig:
     max_prefill_rows: int | None = None
     generation_config: GenerationConfig = None
     distributed_addr: str = "tcp://127.0.0.1:2333"
+    # None (default) leaves torch's global RNG at its own OS-entropy seed, so
+    # do_sample=True sampling is genuinely stochastic across process launches.
+    # Set this only when you want reproducible generation for debugging.
+    seed: int | None = None
 
     @cached_property
     def hf_config(self):

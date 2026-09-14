@@ -31,3 +31,10 @@ env/
 # .vscode
 .vscode/
 .coverage
+
+# self-evolving agent experiment output
+scripts/self_evolving_agent/logs/
+scripts/self_evolving_agent/eval_runs/
+scripts/self_evolving_agent/*.out
+scripts/self_evolving_agent/mutable_slot*/
+_vizdoom.ini

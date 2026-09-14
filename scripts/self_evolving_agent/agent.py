@@ -62,14 +62,9 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 _UNCLOSED_THINK_RE = re.compile(r"<think>.*", re.DOTALL)
 _TOOL_CALL_RE = re.compile(r'<use_tool\s+name="(\w+)"\s*>(.*?)</use_tool>', re.DOTALL)
 
-# A legitimate single-round completion never contains these -- each round
-# starts a fresh generation, so if either shows up mid-completion it means
-# decoding ran past the model's real turn boundary (e.g. because the
-# decode loop only checked one eos id while the model's generation_config
-# lists several) and kept going into leaked/regurgitated context. Cutting
-# here before tool-call parsing stops that leaked text -- which can itself
-# contain this very prompt's own illustrative <use_tool> examples -- from
-# ever being treated as real tool calls.
+# Present only if decoding ran past the turn boundary into leaked context
+# (e.g. an eos_token_id mismatch) -- cut before tool-call parsing so leaked
+# text can't be mistaken for real <use_tool> calls.
 _RUNAWAY_MARKERS = ("<|endoftext|>", "<|im_start|>")
 
 
@@ -79,11 +74,9 @@ def truncate_runaway(text: str) -> str:
 
 
 def eos_ids(llm: "AsyncLLM") -> set[int]:
-    """The tokenizer's own eos_token_id is often just one id (e.g. Qwen3.5's
-    is <|im_end|>), but the model's real generation_config.eos_token_id can
-    list several (Qwen3.5's also includes <|endoftext|>) -- stopping on only
-    the tokenizer's single id misses real stop signals and lets decoding run
-    away. Union both sources."""
+    """Union tokenizer.eos_token_id with generation_config.eos_token_id --
+    the latter can list several ids the former misses, letting decoding run
+    away if only one is checked."""
     ids = {llm.tokenizer.eos_token_id}
     gen_cfg = getattr(getattr(getattr(llm, "engine", None), "config", None), "generation_config", None)
     gen_eos = getattr(gen_cfg, "eos_token_id", None)
@@ -110,17 +103,13 @@ def extract_code(text: str) -> Optional[str]:
 
 def build_env_turn(
     last_result: Optional[dict[str, Any]], task_status: Optional[str] = None,
-    max_new_tokens: Optional[int] = None,
+    max_new_tokens: Optional[int] = None, best_so_far: Optional[tuple[float, int]] = None,
 ) -> str:
-    """The last-round-outcome part of a round's prompt -- tool results, crash
-    text, task score/error, task status -- with no engine.py source dump and
-    no system-prompt preamble. Used as build_prompt()'s tail for a normal
-    full round, and standalone as the compact per-round delta fed into a
-    *reused* bootstrap_generate history block (see HistoryBlockState):
-    re-prefilling the whole source+preamble into that block every call would
-    burn its token budget in a handful of rounds for no benefit, since the
-    model's own prior reasoning is already sitting in that block's real KV
-    from when it was generated -- this never re-quotes it as text."""
+    """The last-round-outcome part of a round's prompt (tool results, crash
+    text, task score/status), with no engine.py source dump or system-prompt
+    preamble. Doubles as the compact per-round delta fed into a *reused*
+    bootstrap_generate history block (see HistoryBlockState), since that
+    block's real KV already holds the model's prior reasoning."""
     parts = []
     if last_result is not None:
         if last_result.get("fatal"):
@@ -131,7 +120,17 @@ def build_env_turn(
         else:
             tool_results = last_result.get("tool_results") or []
             if not tool_results:
-                parts.append("\nYour last round made no <use_tool> calls -- nothing changed.")
+                if last_result.get("near_budget"):
+                    parts.append(
+                        "\nYour last round used almost its entire token budget on reasoning text "
+                        "and never completed a single <use_tool> call -- nothing changed, and no "
+                        "result was recorded. Don't rehash your whole design from scratch in "
+                        "reasoning before acting: state a short plan in a few sentences, then get "
+                        "to <use_tool> calls quickly. If you're mid-rewrite, split the work across "
+                        "rounds (write and apply an incremental change now) rather than trying to "
+                        "think through a whole redesign before ever touching a tool call.")
+                else:
+                    parts.append("\nYour last round made no <use_tool> calls -- nothing changed.")
             else:
                 lines = []
                 for r in tool_results:
@@ -149,13 +148,28 @@ def build_env_turn(
         if task is not None:
             parts.append(f"\nLatest task score on `{task['env']}`: avg_reward={task['avg_reward']:.3f} "
                           f"over {len(task['episodes'])} episode(s).")
-            # avg_reward alone doesn't say *why* a score is low -- an episode
-            # that crashed inside act() (see tasks/runner.py's per-episode
-            # try/except) scores 0 with its traceback recorded in that
-            # episode's info, but that traceback was never actually shown
-            # here before, so a bug like this could recur silently for many
-            # rounds with nothing but a flat 0.0 to go on. Surface the first
-            # one so it's visible right where the score is.
+            # Bare avg_reward has no memory -- without this, a regression
+            # looks like ordinary exploration noise. best_so_far tracks the
+            # best score across the whole run (see run_step's on_result).
+            if best_so_far is not None:
+                best_score, best_round = best_so_far
+                if task["avg_reward"] >= best_score:
+                    parts.append(
+                        f"This ties or beats your best score so far this run "
+                        f"({best_score:.3f}, first reached at round {best_round}).")
+                else:
+                    parts.append(
+                        f"Your best score so far this run is {best_score:.3f}, reached at round "
+                        f"{best_round} -- this round's {task['avg_reward']:.3f} is a regression from "
+                        "that. Some regression while experimenting is normal, but don't keep "
+                        "building on a change that made things worse just because it's the most "
+                        "recent one: if you can't tell why this round is behind, it's a legitimate "
+                        "move to revert engine.py back toward whatever version scored "
+                        f"{best_score:.3f} (you have it in your own context from round {best_round}) "
+                        "rather than continuing to iterate away from it.")
+            # A crashed episode (tasks/runner.py's per-episode try/except)
+            # scores 0 with its traceback in episode info -- surface the
+            # first one so a flat 0.0 isn't silent.
             error = next(
                 (e["info"]["error"] for e in task["episodes"]
                  if isinstance(e.get("info"), dict) and e["info"].get("error")), None)
@@ -163,17 +177,42 @@ def build_env_turn(
                 parts.append(
                     "An episode failed with this traceback -- fix whatever it points to in "
                     f"engine.py:\n{error}")
-            # Per-episode avg_act_latency_s (see tasks/doom_env.py) is a running
-            # mean over that episode's steps -- mean those into one figure so a
-            # slow act() shows up here, not just in the abstract.
+            # Mean per-episode avg_act_latency_s (tasks/doom_env.py) into one figure.
             latencies = [
                 e["info"]["avg_act_latency_s"] for e in task["episodes"]
                 if isinstance(e.get("info"), dict) and e["info"].get("avg_act_latency_s") is not None
             ]
             if latencies:
-                parts.append(
-                    f"Avg act() latency this task run: {sum(latencies) / len(latencies) * 1000:.0f}ms "
+                avg_ms = sum(latencies) / len(latencies) * 1000
+                line = (
+                    f"Avg act() latency this task run: {avg_ms:.0f}ms "
                     "(mean wall-clock time between receiving an observation and returning an action).")
+                if avg_ms < 50:
+                    line += (
+                        " This is far faster than any real forward pass -- it almost certainly means "
+                        "act() is returning from a scripted/hardcoded fallback path instead of actually "
+                        "calling the LLM every step (e.g. a failure counter that permanently disables "
+                        "the real call after a few caught exceptions). Find and remove whatever is "
+                        "short-circuiting the LLM call.")
+                parts.append(line)
+            calls = task.get("llm_forward_calls")
+            steps = task.get("episode_steps_total")
+            if calls is not None and steps:
+                ratio = calls / steps
+                line = (
+                    f"This task run made {steps} env step(s) but the LLM was actually invoked "
+                    f"(a real forward pass through `llm(...)`/`llm.forward(...)`) only {calls} "
+                    f"time(s) in that same window ({ratio:.2f} forward passes per step).")
+                if ratio < 0.1:
+                    line += (
+                        " This experiment is about designing an LLM-driven inference structure, "
+                        "not about maximizing reward by any means -- a policy that mostly or "
+                        "entirely avoids calling the LLM (e.g. falling back to a scripted/"
+                        "heuristic action-selector because it happens to score comparably) is not "
+                        "a valid result here even if the score above looks fine, and will not be "
+                        "reported as a success. Find whatever in act() is routing around the real "
+                        "LLM call and fix that before anything else.")
+                parts.append(line)
     if task_status is not None:
         parts.append("\n" + task_status)
     if max_new_tokens is not None:
@@ -185,22 +224,18 @@ def build_env_turn(
 def build_prompt(
     source: str, last_result: Optional[dict[str, Any]], prompt: str,
     task_status: Optional[str] = None, max_new_tokens: Optional[int] = None,
+    best_so_far: Optional[tuple[float, int]] = None,
 ) -> str:
     parts = [prompt, "\nCurrent engine.py:\n```python\n" + source + "\n```",
-              build_env_turn(last_result, task_status, max_new_tokens)]
+              build_env_turn(last_result, task_status, max_new_tokens, best_so_far)]
     return "\n".join(parts)
 
 
-# Hard ceilings on tool-call execution per round, enforced here in agent.py
-# (harness code the agent can never rewrite -- only mutable/engine.py and
-# mutable/prompt.py are agent-editable, via write_engine/write_prompt). Seen
-# live: a sampling config with no repetition penalty can get the model stuck
-# emitting the same short <use_tool> tag dozens/hundreds of times in one
-# completion. The repeated tags themselves cost nothing (the whole completion
-# is already generated by the time this function runs) -- the real cost is
-# *executing* each one, which for start_task/restart_task means running full
-# task episodes (minutes of GPU time apiece). Capping execution count here
-# bounds the wall-clock/GPU damage regardless of how degenerate the text is.
+# Hard ceilings on tool-call execution per round (harness-only, not
+# agent-editable). Seen live: a degenerate completion can repeat the same
+# <use_tool> tag hundreds of times -- capping execution bounds the GPU
+# damage from actually running each one (start_task/restart_task = full
+# episodes).
 MAX_TOOL_CALLS_PER_ROUND = 8
 MAX_CONSECUTIVE_IDENTICAL_CALLS = 3
 
@@ -208,13 +243,9 @@ MAX_CONSECUTIVE_IDENTICAL_CALLS = 3
 async def apply_tool_calls(
     env: SelfEditEnv, completion: str, on_result: Optional[HookFn] = None,
 ) -> list[dict[str, Any]]:
-    """`on_result`, if given, fires the moment each individual tool call
-    finishes -- not just once at the very end. A single slow call (e.g.
-    start_task running real episodes) used to leave the structured
-    tool_results.log/task_results.log hooks silent until the *whole* round's
-    loop returned, even though main.log kept showing live progress from
-    self_edit_env's own logger calls in the meantime -- making a long-running
-    but healthy round look identical to a stall in the structured logs."""
+    """`on_result`, if given, fires as each tool call finishes rather than
+    once at round end -- so a slow call (e.g. start_task) doesn't leave the
+    structured logs looking stalled while main.log keeps moving."""
     text = strip_think(completion)
     results: list[dict[str, Any]] = []
     prev_call: Optional[tuple[str, str]] = None
@@ -270,23 +301,15 @@ async def apply_tool_calls(
     return results
 
 
-# ~93% of the model's real 262,144-token native context (Qwen3.8-27B's
-# max_position_embeddings, confirmed from its config.json -- not the 128k
-# figure this comment used to say), leaving real headroom below the point
-# generation quality silently degrades (see STUCK_NOTE) -- checked as
-# existing-block tokens + this round's new prompt + this round's decode
-# budget, since the about-to-be-prefilled prompt becomes part of the block
-# going forward too.
+# ~93% of Qwen3.8-27B's real 262,144-token native context, leaving headroom
+# below where generation quality degrades (see STUCK_NOTE).
 HISTORY_BLOCK_MAX_TOKENS = 245_000
 
 
 class HistoryBlockState:
-    """Mutable holder for bootstrap_generate's persistent cache block, owned
-    by SelfEvolvingAgent and threaded through via partial(...). A plain
-    Optional[CacheBlock] attribute on SelfEvolvingAgent wouldn't let
-    bootstrap_generate (a free function bound only to llm) reassign it in a
-    way later calls would see -- this object is passed by reference so
-    `history.block = ...` reassignment is visible on the next call."""
+    """Mutable holder for bootstrap_generate's persistent cache block --
+    passed by reference so a plain function can reassign `.block` and have
+    later calls see it."""
 
     def __init__(self) -> None:
         self.block: Optional["CacheBlock"] = None
@@ -301,22 +324,12 @@ async def bootstrap_generate(
     reuse_prompt: Optional[str] = None,
     step: Optional[int] = None,
 ) -> str:
-    """Fixed fallback mirroring the seed engine.py's own generate(), used
-    whenever the current engine.py is too broken to construct, or the
-    previous round crashed/repeated -- there is no other way to ask the agent
-    for a fix in those cases.
-
-    With `history` given, the underlying cache block is kept alive and grown
-    across calls instead of being freed every time (mirroring the
-    keep-a-block-alive idiom already taught to the agent itself in
-    mutable/prompt.py), so this fallback path's own rounds carry real
-    continuity: each reused call only prefills `reuse_prompt` (the compact
-    last-round-outcome delta, see build_env_turn) against the existing block
-    rather than the full `prompt`, since the model's prior reasoning is
-    already in that block's real KV. Growth is capped by
-    HISTORY_BLOCK_MAX_TOKENS -- crossing it frees the block and the next call
-    starts fresh with the full `prompt`, the same regurgitation risk
-    STUCK_NOTE documents for an unboundedly-growing self-authored block."""
+    """Fixed fallback mirroring the seed engine.py's generate(), used when
+    the current engine.py won't construct or the previous round crashed/
+    repeated. With `history`, the cache block persists across calls so
+    reused calls only prefill `reuse_prompt` (see build_env_turn) against
+    the existing KV; growth capped by HISTORY_BLOCK_MAX_TOKENS (see
+    STUCK_NOTE for the regurgitation risk beyond that)."""
     owns_block = history is None
     reused = False
     if history is not None and history.block is not None:
@@ -370,24 +383,26 @@ class SelfEvolvingAgent:
     def __init__(self, env: SelfEditEnv, hooks: Optional[dict[str, HookFn]] = None) -> None:
         self.env = env
         self.hooks = hooks or {}
-        # So a long start_task()/restart_task() run still touches a caller's
-        # hang-watchdog heartbeat even though it's no longer driven from
-        # run()'s loop body -- see SelfEditEnv.task_env/on_episode_start.
+        # Keeps a caller's hang-watchdog heartbeat alive during long
+        # start_task()/restart_task() calls, at both episode and step
+        # granularity (see SelfEditEnv.task_env/on_episode_start).
         self.env.on_episode_start = partial(self._call_hook, "on_episode_start")
-        # Same reasoning, but per-step rather than per-episode: a real
-        # multi-step game episode (see tasks/doom_env.py) can take longer
-        # than the watchdog's timeout on its own, well before the next
-        # on_episode_start heartbeat would fire.
         self.env.on_step = partial(self._call_hook, "on_episode_start")
-        # Harness-only bookkeeping (never exposed to the agent) for detecting
-        # a stuck completion loop -- see STUCK_NOTE / run_step below.
+        # Optional replay recording (tasks/runner.py) -- no-op if unregistered.
+        self.env.on_frame = partial(self._call_hook, "on_frame")
+        self.env.on_episode_end = partial(self._call_hook, "on_episode_end")
+        # Stuck-completion-loop detection (see STUCK_NOTE / run_step).
         self._last_completion: Optional[str] = None
-        # Persistent cache block for the fallback generation path only (see
-        # bootstrap_generate/HistoryBlockState) -- self-authored
-        # engine.generate() rounds are a black box the harness can't
-        # instrument, so this never sees those rounds' reasoning.
+        # Persistent cache block for the fallback path only (see
+        # bootstrap_generate/HistoryBlockState) -- self-authored generate()
+        # rounds are a black box the harness can't instrument.
         self._history = HistoryBlockState()
         self._step = 0
+        # Best avg_reward seen this run, independent of which round's result
+        # ended up in last_result["task"] -- surfaced read-only in
+        # build_env_turn so the agent can tell regression from noise.
+        self._best_score: Optional[float] = None
+        self._best_round: Optional[int] = None
 
     def _call_hook(self, name: str, *args: Any) -> None:
         hook = self.hooks.get(name)
@@ -403,9 +418,8 @@ class SelfEvolvingAgent:
         self, source: str, last_result: Optional[dict[str, Any]], max_new_tokens: int = 131_072
     ) -> dict[str, Any]:
         """Generate exactly one round of thinking + tool calls against the
-        live, persistent Engine instance. Self-contained: fine to call once
-        per process (relaunch loop) or in a for-loop within one process
-        (see run())."""
+        live, persistent Engine instance. Self-contained -- callable once
+        per process or in a loop (see run())."""
         self._step += 1
         round_start = time.monotonic()
         prompt_text = self.env.prompt.system_prompt if self.env.prompt is not None else None
@@ -415,36 +429,26 @@ class SelfEvolvingAgent:
         name = getattr(self.env.task_env, "name", None)
         if name:
             task_status = f"Current task env: {name}."
-            # Generic hook: any task env may expose a `doc` string explaining
-            # how it specifically scores act() (see tasks/ttft_env.py) --
-            # surfaced here so task-specific steering lives in the task env
-            # itself, not as more agent.py/self_edit_env.py branching per task.
+            # Any task env may expose a `doc` string (see tasks/ttft_env.py)
+            # so task-specific steering lives there, not as branching here.
             doc = getattr(self.env.task_env, "doc", None)
             if doc:
                 task_status += "\n" + doc
-        prompt = build_prompt(source, last_result, prompt_text, task_status, max_new_tokens)
+        best_so_far = (self._best_score, self._best_round) if self._best_score is not None else None
+        prompt = build_prompt(source, last_result, prompt_text, task_status, max_new_tokens, best_so_far)
         self._call_hook("on_thought_start")
         try:
-            # Fall back to the safe bootstrap generate() not only when the
-            # current engine.py's generate is uncallable, but also right
-            # after it crashed last round -- otherwise a self-authored bug
-            # that only manifests once methods are patched onto the live
-            # instance (e.g. a new method assuming __init__-set state that
-            # never ran, see reload_engine_methods) re-selects the same
-            # broken method forever, in a crash loop with no working "brain"
-            # left to ever read the traceback and fix it.
-            # Same reasoning applies to a round that came out identical to the
-            # one before it (see STUCK_NOTE): re-selecting the same
-            # self-authored generate() would just reproduce the same stuck
-            # state again, so give it one clean round on the fallback path
-            # instead.
+            # Fall back to bootstrap_generate() not just when generate is
+            # uncallable, but also right after a crash or repeated completion
+            # (STUCK_NOTE) -- otherwise a broken self-authored generate()
+            # keeps re-selecting itself with no working "brain" left to fix it.
             engine_generate = getattr(self.env.engine, "generate", None)
             use_fallback = not callable(engine_generate) or bool(
                 last_result and (last_result.get("crash") or last_result.get("repeated")))
             generate = (
                 partial(
                     bootstrap_generate, self.env.llm, history=self._history,
-                    reuse_prompt=build_env_turn(last_result, task_status, max_new_tokens)
+                    reuse_prompt=build_env_turn(last_result, task_status, max_new_tokens, best_so_far)
                     if self._history.block else None,
                     step=self._step)
                 if use_fallback else engine_generate)
@@ -452,14 +456,10 @@ class SelfEvolvingAgent:
                 prompt, max_new_tokens=max_new_tokens,
                 on_token=lambda token: self._call_hook("on_thought_token", token))
             if not isinstance(completion, str):
-                # A self-authored generate() that returns None/non-str (e.g. a
-                # missing return statement) used to escape this try block
-                # entirely -- truncate_runaway() below would then blow up on
-                # a plain str method call and crash the whole persistent
-                # process, losing every step of progress. Raising here routes
-                # it through the same crash-recovery path as an exception
-                # inside generate() itself: fed back next round, fallback
-                # generation takes over so the agent can see and fix it.
+                # A non-str return (e.g. missing `return`) used to escape
+                # this try block and crash the whole process downstream in
+                # truncate_runaway(). Raise here to route it through the
+                # same crash-recovery path as an exception in generate().
                 raise TypeError(f"generate() must return a str, got {type(completion).__name__!r}: {completion!r}")
         except Exception:
             tb = traceback.format_exc()
@@ -468,13 +468,13 @@ class SelfEvolvingAgent:
             result["round_delay_s"] = time.monotonic() - round_start
             self._call_hook("on_step_result", result)
             return result
+        # Re-tokenized length vs. budget is a heuristic proxy for "hit the
+        # token cap instead of stopping via EOS" -- the real stop reason is
+        # invisible for a self-authored black-box generate().
+        approx_tokens = len(self.env.llm.tokenizer(completion, add_special_tokens=False).input_ids)
+        near_budget = approx_tokens >= max_new_tokens * 0.95
         if not use_fallback:
-            # engine.generate() is the agent's own black-box decode loop --
-            # the harness can't see whether it stopped via EOS or got cut off
-            # by max_new_tokens, so this re-tokenizes the returned string and
-            # compares its length to the budget as a heuristic proxy only.
-            approx_tokens = len(self.env.llm.tokenizer(completion, add_special_tokens=False).input_ids)
-            if approx_tokens >= max_new_tokens * 0.95:
+            if near_budget:
                 logger.warning(
                     "self-authored generate() (step %d): completion ~%d tokens (cap %d) -- may have "
                     "been cut off by the token budget rather than stopping via EOS (heuristic: "
@@ -485,6 +485,11 @@ class SelfEvolvingAgent:
                     "self-authored generate() (step %d): completion ~%d tokens (cap %d) -- well under "
                     "the cap, likely stopped via EOS/natural completion (heuristic)",
                     self._step, approx_tokens, max_new_tokens)
+        elif near_budget:
+            logger.warning(
+                "fallback bootstrap_generate() (step %d): completion ~%d tokens (cap %d) -- likely "
+                "exhausted its token budget without reaching EOS",
+                self._step, approx_tokens, max_new_tokens)
         raw_completion = completion
         completion = truncate_runaway(completion)
         if len(completion) != len(raw_completion):
@@ -493,12 +498,9 @@ class SelfEvolvingAgent:
                 len(raw_completion), len(completion), raw_completion[len(completion):len(completion) + 24])
         self._call_hook("on_completion", completion)
 
-        # A completion byte-for-byte identical to the previous round's is not
-        # caught by MAX_CONSECUTIVE_IDENTICAL_CALLS (that only guards repeated
-        # *tool calls* within/across rounds) -- a round that makes zero tool
-        # calls can still repeat forever with no backstop at all. Detect it
-        # here so the next round gets STUCK_NOTE and a clean fallback
-        # generation instead of silently repeating.
+        # A completion identical to the last isn't caught by
+        # MAX_CONSECUTIVE_IDENTICAL_CALLS (which only guards repeated tool
+        # calls) -- detect it so the next round gets STUCK_NOTE + fallback.
         repeated = self._last_completion is not None and completion == self._last_completion
         self._last_completion = completion
         if repeated:
@@ -507,36 +509,59 @@ class SelfEvolvingAgent:
                 "forcing safe fallback generation next round", len(completion))
 
         result: dict[str, Any] = {
-            "tool_results": [], "source": self.env.screen, "fatal": False, "repeated": repeated}
+            "tool_results": [], "source": self.env.screen, "fatal": False, "repeated": repeated,
+            "near_budget": near_budget}
 
         def on_result(r: dict[str, Any]) -> None:
-            # Fires the instant each tool call finishes, not after the whole
-            # round's loop returns -- so a slow single call (e.g. start_task
-            # running real episodes) still shows up in tool_results.log/
-            # task_results.log as it happens, instead of those structured
-            # logs going silent for the entire round while main.log (fed by
-            # self_edit_env's own logger calls) keeps moving.
+            # Fires as each tool call finishes, not after the round returns
+            # -- see apply_tool_calls' on_result docstring.
             self._call_hook("on_tool_result", r)
             if r.get("tool") in ("start_task", "restart_task") and r.get("ok") and r.get("result") is not None:
                 result["task"] = r["result"]
                 self._call_hook("on_task_result", r["result"])
+                reward = r["result"].get("avg_reward")
+                if reward is not None and (self._best_score is None or reward > self._best_score):
+                    self._best_score = reward
+                    self._best_round = self._step
 
         result["tool_results"] = await apply_tool_calls(self.env, completion, on_result=on_result)
         result["round_delay_s"] = time.monotonic() - round_start
         self._call_hook("on_step_result", result)
         return result
 
-    async def run(self, max_steps: int = 10, max_new_tokens: int = 131_072) -> None:
-        """Evolve engine.py for max_steps within this one process, so the
-        live Engine instance (and anything it holds, e.g. cache blocks)
-        persists across every step. Task evaluation (if env.task_env is
-        set) is entirely agent-triggered via the start_task/restart_task/
-        end_task tools -- there is no external cadence here."""
+    async def run(
+        self, max_steps: int = 10, max_new_tokens: int = 131_072,
+        target_valid_steps: Optional[int] = None, max_attempts: Optional[int] = None,
+    ) -> None:
+        """Evolve engine.py within this one process, so the live Engine
+        instance persists across steps. Task evaluation is entirely
+        agent-triggered via start_task/restart_task/end_task.
+
+        With target_valid_steps set, a round that crashed outright or failed
+        to compile doesn't count toward progress -- runs until that many
+        valid rounds complete, capped at max_attempts total as a safety
+        valve. With it None (default), runs exactly max_steps regardless."""
         source = self.env.reset()
         self._call_hook("on_env_reset", source)
         last_result = self.initial_last_result(source)
 
-        for step in range(max_steps):
-            logger.info("step %d/%d: generating next round", step + 1, max_steps)
+        total_cap = max_attempts if target_valid_steps is not None else max_steps
+        valid_steps = 0
+        step = 0
+        while step < total_cap and (target_valid_steps is None or valid_steps < target_valid_steps):
+            logger.info(
+                "step %d/%d (valid %d/%s): generating next round",
+                step + 1, total_cap, valid_steps,
+                target_valid_steps if target_valid_steps is not None else "-")
             last_result = await self.run_step(source, last_result, max_new_tokens=max_new_tokens)
             source = last_result.get("source", source)
+            step += 1
+            compile_failed = any(
+                r.get("tool") == "reload_engine_methods" and not r.get("ok")
+                for r in last_result.get("tool_results", []))
+            if not last_result.get("crash") and not compile_failed:
+                valid_steps += 1
+        if target_valid_steps is not None and valid_steps < target_valid_steps:
+            logger.warning(
+                "gave up after %d attempts (cap %d) with only %d/%d valid rounds",
+                step, total_cap, valid_steps, target_valid_steps)
