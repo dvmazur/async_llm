@@ -38,6 +38,7 @@ dependencies = [
     "apache-tvm-ffi>=0.1.4",
     "sgl_kernel>=0.3.17.post1",
     "quack-kernels",
+    "math-verify>=0.9.0,<1",
 ]
 
 [project.optional-dependencies]
