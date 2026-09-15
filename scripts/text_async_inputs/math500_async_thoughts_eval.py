@@ -183,7 +183,9 @@ async def run(args):
     llm = AsyncLLM(args.model_name, dtype=torch.bfloat16, max_running_req=4,
                    cuda_graph_bs=[1, 2], cuda_graph_max_bs=2,
                    memory_ratio=args.memory_ratio, page_size=args.page_size,
-                   max_seq_len_override=16384,
+                   # Probe input includes both live streams plus its own prompt,
+                   # so it can be longer than either stream's generation budget.
+                   max_seq_len_override=65536,
                    distributed_addr=f"tcp://127.0.0.1:{args.distributed_port}")
     correct = total = 0
     try:
