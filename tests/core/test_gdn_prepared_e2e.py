@@ -57,6 +57,8 @@ def test_learned_history_states_and_logits(runtime, record_property):
     # from the frozen file. No production arithmetic or model method patched.
     reference.prepare_decode = lambda *args: None
     reference.finish_decode = lambda *args: None
+    reference.prepare_prefill = lambda *args: None
+    reference.finish_prefill = lambda *args: None
     pairs, times = [], {'reference': [], 'prepared': []}
     max_probability_error = 0.0
 
