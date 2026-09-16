@@ -67,29 +67,54 @@ def command(cmd, env, log):
             raise subprocess.CalledProcessError(process.returncode, cmd)
 
 
-def evolution_worker(root, gpu, task):
+def process_running(pid):
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        return stat.rsplit(")", 1)[1].split()[0] != "Z"
+    except FileNotFoundError:
+        return False
+
+
+def evolution_worker(root, gpu, adoptions):
     env = dict(os.environ, CUDA_VISIBLE_DEVICES=gpu, HF_HOME="/mnt/LLM",
                SEA_LLM_PORT=str(2490+int(gpu)), SEA_GAME_TICRATE="35", SEA_INFERENCE_ACTION="wait")
-    for run in range(10):
+    jobs = [(task, run) for run in range(10) for task in ("doom", "health_gathering")]
+    # Finish the already-running process on this GPU before claiming new work.
+    jobs.sort(key=lambda job: 0 if adoptions.get(f"{job[0]}/{job[1]}", {}).get("gpu") == gpu else 1)
+    for task, run in jobs:
         if STOP.is_set(): return
-        out = root / "minimal" / task / f"run{run:02}"
-        complete = out / "completion.json"
-        if complete.exists() and json.loads(complete.read_text())["complete"]:
+        adoption = adoptions.get(f"{task}/{run}")
+        if adoption and adoption["gpu"] != gpu:
             continue
-        if out.exists() and (out / "round_metrics.csv").exists():
-            raise RuntimeError(f"Incomplete evolution requires inspection, not overwriting: {out}")
-        mutable = out / "mutable"
-        mutable.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(HERE / "seeds/engine_seed.py", mutable / "engine.py")
-        shutil.copyfile(HERE / "seeds/prompt_seed_minimal.py", mutable / "prompt.py")
-        env.update(SEA_MUTABLE_DIR=str(mutable), SEA_LOG_DIR=str(out), SEA_RUN_INDEX=str(run),
-                   SEA_RUN_SEED=str(seed_for(20260915, task+":evolution", run, 0)))
-        print(f"START minimal {task} run={run+1} GPU={gpu}", flush=True)
-        command([sys.executable, str(HERE / "run_persistent.py"), "5", "32000", task, "minimal", "20"], env, out / "process.log")
-        if not complete.exists() or not json.loads(complete.read_text())["complete"]:
-            STOP.set()
-            raise RuntimeError(f"Evolution did not reach five valid rounds: {out}")
-        print(f"DONE minimal {task} run={run+1}", flush=True)
+        out = root / "minimal" / task / f"run{run:02}"
+        out.mkdir(parents=True, exist_ok=True)
+        with file_lock(out / "worker.lock", blocking=False) as claimed:
+            if not claimed:
+                continue
+            complete = out / "completion.json"
+            if complete.exists() and json.loads(complete.read_text())["complete"]:
+                continue
+            if adoption:
+                print(f"ADOPT minimal {task} run={run+1} GPU={gpu} PID={adoption['pid']}", flush=True)
+                while process_running(adoption["pid"]):
+                    if STOP.wait(5):
+                        return
+            else:
+                if (out / "round_metrics.csv").exists():
+                    STOP.set()
+                    raise RuntimeError(f"Incomplete evolution requires inspection: {out}")
+                mutable = out / "mutable"
+                mutable.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(HERE / "seeds/engine_seed.py", mutable / "engine.py")
+                shutil.copyfile(HERE / "seeds/prompt_seed_minimal.py", mutable / "prompt.py")
+                env.update(SEA_MUTABLE_DIR=str(mutable), SEA_LOG_DIR=str(out), SEA_RUN_INDEX=str(run),
+                           SEA_RUN_SEED=str(seed_for(20260915, task+":evolution", run, 0)))
+                print(f"START minimal {task} run={run+1} GPU={gpu}", flush=True)
+                command([sys.executable, str(HERE / "run_persistent.py"), "5", "32000", task, "minimal", "20"], env, out / "process.log")
+            if not complete.exists() or not json.loads(complete.read_text())["complete"]:
+                STOP.set()
+                raise RuntimeError(f"Evolution did not reach five valid rounds: {out}")
+            print(f"DONE minimal {task} run={run+1}", flush=True)
 
 
 def baseline_worker(root, gpu, plans):
@@ -99,24 +124,23 @@ def baseline_worker(root, gpu, plans):
         out = root / mode
         command([sys.executable, str(HERE / "run_budget_sweep.py"), "--output", str(out),
                  "--mode", "no_think" if mode == "no_think" else "reasoning",
-                 "--budgets", *map(str, budgets), "--allowed-gpus", "5", "6", "--port", str(2490+int(gpu))],
+                 "--budgets", *map(str, budgets), "--allowed-gpus", gpu, "--port", str(2490+int(gpu))],
                 env, out / "process.log")
         if any(r["completed_runs"] != 10 or r["errors"] for r in report(out)):
             raise RuntimeError(f"Incomplete baseline: {out}")
 
 
-def main(root):
+def main(root, gpus, adoptions):
     root.mkdir(parents=True, exist_ok=True)
     with file_lock(root / "campaign.lock", blocking=False) as owner:
         if not owner:
             raise RuntimeError("Campaign already running")
-        state = dict(pid=os.getpid(), status="running", phase="minimal", gpus=[5,6],
+        state = dict(pid=os.getpid(), status="running", phase="minimal", gpus=[int(g) for g in gpus],
                      runs=10, episodes=5, valid_rounds=5, ticrate=35, action_policy="wait")
         atomic_json(root / "status.json", state)
         try:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                futures = [pool.submit(evolution_worker, root, gpu, task)
-                           for gpu, task in [("5", "doom"), ("6", "health_gathering")]]
+            with ThreadPoolExecutor(max_workers=len(gpus)) as pool:
+                futures = [pool.submit(evolution_worker, root, gpu, adoptions) for gpu in gpus]
                 while not all(f.done() for f in futures):
                     for f in futures:
                         if f.done(): f.result()
@@ -126,13 +150,15 @@ def main(root):
                 for f in futures: f.result()
             evolution_report(root)
             state.update(phase="baselines", updated=time.time()); atomic_json(root / "status.json", state)
-            with ThreadPoolExecutor(max_workers=3) as pool:
-                futures = [pool.submit(baseline_worker, root, "5", [("reasoning", [16384]), ("logit", [0])]),
-                           pool.submit(baseline_worker, root, "6", [("no_think", [64,128,512,1024])]),
-                           pool.submit(command, [sys.executable, str(HERE / "run_random_baseline.py"),
+            plans = [[] for _ in gpus]
+            for index, plan in enumerate([("reasoning", [16384]), ("no_think", [64,128,512,1024]), ("logit", [0])]):
+                plans[index % len(gpus)].append(plan)
+            with ThreadPoolExecutor(max_workers=len(gpus)+1) as pool:
+                futures = [pool.submit(baseline_worker, root, gpu, plan) for gpu, plan in zip(gpus, plans) if plan]
+                futures.append(pool.submit(command, [sys.executable, str(HERE / "run_random_baseline.py"),
                                        "--output", str(root / "random")],
                                        dict(os.environ, CUDA_VISIBLE_DEVICES="", SEA_GAME_TICRATE="35", SEA_INFERENCE_ACTION="wait"),
-                                       root / "random/process.log")]
+                                       root / "random/process.log"))
                 while not all(f.done() for f in futures):
                     for f in futures:
                         if f.done(): f.result()
@@ -152,5 +178,12 @@ def main(root):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--gpus", nargs="+", default=["5", "6"])
+    p.add_argument("--adopt", type=Path, help="Explicit task/run -> live PID and GPU mapping")
     args = p.parse_args()
-    main(args.output.resolve())
+    if len(set(args.gpus)) != len(args.gpus):
+        p.error("GPU IDs must be unique")
+    adoptions = json.loads(args.adopt.read_text()) if args.adopt else {}
+    if any(a["gpu"] not in args.gpus for a in adoptions.values()):
+        p.error("Every adopted worker must use an authorized GPU")
+    main(args.output.resolve(), args.gpus, adoptions)

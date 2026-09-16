@@ -20,7 +20,7 @@ is discarded. Game duration and cleanup duration are recorded separately.
 Living rewards are integrated over elapsed native game tics, including tics
 that advance autonomously between polls. Terminal penalties remain native.
 
-Use dalaran GPUs **5 and 6**, one model per GPU, `HF_HOME=/mnt/LLM`, and the
+Use dalaran GPUs **1, 5 and 6**, one model per GPU, `HF_HOME=/mnt/LLM`, and the
 existing uv-managed Python environment. Qwen/Qwen3.8-27B BF16 is pinned to
 `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`. Vision/prefill/decode warm-up uses a
 saved frame with its game already closed, outside scored episodes.
@@ -80,7 +80,7 @@ Episode files preserve seeds, rewards, elapsed game time, actions, forward-call
 counts (evolution), and inference diagnostics. Baselines resume atomically saved
 episodes; errors stop the campaign for investigation. Evolution saves attempted
 rounds and valid-round numbers separately. Warm-up is excluded from forward-call
-validity counts. `status.json` records the current phase. Both minimal runs must
+validity counts. `status.json` records the current phase. All 20 independent minimal runs must
 finish before any baseline starts; random can run alongside the GPU baselines.
 
 ## Run and outputs
@@ -91,7 +91,7 @@ export HF_HOME=/mnt/LLM CUDA_HOME=/usr/local/cuda-12.8
 export PATH="$CUDA_HOME/bin:$PATH"
 export PYTHONPATH="$PWD/python"
 python -u scripts/self_evolving_agent/run_async_campaign.py \
-  --output scripts/self_evolving_agent/eval_runs/async_campaign_20260916
+  --output scripts/self_evolving_agent/eval_runs/async_campaign_20260916 --gpus 5 6 1
 ```
 
 `evolution_summary.csv` / `evolution_report.md` summarize each valid round.
@@ -116,3 +116,7 @@ The live reporter recovers existing evolution counts without restarting workers:
 python scripts/self_evolving_agent/action_efficiency.py \
   --root scripts/self_evolving_agent/eval_runs/async_campaign_20260916 --watch
 ```
+
+GPU workers claim entire evolution runs with file locks. The launcher can adopt
+existing worker PIDs during a supervisor handover, preserving live engines and
+in-progress generations. GPU 1 was added after the initial two-GPU launch.
