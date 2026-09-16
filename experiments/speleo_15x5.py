@@ -11,7 +11,7 @@ REPOSITORY = HERE.parent
 sys.path.insert(0, str(REPOSITORY))
 
 from experiment_runner import Runner, RepeatedPipeline, Recorder
-from pipelines.speleo import SpeleoPipeline, ROLE_PARAMS
+from pipelines.speleo import SpeleoPipeline, RoleParams
 from pipelines.world import SpeleoWorld
 
 
@@ -27,7 +27,13 @@ MODEL_SEED_START = 0
 WORLD_SEED_START = 0
 DUMP_IMAGES = False
 GIF_ON = False
-ROLE_PARAMETERS = ROLE_PARAMS.copy()  # per-role budgets/temperatures live in the policy
+ROLE_PARAMETERS = {
+    'observer': RoleParams(budget=48, temperature=.35, seed_offset=1, top_k=20, top_p=.9),
+    'planner': RoleParams(budget=112, temperature=.65, seed_offset=2, top_k=20, top_p=.9),
+    'executor_draft': RoleParams(budget=28, temperature=.6, seed_offset=3, top_k=20, top_p=.9),
+    'falsifier': RoleParams(budget=40, temperature=.45, seed_offset=4, top_k=20, top_p=.9),
+    'executor_refine': RoleParams(budget=28, temperature=.45, seed_offset=5, top_k=20, top_p=.9),
+}
 
 ENGINE_PARAMS = {
     'engine_config': {

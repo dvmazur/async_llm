@@ -4,6 +4,11 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = []
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Standalone CPU suite: do not inherit the enclosing engine's CUDA/coverage flags.
+addopts = ""
+
 [dependency-groups]
 runtime = ["pillow>=10", "gymnasium==0.29.1", "pygame==2.6.1"]
 plot = ["matplotlib>=3.8"]

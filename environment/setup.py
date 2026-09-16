@@ -35,10 +35,10 @@ def setup(args):
         raise ValueError('engine, venv and Craftium directories must be distinct')
     if venv.exists() and not args.update_existing:
         raise FileExistsError('venv exists; pass --update-existing to authorize explicit locked sync')
-    if args.engine_bundle and engine.exists():
-        raise FileExistsError('bundle extraction requires a new engine directory')
-    if not args.engine_bundle and not (engine/'uv.lock').is_file():
-        raise FileNotFoundError(f'{engine}/uv.lock')
+    # The caller selects the checkout; setup never clones/pulls/checks out the engine.
+    for name in ('pyproject.toml', 'uv.lock'):
+        if not (engine/name).is_file():
+            raise FileNotFoundError(f'--engine must be an existing checkout: missing {engine/name}')
     if args.system_deps:
         prefix = [] if os.geteuid() == 0 else ['sudo']
         command(*prefix, 'apt-get', 'update')
@@ -61,10 +61,6 @@ def setup(args):
         uv = str(tools_dir/'uv')
         if not Path(uv).is_file():
             raise RuntimeError('uv installer did not create the expected executable')
-    if args.engine_bundle:
-        command('git', 'clone', args.engine_bundle, engine)
-    if not (engine/'uv.lock').is_file():
-        raise FileNotFoundError(f'{engine}/uv.lock')
     for name in ('git', 'cmake', 'g++', 'Xvfb', 'nvcc'):
         if not shutil.which(name):
             raise RuntimeError(f'missing {name}; install build dependencies (never GPU drivers)')
@@ -117,17 +113,25 @@ def setup(args):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--engine', required=True)
-    parser.add_argument('--engine-bundle')
-    parser.add_argument('--venv', required=True)
-    parser.add_argument('--craftium', required=True)
-    parser.add_argument('--craftium-revision', default=CRAFTIUM_REVISION)
-    parser.add_argument('--model-revision', default=MODEL_REVISION)
-    parser.add_argument('--download-model', metavar='DIRECTORY')
-    parser.add_argument('--jobs', type=int, default=8)
-    parser.add_argument('--system-deps', action='store_true')
-    parser.add_argument('--update-existing', action='store_true')
+    parser = argparse.ArgumentParser(description='Prepare a GPU environment from an existing engine checkout.')
+    parser.add_argument('--engine', required=True, metavar='DIRECTORY',
+        help='existing engine repository with pyproject.toml and uv.lock; never cloned or checked out')
+    parser.add_argument('--venv', required=True, metavar='DIRECTORY',
+        help='Python environment to create; use this same VENV path in the experiment')
+    parser.add_argument('--craftium', required=True, metavar='DIRECTORY',
+        help='Craftium source/build directory; cloned if absent, built and installed editable')
+    parser.add_argument('--craftium-revision', default=CRAFTIUM_REVISION,
+        help='Craftium commit to fetch/build (default: pinned validated commit)')
+    parser.add_argument('--model-revision', default=MODEL_REVISION,
+        help='Hugging Face revision for the optional model download')
+    parser.add_argument('--download-model', metavar='DIRECTORY',
+        help=f'download pinned {MODEL} weights here via hf; omit for existing weights')
+    parser.add_argument('--jobs', type=int, default=8,
+        help='parallel Craftium compilation jobs, not GPUs or pipeline concurrency (default: 8)')
+    parser.add_argument('--system-deps', action='store_true',
+        help='install build/rendering packages via apt-get/sudo; never GPU drivers or CUDA')
+    parser.add_argument('--update-existing', action='store_true',
+        help='allow locked synchronization of an existing venv; may change installed packages')
     setup(parser.parse_args())
 
 

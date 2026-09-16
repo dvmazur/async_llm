@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.venvs/
+models/
+craftium/
+results/
+experiments/results/
+*.zip
+*.zip.sha256

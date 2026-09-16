@@ -1,25 +1,24 @@
-"""RTX long run: bbe7abf, FP32 GDN, larger KV pool for retained history copies."""
+"""07-cuda-graphs, BF16 weights, 1x10, full prefill/decode graphs, cap4096."""
 from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT.parent
-sys.path[:0] = [str(ROOT), str(DEPLOY / 'engine' / 'python')]
+sys.path[:0] = [str(ROOT), str(DEPLOY/'engine'/'python')]
 
 from experiment_runner import Runner, RepeatedPipeline, Recorder
 from pipelines.speleo import SpeleoPipeline, RoleParams
 from pipelines.world import SpeleoWorld
 
-VENV = Path('/home/lordvoldebug_2/runner-check-20260915/venv')
 PARAMS = {
     'engine_config': {
-        'model_path': '/home/lordvoldebug_2/models/Qwen3.6-35B-A3B-FP8',
-        'dtype': 'bfloat16', 'quantization': 'fp8',
+        'model_path': '/home/lordvoldebug_2/models/Qwen3.6-35B-A3B',
+        'dtype': 'bfloat16',
         'max_running_req': 64, 'memory_ratio': .9, 'page_size': 16,
-        'num_page_override': 24576, 'max_seq_len_override': 32768,
-        'attention_backend': 'fi', 'max_prefill_rows': 1024,
-        'cuda_graph_bs': [4, 16, 48, 64], 'cuda_graph_max_bs': 64,
-        'shared_cuda_graph_prefill_rows': [256, 1024],
+        'num_page_override': 8192, 'max_seq_len_override': 32768,
+        'attention_backend': 'fi', 'max_prefill_rows': 4096,
+        'cuda_graph_bs': [4], 'cuda_graph_max_bs': 4,
+        'shared_cuda_graph_prefill_rows': [256, 1024, 4096],
         'shared_cuda_graph_max_depth': 16,
         'generation_config': {'do_sample': True, 'temperature': .6, 'top_k': 20, 'top_p': .9},
     },
@@ -36,15 +35,15 @@ ROLE_PARAMETERS = {
 
 
 def make_pipeline(engine, context):
-    return SpeleoPipeline(SpeleoWorld(seed=context.world_seed, max_steps=100),
+    return SpeleoPipeline(SpeleoWorld(seed=context.world_seed, max_steps=10),
         Recorder(context.results_directory, dump_images=False, gif_on=False),
-        engine, context=context, max_actions=100, role_params=ROLE_PARAMETERS)
+        engine, context=context, max_actions=10, role_params=ROLE_PARAMETERS)
 
 
 if __name__ == '__main__':
-    (Runner(VENV, model_seed_start=0, world_seed_start=0)
+    (Runner('/home/lordvoldebug_2/runner-check-20260915/venv', model_seed_start=0, world_seed_start=0)
         .set_engine_params(PARAMS)
         .set_pipeline(RepeatedPipeline(make_pipeline, repeats=1))
-        .set_concurrency(15)
-        .set_results_directory(DEPLOY / 'results-15x100-cap1024')
+        .set_concurrency(1)
+        .set_results_directory(DEPLOY/'results-bf16-1x10-prefill-graphs')
         .run(gpus=[0]))

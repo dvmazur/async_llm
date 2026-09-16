@@ -1,26 +1,44 @@
 """RTX control: current role-owned pipeline, exact minimal engine 24d940f."""
 from pathlib import Path
-from copy import deepcopy
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT.parent
 sys.path[:0] = [str(ROOT), str(DEPLOY / 'engine' / 'python')]
 
-from experiments.speleo_15x5 import ENGINE_PARAMS
 from experiment_runner import Runner, RepeatedPipeline, Recorder
-from pipelines.speleo import SpeleoPipeline
+from pipelines.speleo import SpeleoPipeline, RoleParams
 from pipelines.world import SpeleoWorld
 
 VENV = Path('/home/lordvoldebug_2/runner-check-20260915/venv')
-PARAMS = deepcopy(ENGINE_PARAMS)
-PARAMS['engine_config']['model_path'] = '/home/lordvoldebug_2/models/Qwen3.6-35B-A3B-FP8'
+PARAMS = {
+    'engine_config': {
+        'model_path': '/home/lordvoldebug_2/models/Qwen3.6-35B-A3B-FP8',
+        'dtype': 'bfloat16', 'quantization': 'fp8',
+        'max_running_req': 64, 'memory_ratio': .9, 'page_size': 16,
+        'num_page_override': 8192, 'max_seq_len_override': 32768,
+        'attention_backend': 'fi', 'max_prefill_rows': 4096,
+        'cuda_graph_bs': [4, 16, 48, 64], 'cuda_graph_max_bs': 64,
+        'shared_cuda_graph_prefill_rows': [256, 1024, 4096],
+        'shared_cuda_graph_max_depth': 16,
+        'generation_config': {'do_sample': True, 'temperature': .6, 'top_k': 20, 'top_p': .9},
+    },
+    'adapter_options': {'cpu_threads': 4},
+}
+
+ROLE_PARAMETERS = {
+    'observer': RoleParams(budget=48, temperature=.35, seed_offset=1, top_k=20, top_p=.9),
+    'planner': RoleParams(budget=112, temperature=.65, seed_offset=2, top_k=20, top_p=.9),
+    'executor_draft': RoleParams(budget=28, temperature=.6, seed_offset=3, top_k=20, top_p=.9),
+    'falsifier': RoleParams(budget=40, temperature=.45, seed_offset=4, top_k=20, top_p=.9),
+    'executor_refine': RoleParams(budget=28, temperature=.45, seed_offset=5, top_k=20, top_p=.9),
+}
 
 
 def make_pipeline(engine, context):
     return SpeleoPipeline(SpeleoWorld(seed=context.world_seed, max_steps=10),
         Recorder(context.results_directory, dump_images=False, gif_on=False),
-        engine, context=context, max_actions=10)
+        engine, context=context, max_actions=10, role_params=ROLE_PARAMETERS)
 
 
 if __name__ == '__main__':
