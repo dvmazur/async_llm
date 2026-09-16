@@ -104,6 +104,9 @@ class Batch:
     # Vision-tower output [n_img_tokens, hidden] in place of pixel_values, for callers
     # that ran the tower themselves (chunked prefill: run once, slice per chunk).
     image_embeds: "torch.Tensor | None" = field(default=None, init=False)
+    # Dense [token_rows, hidden] image buffer, masked by mm_token_type_ids.
+    # The default compact image-row format is unchanged.
+    image_embeds_token_aligned: bool = field(default=False, init=False)
     mrope_span_override: int | None = field(default=None, init=False)
     mrope_positions: "torch.Tensor | None" = field(default=None, init=False)
 

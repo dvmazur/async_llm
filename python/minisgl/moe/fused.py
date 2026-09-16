@@ -122,7 +122,10 @@ def moe_align_block_size(
         token_ids = torch.arange(sentinel, device=topk_ids.device, dtype=torch.int64)
         order = torch.argsort(flat_experts, stable=True)
         sorted_experts = flat_experts[order]
-        counts = torch.bincount(flat_experts, minlength=num_experts)
+        # bincount reads the largest GPU id to determine its output size, even
+        # with minlength. Counts have a known expert capacity here: no host read.
+        counts = torch.zeros(num_experts, dtype=torch.int64, device=topk_ids.device)
+        counts.scatter_add_(0, flat_experts, torch.ones_like(flat_experts))
         padded_counts = ((counts + block_size - 1) // block_size) * block_size
         input_starts = torch.cumsum(counts, dim=0) - counts
         padded_starts = torch.cumsum(padded_counts, dim=0) - padded_counts
@@ -132,11 +135,12 @@ def moe_align_block_size(
         sorted_ids[destinations] = token_ids[order].to(torch.int32)
 
         blocks_per_expert = padded_counts // block_size
-        block_experts = torch.repeat_interleave(
-            torch.arange(num_experts, device=topk_ids.device, dtype=torch.int32),
-            blocks_per_expert,
-        )
-        expert_ids[: block_experts.numel()] = block_experts
+        # Invert the cumulative counts at fixed capacity instead of creating a
+        # data-dependent-length repeat_interleave result (not graph-capturable).
+        block_index = torch.arange(max_num_m_blocks, device=topk_ids.device)
+        cumulative_blocks = blocks_per_expert.cumsum(0)
+        block_experts = torch.searchsorted(cumulative_blocks, block_index, right=True)
+        expert_ids.copy_(torch.where(block_experts < num_experts, block_experts, 0).int())
         num_tokens_post_pad = padded_counts.sum().reshape(1).to(torch.int32)
         return sorted_ids, expert_ids, num_tokens_post_pad
 
