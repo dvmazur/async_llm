@@ -71,7 +71,7 @@ Report the mean of ten five-episode run means with a two-sided 95% Student-t CI:
 not a selected-best-round estimate. Partial reports state the completed-run
 count and use its degrees of freedom; one completed run has no error bar.
 
-There are 500 scored episodes per environment for the five evolution checkpoints
+There are 250 scored episodes per environment for the five evolution checkpoints
 and 350 per environment for the seven baseline conditions. Invalid attempts may
 add diagnostic episodes but cannot enter valid-round summaries. No old results
 are reused. Error bars describe uncertainty in the mean, not individual rewards.
