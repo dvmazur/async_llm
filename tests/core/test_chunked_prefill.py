@@ -468,7 +468,14 @@ class TestChunkedImagePrefill:
             assert blk.mrope_span == whole.mrope_span, f"budget={budget}: span diverged"
             blocks.append(blk)
 
-        _assert_chunkings_agree(rows, _atol(vl_session), "image prefill")
+        chunking_atol = _atol(vl_session)
+        if vl_session._is_hybrid:
+            # User-approved 2026-09-16: 1.0 -> 1.1 (+10%) for this comparison
+            # only. Original FP8 revision 46f8eca also measured 1.015869.
+            # This is a tolerance adjustment, not a numerical fix; keep argmax,
+            # token/mRoPE bookkeeping and the unchunked comparison unchanged.
+            chunking_atol *= 1.1
+        _assert_chunkings_agree(rows, chunking_atol, "image prefill")
         _assert_same_choice(rows[0], ref[0], _atol(vl_session), "image prefill vs unchunked")
         for blk in (whole, *blocks):
             vl_session.free_block(blk)
