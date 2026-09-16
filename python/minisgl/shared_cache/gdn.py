@@ -51,6 +51,8 @@ class SharedCacheGDN:
         # batches several prefills.  ``None`` for decode (one token per worker)
         # and for a single-request prefill.
         self.prefill_segments: Optional[List[int]] = None
+        self.decode_buffers = None
+        self._prepared_decode = False
 
     def set_context(
         self,
@@ -61,6 +63,25 @@ class SharedCacheGDN:
         self.cache_structure = [list(c) for c in cache_structure]
         self.write_to = list(write_to)
         self.prefill_segments = None if prefill_segments is None else list(prefill_segments)
+        self._prepared_decode = False
+
+    def prepare_decode(self, layers: int, dtype: torch.dtype) -> None:
+        """Prepare addresses before entering the existing model forward."""
+        from .gdn_decode import GDNDecodeBuffers
+
+        depth = max(1, max(map(len, self.cache_structure), default=0))
+        buffers = self.decode_buffers
+        if (buffers is None or buffers.workers != self.num_workers
+                or buffers.depth < depth or buffers.layers != layers or buffers.dtype != dtype):
+            buffers = self.decode_buffers = GDNDecodeBuffers(
+                self, layers, self.num_workers, depth, dtype)
+        buffers.prepare(self.cache_structure, self.write_to)
+        self._prepared_decode = True
+
+    def finish_decode(self, success: bool) -> None:
+        if self._prepared_decode:
+            self.decode_buffers.publish(success)
+            self._prepared_decode = False
 
     @property
     def num_workers(self) -> int:
@@ -85,6 +106,8 @@ class SharedCacheGDN:
         Returns ``[num_workers, H, d_k, d_v]`` in HF convention (or ``None`` if no
         block in any chain has an affine for this layer).
         """
+        if self._prepared_decode:
+            return self.decode_buffers.compose(lin_idx).to(dtype=dtype)
         if not self.has_previous_affine(lin_idx):
             return None
 
@@ -133,6 +156,8 @@ class SharedCacheGDN:
     def prior_conv_states(self, lin_idx: int) -> Optional[torch.Tensor]:
         """Per-worker most-recent conv window along the chain, ``[W, conv_dim, k]``
         (zeros for a worker whose chain has none), or ``None`` if all are empty."""
+        if self._prepared_decode:
+            return self.decode_buffers.conv(lin_idx)
         per_worker: List[Optional[torch.Tensor]] = []
         present: Optional[torch.Tensor] = None
         for chain in self.cache_structure:
@@ -182,6 +207,10 @@ class SharedCacheGDN:
         worker), so the only Python loop is the inherently-sequential token scan
         (length 1 for decode; the block length for a prefill).
         """
+        if self._prepared_decode:
+            assert workers is None and key.shape[1] == 1
+            self.decode_buffers.capture(lin_idx, key, value, alpha, beta, l2norm_eps)
+            return
         targets = self.write_to if workers is None else [self.write_to[w] for w in workers]
         W, seq, H, dk = key.shape
         dv = value.shape[-1]
@@ -217,6 +246,10 @@ class SharedCacheGDN:
     ) -> None:
         """Store per-worker conv windows ``[W, conv_dim, k]`` into write blocks
         (``workers`` selects which, as in :meth:`capture_token_affines`)."""
+        if self._prepared_decode:
+            assert workers is None
+            self.decode_buffers.store_conv(lin_idx, conv)
+            return
         targets = self.write_to if workers is None else [self.write_to[w] for w in workers]
         for w, target in enumerate(targets):
             target.linear_conv_state[lin_idx] = conv[w].detach().clone()
