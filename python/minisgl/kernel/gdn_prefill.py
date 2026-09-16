@@ -53,7 +53,7 @@ def chunk_gdn(q, k, v, g, beta, initial, cu, chunk_indices, chunk_offsets,
 @tr.jit
 def _affine_scan(Read, Write, Key, Value, Alpha, Beta, Cu,
                  H: tl.constexpr, DK: tl.constexpr, DV: tl.constexpr,
-                 BK: tl.constexpr, R: tl.constexpr, ONE_TOKEN: tl.constexpr):
+                 BK: tl.constexpr, R: tl.constexpr, ONE_TOKEN: tl.constexpr, STATE: tl.constexpr):
     worker, head, tile = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     oa, ob = tl.load(Write + worker * 3), tl.load(Write + worker * 3 + 1)
     if (oa == 0) & (ob == 0):
@@ -64,11 +64,11 @@ def _affine_scan(Read, Write, Key, Value, Alpha, Beta, Cu,
     local_row = tl.where(is_a, rows, rows - DK)
     nrows = tl.where(is_a, DK, DV)
     pa, pb = tl.load(Read + worker * 3), tl.load(Read + worker * 3 + 1)
-    pointer = tl.where(is_a, pa, pb).to(tl.pointer_type(tl.float32))
+    pointer = tl.where(is_a, pa, pb).to(tl.pointer_type(STATE))
     offset = (head * nrows[:, None] + local_row[:, None]) * DK + columns[None, :]
     mask = (rows[:, None] < DK + DV) & (columns[None, :] < DK)
     present = tl.where(is_a, pa != 0, pb != 0)
-    state = tl.load(pointer[:, None] + offset, mask & present[:, None], other=0)
+    state = tl.load(pointer[:, None] + offset, mask & present[:, None], other=0).to(tl.float32)
     identity = (local_row[:, None] == columns[None, :]) & is_a[:, None]
     state = tl.where(present[:, None], state, identity.to(tl.float32))
     if ONE_TOKEN:
@@ -111,12 +111,13 @@ def _affine_scan(Read, Write, Key, Value, Alpha, Beta, Cu,
             constraints="=f,f,f,f,f,f,f",
             args=[state, alpha, beta, dot[:, None], key[None, :], value[:, None]],
             dtype=tl.float32, is_pure=True, pack=1)
-    destination = tl.where(is_a, oa, ob).to(tl.pointer_type(tl.float32))
+    destination = tl.where(is_a, oa, ob).to(tl.pointer_type(STATE))
     enabled = tl.where(is_a, oa != 0, ob != 0)
     tl.store(destination[:, None] + offset, state, mask & enabled[:, None])
 
 
-def capture_affine_scan(read, write, key, value, alpha, beta, cu=None, *, l2norm_eps=1e-6):
+def capture_affine_scan(read, write, key, value, alpha, beta, cu=None, *, l2norm_eps=1e-6,
+                        state_dtype=torch.float32):
     """Pointer update; absent cu means one token per worker (decode)."""
     key = key.float()
     key = key * torch.rsqrt((key * key).sum(-1, keepdim=True) + l2norm_eps)
@@ -126,4 +127,5 @@ def capture_affine_scan(read, write, key, value, alpha, beta, cu=None, *, l2norm
     _affine_scan[(read.shape[0], h, tr.cdiv(dk + dv, 8))](
         read, write, key.contiguous(), value, alpha, beta, cu,
         h, dk, dv, max(8, tr.next_power_of_2(dk)), 8, cu is None,
+        tl.bfloat16 if state_dtype == torch.bfloat16 else tl.float32,
         num_warps=2, enable_fp_fusion=False)

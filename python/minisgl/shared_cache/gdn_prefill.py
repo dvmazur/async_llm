@@ -25,7 +25,7 @@ class GDNPrefillBuffers(GDNDecodeBuffers):
         width = self.dv + self.dk + self.dv
         # Empty slots are never read: both packing and FLA H are guarded.
         self.joint_initial = torch.empty(workers, self.h, self.dk, width,
-                                         dtype=torch.float32, **args)
+                                         dtype=self.state_dtype, **args)
         self.joint_values = torch.zeros(1, rows, self.h, width, dtype=dtype, **args)
         self.prefill_count = 0
 
@@ -75,7 +75,8 @@ class GDNPrefillBuffers(GDNDecodeBuffers):
         self.joint_values[0, ..., self.dv + self.dk:].copy_(v)
         # One installed FLA pass, NOT a second FP32 affine pass. Its operands
         # (including those updating A/B) use activation dtype, normally BF16;
-        # accumulators/final A/B are FP32. This changes capture numerics from
+        # accumulation is FP32; final A/B use the configured state storage dtype.
+        # This changes capture numerics from
         # the old FP32 token scan; external model parity is the quality gate.
         out, final = chunk_gdn(q[None], k[None], self.joint_values, g[None], beta[None],
                                self.joint_initial, self.cu, self.chunk_indices,
@@ -109,4 +110,5 @@ class GDNPrefillBuffers(GDNDecodeBuffers):
         return result.masked_fill((torch.arange(self.rows, device=self.device) >= self.cu[-1])[:, None, None], 0)
 
     def capture_prefill(self, layer, k, v, alpha, beta):
-        capture_affine_scan(self.read_ptrs[layer], self.write_ptrs[layer], k, v, alpha, beta, self.cu)
+        capture_affine_scan(self.read_ptrs[layer], self.write_ptrs[layer], k, v, alpha, beta, self.cu,
+                            state_dtype=self.state_dtype)

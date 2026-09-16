@@ -19,7 +19,7 @@ def _pack_initial(Read, Initial, Out, Cu, H: tl.constexpr, DK: tl.constexpr,
     is_a = (value >= DV) & (value < DV + DK)
     local = tl.where(is_a, value - DV, value - DV - DK)
     address = tl.load(Read + worker * 3 + tl.where(is_a, 0, 1))
-    ptr = address.to(tl.pointer_type(tl.float32))
+    ptr = address.to(tl.pointer_type(Initial.dtype.element_ty))
     # Block A/B are [value,key], whereas FLA state is [key,value].
     source = (head * tl.where(is_a, DK, DV) + local) * DK + key
     affine = tl.load(ptr + source, valid & ~is_s & (address != 0), other=0.)
@@ -39,7 +39,7 @@ def _store_affines(Write, Final, H: tl.constexpr, DK: tl.constexpr,
     is_a = row < DK
     local = tl.where(is_a, row, row - DK)
     address = tl.load(Write + worker * 3 + tl.where(is_a, 0, 1))
-    ptr = address.to(tl.pointer_type(tl.float32))
+    ptr = address.to(tl.pointer_type(Final.dtype.element_ty))
     valid = (row < DK + DV) & (address != 0)
     source = (worker * H + head) * DK * (DV + DK + DV) + key * (DV + DK + DV) + DV + row
     value = tl.load(Final + source, valid, other=0.)

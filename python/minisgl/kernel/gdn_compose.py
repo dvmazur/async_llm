@@ -1,7 +1,8 @@
-"""Active-node FP32 compose for block-owned affine summaries.
+"""Active-node compose for block-owned affine summaries.
 
 Adapted from planned/gdn_kernels.py compose_first/compose_level (cuda-graphs,
-922df78). Keep its IEEE dot and level-count guard, but read existing A/B
+922df78). Default FP32 uses IEEE dot; opt-in BF16 uses BF16 Tensor Cores
+with FP32 accumulation and rounds only after adding B. Keep the level-count guard and existing A/B
 pointer tables instead of requiring a pool. Missing A is identity, missing B
 is zero; an absent per-layer state is NOT an inactive trie node.
 """
@@ -23,7 +24,7 @@ def _compose_first(Pointers, Counts, Out, Initial, Sinks, Workers, Empty,
             tl.store(Initial + row * N + offsets, 0., offsets < N)
     if row < tl.load(Counts):
         address = tl.load(Pointers + row * 2 + 1)
-        b = address.to(tl.pointer_type(tl.float32))
+        b = address.to(tl.pointer_type(Out.dtype.element_ty))
         values = tl.load(b + offsets, (address != 0) & (offsets < N), other=0.)
         tl.store(Out + row * N + offsets, values, offsets < N)
         if Initial is not None:
@@ -45,8 +46,8 @@ def _compose_level(Pointers, Parents, Counts, Previous, Out, Initial, Sinks, Wor
         parent = tl.load(Parents + row)
         a_address = tl.load(Pointers + row * 2)
         b_address = tl.load(Pointers + row * 2 + 1)
-        a = a_address.to(tl.pointer_type(tl.float32)) + head * DK * DK
-        b = b_address.to(tl.pointer_type(tl.float32)) + head * DV * DK
+        a = a_address.to(tl.pointer_type(Previous.dtype.element_ty)) + head * DK * DK
+        b = b_address.to(tl.pointer_type(Previous.dtype.element_ty)) + head * DV * DK
         previous = Previous + (parent * H + head) * DV * DK
         m = (tile // tl.cdiv(DK, BN)) * BM + tl.arange(0, BM)
         n = (tile % tl.cdiv(DK, BN)) * BN + tl.arange(0, BN)
@@ -63,8 +64,9 @@ def _compose_level(Pointers, Parents, Counts, Previous, Out, Initial, Sinks, Wor
                              (k[:, None] < DK) & (n[None, :] < DK), other=0.)
                 acc += tl.dot(p, av, input_precision="ieee")
         else:
-            acc = tl.load(previous + offsets, mask, other=0.)
-        value = acc + tl.load(b + offsets, mask & (b_address != 0), other=0.)
+            acc = tl.load(previous + offsets, mask, other=0.).to(tl.float32)
+        # Missing A still needs FP32 addition before the single storage cast.
+        value = acc.to(tl.float32) + tl.load(b + offsets, mask & (b_address != 0), other=0.).to(tl.float32)
         tl.store(Out + (row * H + head) * DV * DK + offsets, value, mask)
         if Initial is not None:
             for i in range(tl.load(Sinks + row), tl.load(Sinks + row + 1)):
