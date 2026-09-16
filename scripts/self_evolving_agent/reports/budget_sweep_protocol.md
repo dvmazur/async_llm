@@ -100,3 +100,19 @@ versions, `summary.csv`, `report.md`, and a 95% CI plot once enough runs finish.
 `baseline_summary.csv` combines all baseline conditions after completion.
 The earlier `run_baseline_campaign.py` remains a legacy wider-budget launcher;
 use `run_async_campaign.py` for this revised sequence and condition set.
+
+## Actions per forward
+
+`action_efficiency.csv` and `action_efficiency.md` report completed environment
+actions divided by `LLM.forward()` API calls, including both prefills and decodes.
+Each run's ratio uses totals over its five episodes; report the mean ratio and
+95% Student-t CI across runs. Raw action and forward totals are also shown.
+Calls made during decisions cancelled at episode end count in the denominator;
+evolution/code generation and warm-up do not. This is calls, not tokens or GPU
+batch launches. Random policy has zero forwards and an undefined ratio (N/A).
+The live reporter recovers existing evolution counts without restarting workers:
+
+```bash
+python scripts/self_evolving_agent/action_efficiency.py \
+  --root scripts/self_evolving_agent/eval_runs/async_campaign_20260916 --watch
+```

@@ -76,6 +76,7 @@ async def evaluate(out):
                 error = ep["info"].get("error", "")
                 row = dict(task=task, budget=0, run=run, episode=episode, seed=env_seed,
                            action_seed=action_seed, reward=ep["reward"], steps=ep["steps"], error=error,
+                           llm_forward_calls=0, actions_per_forward=None,
                            hit_step_cap=False, info=ep["info"], decision_attempts=len(engine.trace), reasoning_tokens=0,
                            generated_tokens=0, budget_hits=0,
                            act_seconds=sum(s["latency_s"] for s in engine.trace),

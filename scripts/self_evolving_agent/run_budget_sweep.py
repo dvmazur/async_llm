@@ -288,6 +288,8 @@ async def run(args):
             subprocess.run(["uv", "pip", "freeze", "--python", os.sys.executable], stdout=f, check=True)
     from warmup import warmup
     await warmup(llm)
+    from action_efficiency import ForwardCounter, ratio
+    forward_counter = ForwardCounter(llm)
     try:
         for run_index in range(args.runs):
             conditions = [(task, budget) for task in args.tasks for budget in args.budgets]
@@ -309,6 +311,7 @@ async def run(args):
                         env = ENVS[task](seed=seed)
                         env.max_episodes, env.max_steps_per_episode = 1, CAPS[task]
                         engine = BudgetEngine(llm, task, budget, mode=args.mode)
+                        forwards_before = forward_counter.calls
                         start = time.monotonic()
                         print(f"START {task} budget={budget} run={run_index+1} episode={episode+1} seed={seed}", flush=True)
                         def progress():
@@ -323,6 +326,8 @@ async def run(args):
                         error = ep["info"].get("error", "")
                         row = dict(task=task, budget=budget, run=run_index, episode=episode, gpu=gpu,
                                    seed=seed, reward=ep["reward"], steps=ep["steps"], error=error,
+                                   llm_forward_calls=forward_counter.calls - forwards_before,
+                                   actions_per_forward=ratio(ep["steps"], forward_counter.calls - forwards_before),
                                    hit_step_cap=False, info=ep["info"], decision_attempts=len(engine.trace),
                                    reasoning_tokens=sum(s["reasoning_tokens"] for s in engine.trace),
                                    generated_tokens=sum(s["generated_tokens"] for s in engine.trace),

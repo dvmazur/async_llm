@@ -193,6 +193,7 @@ def on_task_result(result: dict) -> None:
         "step": _step, "ts": _ts(), "env": result["env"], "avg_reward": result["avg_reward"],
         "episodes": result["episodes"],
         "llm_forward_calls": result.get("llm_forward_calls", 0),
+        "actions_per_forward": result.get("actions_per_forward"),
     }
     _task_results_f.write(json.dumps(record) + "\n")
 
