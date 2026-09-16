@@ -710,7 +710,8 @@ class SharedCacheSession:
                 mrope_rel = self._mrope_rel(input_ids, job.mm_token_type_ids, job.image_grid_thw)
             page_starts, token_slots = self._alloc_token_storage(seq_len, write_to=block)
             # The self segment reads the block's whole post-write page list.
-            self_pages = torch.cat([block.page_starts_tensor(), page_starts.to(self.device)])
+            self_pages = torch.tensor(block.page_starts + page_starts.cpu().tolist(),
+                                      dtype=torch.int32, device='cpu')
             specs.append(
                 PrefillSpec(
                     context=context,
@@ -1065,8 +1066,8 @@ class SharedCacheSession:
 
         if blocks_needing_page:
             fresh = self.page_allocator.alloc_pages(len(blocks_needing_page))
-            for k, wt in enumerate(blocks_needing_page):
-                new_page_for_block[id(wt)] = int(fresh[k].item())
+            for wt, start in zip(blocks_needing_page, fresh.cpu().tolist()):
+                new_page_for_block[id(wt)] = start
 
         out_loc: List[int] = []
         write_pos: List[int] = []
