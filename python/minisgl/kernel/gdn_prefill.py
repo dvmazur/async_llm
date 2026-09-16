@@ -6,13 +6,11 @@ import triton.language as tl
 
 
 def chunk_gdn(q, k, v, g, beta, initial, cu, chunk_indices, chunk_offsets,
-              output_final_state=False):
+              output_final_state=False, *, skip_empty_states=False):
+    """With skip_empty_states, empty final-state entries are unspecified/unused."""
     from fla.modules.l2norm import l2norm_fwd
-    from fla.ops.utils import chunk_local_cumsum
     from fla.ops.utils.constant import RCP_LN2
-    from fla.ops.gated_delta_rule.chunk_fwd import chunk_gated_delta_rule_fwd_intra
-    from fla.ops.common.chunk_delta_h import chunk_gated_delta_rule_fwd_kernel_h_blockdim64
-    from fla.ops.common.chunk_o import chunk_fwd_o
+    from .gdn_fla_guards import kernels
 
     # Match FLA's public input_guard before entering lower-level kernels.
     q, k, v, g, beta = (x.contiguous() for x in (q, k, v, g, beta))
@@ -20,25 +18,34 @@ def chunk_gdn(q, k, v, g, beta, initial, cu, chunk_indices, chunk_offsets,
     k, _ = l2norm_fwd(k)
     b, t, h, dk = k.shape
     hv, dv = v.shape[-2:]
-    gc = chunk_local_cumsum(g, chunk_size=64, scale=RCP_LN2,
-                            cu_seqlens=cu, chunk_indices=chunk_indices)
-    w, u, _ = chunk_gated_delta_rule_fwd_intra(
-        k=k, v=v, g=gc, beta=beta.float(), cu_seqlens=cu,
-        chunk_indices=chunk_indices, chunk_size=64)
-    # The output kernel reads h by global chunk slot, including masked dummy
-    # slots. Allocate all capacity slots and don't read uninitialized scratch.
-    states = k.new_zeros(b, len(chunk_indices), hv, dk, dv)
-    values = torch.empty_like(u)
+    (cs, cs_body), (kk, kk_body), (wu, wu_body), (hs, hs_body), (o, o_body) = kernels()
+    n, chunks = len(cu)-1, len(chunk_indices)
+    meta = dict(T=t, N=n, BT=64, IS_VARLEN=True)
+    gc = torch.empty_like(g, dtype=torch.float32)  # FLA cumsum's default output dtype.
+    cs[(chunks, b*hv)](chunk_offsets, g, gc, RCP_LN2, cu, chunk_indices,
+                       B=b, H=hv, REVERSE=False, BODY=cs_body, **meta)
+    coefficients = k.new_zeros(b, t, hv, 64)  # FLA writes only the lower triangle.
+    beta = beta.float()
+    kk[(chunks, b*hv)](chunk_offsets, k, gc, beta, coefficients, cu, chunk_indices,
+                       H=h, HV=hv, K=dk, BC=16, BODY=kk_body, **meta)
+    w, u = k.new_empty(b, t, hv, dk), torch.empty_like(v)
+    wu[(chunks, b*hv)](chunk_offsets, k, v, beta, w, u, coefficients, gc, cu, chunk_indices,
+                       H=h, HV=hv, K=dk, V=dv, BK=64, BV=64, BODY=wu_body, **meta)
+    # Only actual chunks are read by O, and H writes each before O runs.
+    # Unused scratch can remain uninitialized; no capacity-wide memset needed.
+    states = k.new_empty(b, chunks, hv, dk, dv)
+    values = torch.empty_like(v)
     final = initial.new_empty(initial.shape) if output_final_state else None
-    # Bypass only the wrapper which caches chunk_offsets by tensor identity.
-    # All recurrence math is the installed FLA kernel, unchanged.
-    chunk_gated_delta_rule_fwd_kernel_h_blockdim64[
-        lambda meta: (tr.cdiv(dv, meta['BV']), (len(cu)-1)*hv)](
-            k=k, v=u, w=w, v_new=values, g=gc, gk=None, h=states,
-            h0=initial, ht=final, cu_seqlens=cu, chunk_offsets=chunk_offsets,
-            T=t, H=h, HV=hv, K=dk, V=dv, BT=64, STATE_V_FIRST=False)
-    out = chunk_fwd_o(q=q, k=k, v=values, h=states, g=gc, scale=dk**-.5,
-                      cu_seqlens=cu, chunk_indices=chunk_indices, chunk_size=64)
+    # Preserve final=initial for empty sequences by default. Joint capture
+    # opts out: inactive final entries have no consumer/write pointer.
+    hs[lambda m: (tr.cdiv(dv, m['BV']), n*hv)](
+        k, u, w, values, gc, states, initial, final, cu, chunk_offsets,
+        T=t, H=h, HV=hv, K=dk, V=dv, BT=64, STATE_V_FIRST=False,
+        SKIP_EMPTY=skip_empty_states or final is None, BODY=hs_body)
+    out = torch.empty_like(v)
+    o[lambda m: (tr.cdiv(dv, m['BV']), chunks, b*hv)](
+        chunk_offsets, q, k, values, states, gc, out, cu, chunk_indices, dk**-.5,
+        T=t, N=n, H=h, HV=hv, K=dk, V=dv, BT=64, STATE_V_FIRST=False, BODY=o_body)
     out = out.masked_fill(torch.arange(t, device=q.device)[None, :, None, None] >= cu[-1], 0)
     return out, final
 
