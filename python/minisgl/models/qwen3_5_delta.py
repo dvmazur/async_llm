@@ -174,7 +174,9 @@ def _chunk_delta(query, key, value, g, beta, initial_state=None):
             key,
             value,
             g=g,
-            beta=beta,
+            # Preserve beta values, but avoid FLA rounding its intermediate
+            # transforms back into BF16 beta storage. SGLang uses FP32 here.
+            beta=beta.float(),
             initial_state=initial_state,
             output_final_state=True,
             use_qk_l2norm_in_kernel=True,
@@ -207,6 +209,37 @@ class _Conv1d(BaseOP):
 
     def __init__(self, conv_dim: int, kernel_size: int):
         self.weight = torch.empty(conv_dim, 1, kernel_size)
+
+
+def _prefill_conv_silu(x: torch.Tensor, weight: torch.Tensor, padding: int) -> torch.Tensor:
+    """Depthwise prefill convolution with reference rounding, in eager Torch.
+
+    Products round to activation dtype; their sum and SiLU stay FP32 until
+    the final output cast. cuDNN conv followed by BF16 SiLU rounds elsewhere.
+    State gathering/storing and convolution window selection are unchanged.
+    """
+    width = weight.shape[-1]
+    padded = F.pad(x, (padding, padding))
+    length = padded.shape[-1] - width + 1
+    total = torch.zeros((*x.shape[:2], length), dtype=torch.float32, device=x.device)
+    for tap in range(width):
+        total += (padded[..., tap:tap + length] * weight[:, 0, tap][None, :, None]).float()
+    return F.silu(total).to(x.dtype)
+
+
+def _decode_conv_silu(window: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """Last causal window: FP32 products/sum/SiLU, then one activation cast.
+
+    The reference CUDA update uses FP32 products, unlike its strided prefill
+    kernel. This changes arithmetic only; callers still own state updates.
+    """
+    width = weight.shape[-1]
+    window_f = window[..., -width:].float()
+    weight_f = weight[:, 0].float()
+    total = torch.zeros_like(window_f[..., 0])
+    for tap in range(width):
+        total += window_f[..., tap] * weight_f[:, tap]
+    return F.silu(total).to(window.dtype)
 
 
 class _GatedRMSNorm(BaseOP):
@@ -346,16 +379,13 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         if prior_conv is not None:
             ctx_tail = prior_conv[w : w + 1, :, -(k - 1) :]  # (1, conv_dim, k-1)
             full_input = torch.cat([ctx_tail, conv_in], dim=-1)  # (1, conv_dim, k-1+L)
-            conv_out = F.silu(
-                F.conv1d(full_input, self.conv1d.weight, groups=self.conv_dim, padding=k - 1)
-            )
+            conv_out = _prefill_conv_silu(full_input, self.conv1d.weight, padding=k - 1)
             qkv2 = conv_out[..., k - 1 : k - 1 + length]
             new_conv_state = full_input[..., -k:]
         else:
-            conv_out = F.conv1d(conv_in, self.conv1d.weight, groups=self.conv_dim, padding=k - 1)[
+            qkv2 = _prefill_conv_silu(conv_in, self.conv1d.weight, padding=k - 1)[
                 ..., :length
             ]
-            qkv2 = F.silu(conv_out)
             pad = k - length
             new_conv_state = F.pad(conv_in, (pad, 0)) if pad >= 0 else conv_in[..., -k:]
         qkv2 = qkv2.squeeze(0).transpose(0, 1)  # (L, conv_dim)
@@ -401,8 +431,7 @@ class Qwen3_5GatedDeltaNet(BaseOP):
             prior_conv = torch.zeros(n, self.conv_dim, k, device=x.device, dtype=qkv.dtype)
         conv_in = torch.cat([prior_conv, qkv.unsqueeze(-1)], dim=-1)  # (W, conv_dim, k+1)
         new_conv_state = conv_in[..., -k:]
-        conv_out = F.conv1d(conv_in, self.conv1d.weight, groups=self.conv_dim, padding=0)
-        qkv2 = F.silu(conv_out[..., -1:]).squeeze(-1)  # (W, conv_dim)
+        qkv2 = _decode_conv_silu(conv_in, self.conv1d.weight)  # (W, conv_dim)
 
         q, kk, v = self._split_heads(qkv2)  # (W, num_v_heads, d)
         beta, g = self._gates(a, b)
@@ -458,10 +487,10 @@ class Qwen3_5GatedDeltaNet(BaseOP):
             b = self.in_proj_b.forward(seg)
 
             conv_in = qkv.transpose(0, 1).unsqueeze(0)  # (1, conv_dim, L)
-            conv_out = F.conv1d(conv_in, self.conv1d.weight, groups=self.conv_dim, padding=k - 1)[
+            conv_out = _prefill_conv_silu(conv_in, self.conv1d.weight, padding=k - 1)[
                 ..., :length
             ]
-            qkv = F.silu(conv_out).squeeze(0).transpose(0, 1)  # (L, conv_dim)
+            qkv = conv_out.squeeze(0).transpose(0, 1)  # (L, conv_dim)
 
             # conv state: last `k` input columns, left-padded if the sequence is shorter
             pad = k - length
@@ -497,8 +526,7 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         conv_state = gdn.conv_state[self._lin_idx, table_idx]  # (N, conv_dim, k)
         conv_in = torch.cat([conv_state, qkv.unsqueeze(-1)], dim=-1)  # (N, conv_dim, k+1)
         gdn.conv_state[self._lin_idx, table_idx] = conv_in[..., -self.conv_kernel :]
-        conv_out = F.conv1d(conv_in, self.conv1d.weight, groups=self.conv_dim, padding=0)
-        qkv = F.silu(conv_out[..., -1:]).squeeze(-1)  # (N, conv_dim)
+        qkv = _decode_conv_silu(conv_in, self.conv1d.weight)  # (N, conv_dim)
 
         q, kk, v = self._split_heads(qkv)
         beta, g = self._gates(a, b)

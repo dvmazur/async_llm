@@ -29,9 +29,9 @@ class Qwen3_5DecoderLayer(BaseOP):
             self.self_attn = Qwen3_5Attention(config, kv_idx)
             self._is_linear = False
         self.mlp = self.mlp_cls(config)
-        self.input_layernorm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps, weight_plus_one=True)
         self.post_attention_layernorm = RMSNormFused(
-            size=config.hidden_size, eps=config.rms_norm_eps
+            size=config.hidden_size, eps=config.rms_norm_eps, weight_plus_one=True
         )
         self._layer_id = layer_id
 
@@ -75,7 +75,7 @@ class Qwen3_5Model(BaseOP):
             else:
                 kv_idx += 1
         self.layers = OPList(layers)
-        self.norm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps, weight_plus_one=True)
 
     def forward(
         self,
