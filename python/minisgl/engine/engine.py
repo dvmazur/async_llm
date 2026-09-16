@@ -11,7 +11,7 @@ from minisgl.kvcache import GDNStatePool, PageAllocator, create_kvcache_pool
 from minisgl.layers import set_rope_device
 from minisgl.models import create_model, load_weight
 from minisgl.moe import create_moe_backend
-from minisgl.utils import div_even, init_logger, is_sm90_supported, is_sm100_supported, torch_dtype
+from minisgl.utils import div_even, init_logger, torch_dtype
 
 from .config import EngineConfig
 from .graph import GraphRunner, get_free_memory, mem_GB
@@ -236,7 +236,10 @@ def _adjust_config(config: EngineConfig):
         object.__setattr__(config, attr, value)
 
     if config.attention_backend == "auto":
-        backend = "trtllm" if is_sm100_supported() else ("fa,fi" if is_sm90_supported() else "fi")
+        # FlashInfer 0.6.17 TRTLLM accepts SM100/103/107, not every SM >= 100.
+        # Consumer Blackwell (SM120/121) uses the portable FlashInfer backend.
+        arch = torch.cuda.get_device_capability(config.tp_info.rank)
+        backend = "trtllm" if arch in ((10, 0), (10, 3), (10, 7)) else ("fa,fi" if arch == (9, 0) else "fi")
         override("attention_backend", backend)
         logger.info_rank0(f"Auto-selected attention backend: {config.attention_backend}")
 

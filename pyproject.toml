@@ -25,10 +25,13 @@ dependencies = [
     "accelerate",
     "msgpack",
     "modelscope",
-    "torch<2.10.0",
-    "torchvision",
+    "torch==2.13.0+cu130",
+    "torchvision==0.28.0+cu130",
     "transformers>=5.12.0,<=6",
-    "flashinfer-python>=0.5.3",
+    "flashinfer-python==0.6.17",
+    # GDN graph adapters call internal FLA JIT bodies; upgrade only with adapter tests.
+    # This release also pins its kernel package, fla-core, to exactly 0.5.2.
+    "flash-linear-attention==0.5.2",
     "pyzmq",
     "pillow",
     "uvicorn",
@@ -36,7 +39,8 @@ dependencies = [
     "prompt_toolkit",
     "openai",
     "apache-tvm-ffi>=0.1.4",
-    "sgl_kernel>=0.3.17.post1",
+    # Distribution name differs from the Python import: sgl_kernel.
+    "sglang-kernel==0.4.6.post1+cu130",
     "quack-kernels",
 ]
 
@@ -52,6 +56,21 @@ dev = [
     "matplotlib>=3.10.5",
     "pyarrow",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+sglang-kernel = { index = "sglang-cu130" }
+
+[[tool.uv.index]]
+name = "sglang-cu130"
+url = "https://docs.sglang.ai/whl/cu130/"
+explicit = true
 
 [tool.setuptools]
 include-package-data = true

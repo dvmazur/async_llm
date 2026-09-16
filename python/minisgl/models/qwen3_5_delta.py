@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, List, Tuple
+import warnings
 
 import torch
 import torch.nn.functional as F
@@ -23,7 +24,11 @@ try:
     from fla.ops.gated_delta_rule import (
         fused_recurrent_gated_delta_rule as _fla_recurrent,
     )
-except Exception:  # pragma: no cover - fla is optional
+except Exception as exc:  # fla is optional; never silently hide an ABI/import failure
+    warnings.warn(f"GDN is using the slow Torch chunk/recurrent fallback because FLA failed to import: "
+                  f"{type(exc).__name__}: {exc}. Check flash-linear-attention/fla-core and "
+                  "Triton/CUDA compatibility against the project lockfile.",
+                  RuntimeWarning, stacklevel=2)
     _fla_chunk = None
     _fla_recurrent = None
 
