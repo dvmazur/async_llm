@@ -1,0 +1,22 @@
+[project]
+name = "portable-speleo-runner"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+runtime = ["pillow>=10", "gymnasium==0.29.1", "pygame==2.6.1"]
+plot = ["matplotlib>=3.8"]
+test = ["pytest>=8", "numpy==2.4.4", "pillow>=10"]
+
+[tool.uv]
+# Source checkout, not an installed runner package. Experiments select an engine venv.
+package = false
+default-groups = []
+# Preserve the dependency versions used by the validated Craftium deployment.
+constraint-dependencies = ["numpy==2.4.4", "cloudpickle==3.1.2", "farama-notifications==0.0.4"]
+# Native extension build requirements, handled by uv's normal isolated build.
+build-constraint-dependencies = ["numpy==2.4.4", "setuptools==78.1.0", "pybind11==2.13.1"]
+
+[tool.uv.config-settings-package]
+craftium = { editable_mode = "compat" }
