@@ -53,6 +53,8 @@ class SharedCacheGDN:
         self.prefill_segments: Optional[List[int]] = None
         self.decode_buffers = None
         self._prepared_decode = False
+        self.prefill_buffers = None
+        self._prepared_prefill = False
 
     def set_context(
         self,
@@ -64,6 +66,25 @@ class SharedCacheGDN:
         self.write_to = list(write_to)
         self.prefill_segments = None if prefill_segments is None else list(prefill_segments)
         self._prepared_decode = False
+        self._prepared_prefill = False
+
+    def prepare_prefill(self, layers: int, dtype: torch.dtype, rows: int, *, buffers=None):
+        from .gdn_prefill import GDNPrefillBuffers
+
+        depth = max(1, max(map(len, self.cache_structure), default=0))
+        if buffers is None:
+            buffers = self.prefill_buffers
+            if (buffers is None or buffers.workers != self.num_workers or buffers.rows != rows
+                    or buffers.depth < depth or buffers.layers != layers or buffers.dtype != dtype):
+                buffers = GDNPrefillBuffers(self, layers, self.num_workers, depth, dtype, rows)
+        self.prefill_buffers = buffers
+        buffers.prepare(self.cache_structure, self.write_to, self.prefill_segments or [rows])
+        self._prepared_prefill = True
+
+    def finish_prefill(self, success: bool):
+        if self._prepared_prefill:
+            self.prefill_buffers.publish(success)
+            self._prepared_prefill = False
 
     def prepare_decode(self, layers: int, dtype: torch.dtype) -> None:
         """Prepare addresses before entering the existing model forward."""
