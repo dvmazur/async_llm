@@ -192,6 +192,60 @@ def test_acceptance_worker_rejects_diagnostic_substitution_flags(flag):
     assert error.value.code == 2
 
 
+def test_batched_shared_collection_keeps_full_numerical_coverage(tmp_path):
+    calls = []
+    artifacts = _collect(tmp_path, calls, "shared-batched")
+    assert len(calls) == 4
+    mini_command = calls[1][0]
+    assert mini_command[mini_command.index('--mini-scheduling')+1] == 'shared-batched'
+    result = compare(artifacts.mini('shared-batched'), artifacts.root/'sglang', artifacts.root/'transformers')
+    assert result['metrics']['mini']['prefill']['positions'] == 48
+    assert result['metrics']['mini']['decode']['positions'] == 496
+    assert result['passed']
+
+
+@pytest.mark.parametrize('broken', [None, 'eager_decode', 'old_prefill', 'single_prefill', 'extra_graph'])
+def test_batched_coverage_rejects_silent_fallback(broken):
+    from tests.e2e.fp8.shared_batch import check_coverage
+    coverage = dict(forwards=[dict(phase='prefill', workers=4), dict(phase='decode', workers=4)],
+                    linear_layers=18, prefill_layer_calls=18, decode_replays=1, capture_profiles=[1, 2, 4])
+    if broken == 'eager_decode':
+        coverage['decode_replays'] = 0
+    elif broken == 'old_prefill':
+        coverage['prefill_layer_calls'] = 0
+    elif broken == 'single_prefill':
+        coverage['forwards'][0]['workers'] = 1
+    elif broken == 'extra_graph':
+        coverage['capture_profiles'].append(8)
+    if broken:
+        with pytest.raises(AssertionError):
+            check_coverage(coverage)
+    else:
+        check_coverage(coverage)
+
+
+@pytest.mark.parametrize('broken', [None, 'prefill_eager', 'model_eager', 'layer_eager', 'extra_graph'])
+def test_full_graph_coverage_requires_both_replays_without_host_model_calls(broken):
+    from tests.e2e.fp8.shared_batch import FULL_PREFILL_ROWS, check_coverage
+    coverage = dict(forwards=[dict(phase='prefill', workers=4), dict(phase='decode', workers=4)],
+        full_prefill_graph=True, prefill_layer_calls=0, model_forward_calls=0,
+        prefill_replays=1, decode_replays=1, capture_profiles=[1, 2, 4],
+        prefill_capture_profiles=list(FULL_PREFILL_ROWS))
+    if broken == 'prefill_eager':
+        coverage['prefill_replays'] = 0
+    elif broken == 'model_eager':
+        coverage['model_forward_calls'] = 1
+    elif broken == 'layer_eager':
+        coverage['prefill_layer_calls'] = 18
+    elif broken == 'extra_graph':
+        coverage['prefill_capture_profiles'].append(2048)
+    if broken:
+        with pytest.raises(AssertionError):
+            check_coverage(coverage)
+    else:
+        check_coverage(coverage)
+
+
 def test_chains_share_one_load_per_engine_but_never_past_predictions(tmp_path):
     calls = []
     artifacts = _collect(tmp_path, calls, "shared-chains")

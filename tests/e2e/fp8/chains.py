@@ -206,7 +206,7 @@ def mini_chains(args, cases):
     try:
         with torch.inference_mode(), count_moe_calls(args.require_moe) as moe_calls:
             session = SharedCacheSession(engine)
-            assert not hasattr(session, "graph_runner"), "minimal qwen-fp8 shared path must remain eager"
+            assert session.graph_runner is None, "chain profile explicitly selects eager execution"
             weights = engine.model.state_dict()
             storage = dict(source=str(source), fp8_tensors=sum(w.dtype == torch.float8_e4m3fn for w in weights.values()),
                            bf16_tensors=sum(w.dtype == torch.bfloat16 for w in weights.values()),
