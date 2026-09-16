@@ -9,8 +9,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from minisgl.kernel.gdn_io import collect_states, gather_rows, scatter_rows
-from .gdn_affine import update_affine_summary
+from minisgl.kernel.gdn_compose import compose_first, compose_level
+from minisgl.kernel.gdn_prefill import capture_affine_scan
+from minisgl.kernel.gdn_io import gather_rows, scatter_rows
 
 from .gdn_state import StateAddresses, owns_state_dicts, prepare_state
 
@@ -38,6 +39,26 @@ def prefix_links(chains, workers: int, depth: int):
     return levels, parents, terminals
 
 
+def terminal_sinks(terminals):
+    """CSR node -> terminal workers; at most W deliveries across all depths."""
+    width = len(terminals[0])
+    offsets, sinks = [], []
+    empty = [True] * width
+    for row in terminals:
+        groups = [[] for _ in range(width)]
+        for worker, node in enumerate(row):
+            if node >= 0:
+                groups[node].append(worker)
+                empty[worker] = False
+        prefix, flat = [0], []
+        for group in groups:
+            flat.extend(group)
+            prefix.append(len(flat))
+        offsets.append(prefix)
+        sinks.append(flat + [0] * (width - len(flat)))
+    return offsets, sinks, empty
+
+
 class GDNDecodeBuffers:
     """One capacity's persistent metadata and per-layer reused scratch.
 
@@ -57,9 +78,15 @@ class GDNDecodeBuffers:
         self.read_ptrs = torch.zeros(layers, workers, 3, dtype=torch.int64, **args)
         self.write_ptrs = torch.zeros_like(self.read_ptrs)
         self.parents = torch.zeros(depth, workers, dtype=torch.int64, **args)
+        self.level_counts = torch.zeros(depth, dtype=torch.int32, **args)
         self.terminals = torch.full((depth, workers), -1, dtype=torch.int32, **args)
+        self.sink_offsets = torch.zeros(depth, workers + 1, dtype=torch.int32, **args)
+        self.sink_workers = torch.zeros(depth, workers, dtype=torch.int32, **args)
+        self.empty_workers = torch.ones(workers, dtype=torch.bool, **args)
         self.b = torch.empty(workers, self.h, self.dv, self.dk, dtype=torch.float32, **args)
-        self.a = torch.empty(workers, self.h, self.dk, self.dk, dtype=torch.float32, **args)
+        # Compose ping-pongs between b and frontier. Capture writes directly
+        # into block-owned outputs, without staging dense A/B scratch.
+        self.frontier = torch.empty_like(self.b)
         self.initial = torch.empty(workers, self.h, self.dk, self.dv, dtype=torch.float32, **args)
         self.conv_input = torch.empty(workers, *self.conv_shape, dtype=dtype, **args)
         self._pending = []
@@ -73,6 +100,7 @@ class GDNDecodeBuffers:
         if len(chains) != len(targets) or len({id(t) for t in targets}) != len(targets):
             raise ValueError("GDN decode needs one distinct write target per worker")
         levels, parents, terminals = prefix_links(chains, self.workers, self.depth)
+        sink_offsets, sink_workers, empty = terminal_sinks(terminals)
         # Keep tensor and pinned upload storage alive until its last raw-pointer
         # consumer completes. This does not synchronize or delay enqueueing.
         self.retire_completed()
@@ -127,7 +155,9 @@ class GDNDecodeBuffers:
             writes[:, w] = layout[:, 0] + layer_ids * layout[:, 1]
         for dst, src in ((self.affine_ptrs, affine), (self.read_ptrs, reads),
                          (self.write_ptrs, writes), (self.parents, parents),
-                         (self.terminals, terminals)):
+                         (self.level_counts, [len(nodes) for nodes in levels]),
+                         (self.terminals, terminals), (self.sink_offsets, sink_offsets),
+                         (self.sink_workers, sink_workers), (self.empty_workers, empty)):
             host = torch.empty(dst.shape, dtype=dst.dtype, pin_memory=True)
             host.numpy()[...] = src
             refs.append(host)
@@ -158,32 +188,25 @@ class GDNDecodeBuffers:
 
     def compose(self, layer):
         self.compose_count += 1  # capture counts host execution; replay counted by runner
-        self.initial.zero_()
-        state = None
+        state, output = self.b, self.frontier
         for level in range(self.depth):
-            gather_rows(self.affine_ptrs[layer, level, :, 1], self.b)
             if level == 0:
-                state = self.b.clone()
+                compose_first(self.affine_ptrs[layer, level], self.level_counts, state,
+                              self.initial, self.sink_offsets[level], self.sink_workers[level],
+                              self.empty_workers)
             else:
-                gather_rows(self.affine_ptrs[layer, level, :, 0], self.a, self.dk)
-                state = torch.matmul(state.index_select(0, self.parents[level]), self.a)
-                state.add_(self.b)
-            collect_states(state, self.terminals[level], self.initial)
+                compose_level(self.affine_ptrs[layer, level], self.parents[level],
+                              self.level_counts, level, state, output, self.initial,
+                              self.sink_offsets[level], self.sink_workers[level])
+                state, output = output, state
         return self.initial
 
     def conv(self, layer):
         return gather_rows(self.read_ptrs[layer, :, 2], self.conv_input)
 
     def capture(self, layer, key, value, alpha, beta, eps):
-        key_f = key.float()
-        key_f = key_f * torch.rsqrt((key_f * key_f).sum(-1, keepdim=True) + eps)
-        gather_rows(self.read_ptrs[layer, :, 0], self.a, self.dk)
-        gather_rows(self.read_ptrs[layer, :, 1], self.b)
-        a, b = update_affine_summary(A_hat=self.a, B_hat=self.b, k=key_f[:, 0],
-                                     v=value[:, 0].float(), alpha=alpha[:, 0].float(),
-                                     beta=beta[:, 0].float())
-        scatter_rows(self.write_ptrs[layer, :, 0], a)
-        scatter_rows(self.write_ptrs[layer, :, 1], b)
+        capture_affine_scan(self.read_ptrs[layer], self.write_ptrs[layer],
+                            key[:, 0], value[:, 0], alpha[:, 0], beta[:, 0], l2norm_eps=eps)
 
     def store_conv(self, layer, conv):
         scatter_rows(self.write_ptrs[layer, :, 2], conv)
