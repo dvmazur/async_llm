@@ -145,6 +145,7 @@ def test_merge_replaces_state_and_preserves_owned_tracking(self_append):
     old_b = left.linear_affine[1][1].clone()
     if self_append: right = left
     session = SharedCacheSession.__new__(SharedCacheSession)
+    session.sc_gdn = None  # Minimal non-hybrid session; skip the real GPU constructor.
     session._finish_block_merge(destination=left, left=left, right=right,
                                 left_span=0, right_span=0, keep_left_state=True)
     assert left._gdn_state_cache.prepared is None

@@ -28,6 +28,7 @@ def runtime(tmp_path_factory):
         max_running_req=8, attention_backend='fi', cuda_graph_bs=[1, 2, 4],
         cuda_graph_max_bs=0 if os.environ.get('MINISGL_TEST_GRAPHS_OFF') == '1' else 4,
         shared_cuda_graph_max_depth=8, shared_cuda_graph_prefill_rows=[64, 256, 512],
+        shared_gdn_bf16_state=os.environ.get('MINISGL_TEST_GDN_BF16_STATE') == '1',
         distributed_addr=(tmp_path_factory.mktemp('prefill_graph')/'nccl').as_uri()))
     with pytest.MonkeyPatch.context() as monkeypatch:
         import minisgl.models.qwen3_5_delta as delta
@@ -92,6 +93,9 @@ def test_full_replay_changes_images_lengths_and_block_topology(runtime, record_p
                     cache_structure=[[*blocks[:2], block] for block in group], write_to=group),
                     torch.full((len(group),), 42, dtype=torch.int32))
                 assert torch.isfinite(result).all()
+                expected_dtype=session.sc_gdn.state_dtype
+                assert all(t.dtype==expected_dtype for b in blocks
+                           for pair in b.linear_affine.values() for t in pair)
             merged = session.merge_blocks(blocks[0], blocks[1])
             blocks.append(merged)
             session.append_block(blocks[2], blocks[2])
@@ -108,6 +112,60 @@ def test_full_replay_changes_images_lengths_and_block_topology(runtime, record_p
     finally:
         for block in blocks:
             session.free_block(block)
+
+
+@torch.inference_mode()
+def test_state_storage_and_teacher_forced_drift(runtime, record_property):
+    """Same real tokens/images in separate FP32/BF16 runs; dump only on request.
+
+    Distribution drift is reported by the experiment, not hidden behind a new
+    permissive model threshold. Finite results, storage and ownership are gates.
+    """
+    _,llm,retained=runtime
+    session=llm.async_engine.session
+    blocks=[session.create_block() for _ in range(5)]
+    common,history,*workers=blocks
+    observations=[];labels=[]
+    def keep(value,label):
+        assert torch.isfinite(value).all()
+        retained.append((value,value.clone()))
+        observations.append(value.detach().cpu());labels.append(label)
+    def ids(text):return torch.tensor(llm.tokenizer.encode(text,add_special_tokens=False),dtype=torch.int32)
+    try:
+        keep(session.prefill_block(common,ids('You are a concise observer. Compare observations and suggest one next action.')),'system')
+        data=llm.processor.apply_chat_template([dict(role='user',content=[
+            dict(type='image',image=Image.new('RGB',(64,64),(20,80,160))),
+            dict(type='image',image=Image.new('RGB',(64,64),(30,85,150))),
+            dict(type='text',text='The last action was forward. Describe the change briefly.')])],
+            tokenize=True,return_dict=True,return_tensors='pt',add_generation_prompt=True)
+        keep(session.prefill_block(history,data['input_ids'][0],context=[common],
+            **{k:data[k].flatten() if k=='mm_token_type_ids' else data[k]
+               for k in ('pixel_values','image_grid_thw','mm_token_type_ids')}),'image_history')
+        for i,w in enumerate(workers):
+            keep(session.prefill_block(w,ids('Think briefly about the next useful movement.'),context=[common,history]),f'worker{i}')
+        tokens=ids(' The view changed slightly. Moving forward may be blocked; consider turning and inspect again.').tolist()
+        for step in range(8):
+            chains=[[common,history,workers[(i+1)%3],w] for i,w in enumerate(workers)]
+            values=session.decode_step(WorkerGroup(cache_structure=chains,write_to=workers),
+                torch.tensor([tokens[(step+i)%len(tokens)] for i in range(3)],dtype=torch.int32))
+            keep(values,f'decode{step}')
+        merged=session.merge_blocks(common,history);blocks.append(merged)
+        session.append_block(workers[0],workers[0])
+        keep(session.prefill_block(workers[0],ids(' Continue with one concise action.'),context=[merged]),'after_merge_append')
+        dtype=session.sc_gdn.state_dtype
+        tensors=[t for block in blocks for pair in block.linear_affine.values() for t in pair]
+        assert tensors and all(t.dtype==dtype for t in tensors)
+        buffers=[session.sc_gdn.decode_buffers,session.sc_gdn.prefill_buffers]
+        for buf in buffers:
+            if buf is not None:
+                assert buf.initial.dtype==buf.b.dtype==buf.frontier.dtype==dtype
+        record_property('state_dtype',str(dtype))
+        record_property('affine_bytes',sum(t.numel()*t.element_size() for t in tensors))
+        if path:=os.environ.get('MINISGL_STATE_LOGITS_PATH'):
+            torch.save(dict(labels=labels,logits=observations,state_dtype=str(dtype),
+                affine_bytes=sum(t.numel()*t.element_size() for t in tensors)),path)
+    finally:
+        for block in blocks:session.free_block(block)
 
 
 @torch.inference_mode()
