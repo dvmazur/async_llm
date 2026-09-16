@@ -1,109 +1,102 @@
-# Fresh baseline budget sweep protocol
+# Real-time evaluation protocol (version 3)
 
-## Conditions
+This replaces the synchronous September 15 campaign. Old results are preserved
+but are not pooled with these experiments.
 
-All conditions use Qwen/Qwen3.8-27B in BF16, one current screenshot and the
-existing task description. Health Gathering also receives its current health.
-There is no observation history, self-editing, or cache reuse between decisions.
-The checkpoint is pinned to revision `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`.
+## Environment and execution
 
-- **Non-reasoning (0):** chat template explicitly disables thinking. Append
-  `Action:` and select the highest-logit legal action token.
-- **Budgeted reasoning:** enable thinking, with the same `medium` reasoning-effort
-  template and task prompt at all budgets. Sample up to 64, 128, 512, 1024, 4096,
-  8192, or 16384 tokens, stopping early on `</think>` or EOS. Close the thinking
-  segment, append `Action:`, and select the highest-logit legal action token.
-  The decision uses the generated reasoning in its cache. Budget counts sampled
-  reasoning tokens (including a sampled stopping token), excludes input/cue tokens
-  and the final action selection. At the cap, the final sampled non-stop token is
-  consumed before the decision cue. No action is extracted from unfinished prose.
-- **Thinking-disabled generation (`no_think`):** the assistant prefix contains an
-  already-closed `<think>\n\n</think>` segment. Sample ordinary answer text for up
-  to 64, 128, 512, or 1024 tokens, stopping on EOS. Append `Action:` and choose
-  the highest-logit legal action in the context of that generated answer.
-  This differs from the direct zero-token baseline: it permits ordinary answer
-  generation, but does not open a model thinking segment. The model can still
-  explain its choice in ordinary text, so the name describes the template mode,
-  not a guarantee that its answer contains no verbal reasoning.
+All game entry points use native ViZDoom `ASYNC_PLAYER`, with a dedicated thread
+refreshing observations, rewards, and terminal state during model inference.
+Normal speed is 35 game tics/second. Global options are `SEA_GAME_TICRATE` and
+`SEA_INFERENCE_ACTION` (`wait`, the default, or `hold_last`). In wait mode a
+completed action lasts four tics, then no buttons are pressed until another
+answer arrives. In hold-last mode that action remains pressed during inference.
 
-All three paths use constrained action selection after their respective
-prefix/generation, so arbitrary parsing fallbacks cannot drive the comparison.
-The 16384-token limit is a maximum; early `</think>` or EOS is allowed.
+Keep the repo's configured native limits: Defend the Line 1,000 tics, Health
+Gathering 10,000 tics, My Way Home 2,100 tics. Decision-count limits are ignored
+for real-time games. Death or timeout cancels the pending decision. The one
+already submitted GPU request is drained before freeing its cache; its answer
+is discarded. Game duration and cleanup duration are recorded separately.
+Living rewards are integrated over elapsed native game tics, including tics
+that advance autonomously between polls. Terminal penalties remain native.
 
-Sampling uses temperature 0.7, top-k 20, top-p 0.9, with no repetition penalty.
-Budgets are maxima; actual consumption and cap-exhaustion rates are reported.
-The exact prompt is stored in the experiment configuration.
+Use dalaran GPUs **5 and 6**, one model per GPU, `HF_HOME=/mnt/LLM`, and the
+existing uv-managed Python environment. Qwen/Qwen3.8-27B BF16 is pinned to
+`1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`. Vision/prefill/decode warm-up uses a
+saved frame with its game already closed, outside scored episodes.
 
-## Evaluation and uncertainty
+## Order and policies
 
-Fresh 10 runs × 5 episodes for every condition in each environment: 1200 episodes
-(one direct condition, seven reasoning budgets, four thinking-disabled budgets).
-Defend the Line has a 100-step cap; Health Gathering has a 2500-step cap.
-Frame skip and native episode timeouts retain the environment defaults.
-Rewards and per-step execution use the existing `tasks.runner.run_episodes`.
-Each run/episode has a distinct deterministic environment and sampling seed;
-the same seeds are paired across budget conditions. Conditions are shuffled
-within each run to distribute effects of execution order. Following the user's
-updated GPU authorization, use physical GPUs 5 and 6 on dalaran via
-`--gpus 5 6`; `HF_HOME=/mnt/LLM`. Each worker loads one model on its single
-visible device. GPU 5 starts with reasoning and GPU 6 starts with
-thinking-disabled generation. Each worker then helps with the other mode.
-The launcher also accepts other explicitly authorized GPU lists; it does not
-automatically select additional GPUs. OS file locks prevent two workers from evaluating the same
-episode and automatically release on process exit. GPU identity is recorded
-for each episode. Sampling seeds are reset per episode in each worker.
+1. **Minimal self-evolution:** 10 independent runs per environment, five valid
+   evolution rounds per run, five episodes per round. Each run starts from
+   pristine engine and minimal prompt seeds. Existing task descriptions remain
+   available. Prompts now describe live time, cancellation and validity rules.
+   Compile failures, no fresh evaluation, zero `LLM.forward()` calls, and runtime
+   errors do not count as valid rounds and cannot update best-score tracking.
+   A genuine inference that times out before returning any action remains valid.
+   There is a 20-attempt safety cap; exhausting it is reported as incomplete,
+   never as five successful rounds. Failed runs require inspection before resume.
+2. **Baselines:** each condition gets fresh 10 runs × 5 episodes in each env:
+   - **Full reasoning:** open `<think>`, maximum 16,384 generated tokens,
+     including reasoning and answer. Early closing of thought and early answers
+     are allowed; act only when a legal `\boxed{action}` appears after `</think>`.
+   - **Direct logits:** closed `<think></think>`, append `Action:`, choose the
+     highest-logit legal action token, without text generation.
+   - **Thinking-disabled generation:** closed `<think></think>`, generate up to
+     64, 128, 512 or 1,024 tokens, and wait for a legal `\boxed{action}`. Ordinary
+     text may contain explanation or reasoning despite the closed think segment.
+   - **Uniform random:** independently choose among all four legal actions,
+     including wait, after each four-tic action; no model calls.
+3. Review performance before deciding whether detailed self-evolution or prompt
+   adjustments are needed. Do not silently change speed or waiting policy.
 
-The plotted value is the mean of the 10 run means. Error bars are two-sided
-95% Student-t confidence intervals: mean ± t(0.975, 9) × sample SD / sqrt(10).
-The five episodes within a run do not count as five independent run replicates.
-Intervals describe uncertainty in the mean, not the spread of individual rewards.
-Partial reports explicitly show completed-run counts and use the corresponding
-degrees of freedom. No existing baseline results contribute.
+Text generation stops on a legal boxed answer, EOS, its token budget, or episode
+termination. EOS/budget exhaustion without a legal answer produces `wait` and is
+explicitly logged. Unfinished decisions at death/timeout are discarded. Every
+attempt records actual token usage, text, stop reason, latency and cancellation.
+Baselines have no history or persistent cache between decisions. Health Gathering
+also receives the current health value. Sampling: temperature .7, top-k 20,
+top-p .9, repetition penalty 1.0. Evolution retains its existing penalty 1.15.
 
-Episode reward, seed, steps, latency, token counts, stopping reasons, and actions
-are written atomically after each episode. Resume skips completed episodes.
-An inference exception is recorded and stops the sweep for investigation;
-failed runs are never silently treated as valid zero-reward evaluations.
-Result and report writes retry every 30 seconds on a full filesystem, keeping
-computed episode data in memory instead of losing it to an output error. This
-addresses the September 15 shared-disk failure; it does not protect against
-process termination or host restarts before an episode is saved.
-`capped_episodes` counts episodes reaching the harness limit, which can coincide
-with native termination on that step.
+## Replication and uncertainty
 
-The Python environment was created with `uv venv --python 3.12 .venv` and
-`uv pip install --python .venv/bin/python -e . gymnasium vizdoom scipy matplotlib`.
-Package versions and evaluation-source hashes are recorded with the results.
+Game seeds are deterministic and paired across conditions: each run has five
+distinct seeds, and the same run's seed set is reused across evolution rounds.
+Evolution generation has an independent run seed. Baseline sampling is seeded
+per episode. Timing and asynchronous scheduling can still vary between executions.
 
-## Commands
+Report the mean of ten five-episode run means with a two-sided 95% Student-t CI:
+`mean ± t(.975, 9) × sample_sd(run_means) / sqrt(10)`. The 50 episodes are not
+50 independent run replicates. Evolution gets a separate result per valid round,
+not a selected-best-round estimate. Partial reports state the completed-run
+count and use its degrees of freedom; one completed run has no error bar.
+
+There are 500 scored episodes per environment for the five evolution checkpoints
+and 350 per environment for the seven baseline conditions. Invalid attempts may
+add diagnostic episodes but cannot enter valid-round summaries. No old results
+are reused. Error bars describe uncertainty in the mean, not individual rewards.
+
+Episode files preserve seeds, rewards, elapsed game time, actions, forward-call
+counts (evolution), and inference diagnostics. Baselines resume atomically saved
+episodes; errors stop the campaign for investigation. Evolution saves attempted
+rounds and valid-round numbers separately. Warm-up is excluded from forward-call
+validity counts. `status.json` records the current phase. Both minimal runs must
+finish before any baseline starts; random can run alongside the GPU baselines.
+
+## Run and outputs
 
 ```bash
-# Full two-GPU campaign (activate .venv so ninja is available to CUDA JIT):
-source .venv/bin/activate
-export CUDA_HOME=/usr/local/cuda-12.8
-export HF_HOME=/mnt/LLM
-python -u scripts/self_evolving_agent/run_baseline_campaign.py \
-  --output scripts/self_evolving_agent/eval_runs/baseline_campaign_20260915 --gpus 5 6
-
-# Individual mode or report-only commands:
-CUDA_VISIBLE_DEVICES=1 HF_HOME=/mnt/LLM .venv/bin/python \
-  scripts/self_evolving_agent/run_budget_sweep.py \
-  --output scripts/self_evolving_agent/eval_runs/budget_sweep_20260915
-
-.venv/bin/python scripts/self_evolving_agent/run_budget_sweep.py \
-  --output scripts/self_evolving_agent/eval_runs/budget_sweep_20260915 --report-only
-
-CUDA_VISIBLE_DEVICES=1 HF_HOME=/mnt/LLM .venv/bin/python \
-  scripts/self_evolving_agent/run_budget_sweep.py --mode no_think \
-  --budgets 64 128 512 1024 \
-  --output scripts/self_evolving_agent/eval_runs/no_think_sweep_20260915
+source /home/yakushev-ga/Projects/Doom/.venv/bin/activate
+export HF_HOME=/mnt/LLM CUDA_HOME=/usr/local/cuda-12.8
+export PATH="$CUDA_HOME/bin:$PATH"
+export PYTHONPATH="$PWD/python"
+python -u scripts/self_evolving_agent/run_async_campaign.py \
+  --output scripts/self_evolving_agent/eval_runs/async_campaign_20260916
 ```
 
-Outputs include `config.json`, `environment_gpu*.json`, `packages_gpu*.txt`, episode JSON
-records, `summary.csv`, `report.md`, and `reward_ci.png`. A run in progress is
-not a completed evaluation. Final reports must have 10/10 valid runs for all
-24 environment/condition combinations across the two mode directories.
-The campaign supervisor writes a combined report, chart, status JSON, and one
-log per GPU, and stops the campaign if a worker fails. The report names the
-highest observed mean per environment only after all conditions finish; this
-ranking does not claim statistically significant superiority after selection.
+`evolution_summary.csv` / `evolution_report.md` summarize each valid round.
+Each baseline directory contains episode JSON, config, source hashes, package
+versions, `summary.csv`, `report.md`, and a 95% CI plot once enough runs finish.
+`baseline_summary.csv` combines all baseline conditions after completion.
+The earlier `run_baseline_campaign.py` remains a legacy wider-budget launcher;
+use `run_async_campaign.py` for this revised sequence and condition set.

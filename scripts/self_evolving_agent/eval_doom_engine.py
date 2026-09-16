@@ -57,40 +57,23 @@ def annotate_frame(frame, text_lines: list[str]) -> Image.Image:
 
 
 async def run_episode(engine, env, ep_idx: int, max_steps: int, log_f) -> float:
-    obs = env.reset()
-    total_reward = 0.0
-    frames: list[Image.Image] = []
-
-    for step in range(max_steps):
-        tokens: list[str] = []
-        action = await engine.act(obs, on_token=tokens.append)
-        obs, reward, done, info = env.step(action)
-        total_reward += reward
-
-        line = (f"[ep {ep_idx} step {step}] action={action!r} reward={reward:+.2f} "
-                f"total={total_reward:+.2f}")
-        print(line, flush=True)
-        log_f.write(line + "\n")
-        raw_text = "".join(tokens).strip().replace("\n", " ")
-        if raw_text:
-            log_f.write(f"    raw model output: {raw_text!r}\n")
-        log_f.flush()
-
-        frames.append(annotate_frame(obs, [
-            f"ep {ep_idx} step {step}",
-            f"action={action} reward={reward:+.2f} total={total_reward:+.2f}",
-        ]))
-
-        if done:
-            break
-
-    gif_path = OUT_DIR / f"episode_{ep_idx}.gif"
+    from tasks.runner import run_episodes
+    env.max_episodes = 1
+    frames = []
+    last_frame = 0.0
+    def capture(obs):
+        nonlocal last_frame
+        if time.monotonic() - last_frame >= .2:
+            frames.append(Image.fromarray(obs))
+            last_frame = time.monotonic()
+    result = await run_episodes(env, engine, on_frame=capture)
+    episode = result["episodes"][0]
+    log_f.write(f"[ep {ep_idx}] {episode!r}\n")
+    log_f.flush()
     if frames:
-        frames[0].save(gif_path, save_all=True, append_images=frames[1:],
-                        duration=150, loop=0)
-        print(f"[ep {ep_idx}] wrote {gif_path} ({len(frames)} frames)")
-
-    return total_reward
+        frames[0].save(OUT_DIR / f"episode_{ep_idx}.gif", save_all=True,
+                       append_images=frames[1:], duration=200, loop=0)
+    return episode["reward"]
 
 
 async def main(n_episodes: int, max_steps: int) -> None:

@@ -198,6 +198,7 @@ class SelfEditEnv:
         result = await run_episodes(self.task_env, self.engine,
                                      on_episode_start=self.on_episode_start, on_step=self.on_step,
                                      on_frame=self.on_frame, on_episode_end=self.on_episode_end)
+        result["engine_load_error"] = self.load_error
         result["llm_forward_calls"] = self._llm_forward_calls - calls_before
         result["episode_steps_total"] = sum(e.get("steps", 0) for e in result["episodes"])
         self.last_task_result = result

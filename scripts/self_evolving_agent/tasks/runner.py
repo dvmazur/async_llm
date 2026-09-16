@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import asyncio
+from contextlib import suppress
 import traceback
 from typing import Any, Callable, Optional
 
@@ -30,7 +32,9 @@ async def run_episodes(
     enough between episode boundaries that a heartbeat only at the top of
     each episode risks a false "hung process" verdict from a caller's
     watchdog.
-    `max_steps_per_episode` is only a default -- an env can define its own
+    Real-time games run to native death/timeout, polling during inference and
+    cancelling late decisions; decision-count caps do not apply to them.
+    `max_steps_per_episode` for other tasks is only a default -- an env can define its own
     `max_steps_per_episode` attribute to override it (e.g. a real multi-step
     game episode needs far more than 8 steps to show anything meaningful,
     unlike math/ttft's single-shot prompt-then-done episodes).
@@ -46,8 +50,11 @@ async def run_episodes(
     n_episodes = getattr(env, "max_episodes", 1)
     on_token = getattr(env, "on_token", None)
     steps_cap = getattr(env, "max_steps_per_episode", max_steps_per_episode)
+    real_time = getattr(env, "real_time", False)
 
-    for _ in range(n_episodes):
+    for episode_index in range(n_episodes):
+        if hasattr(env, "episode_seeds"):
+            env._fixed_seed = env.episode_seeds[episode_index]
         if on_episode_start is not None:
             on_episode_start()
         obs = env.reset()
@@ -57,12 +64,40 @@ async def run_episodes(
         info: dict[str, Any] = {}
         done = False
         steps = 0
+        decision = None
         try:
-            while not done and steps < steps_cap:
+            # A real-time environment enforces a fixed game-tic horizon.
+            # Counting decisions instead would give slower agents extra time.
+            while not done and (real_time or steps < steps_cap):
                 if on_step is not None:
                     on_step()
-                action = await engine.act(obs, on_token=on_token)
-                obs, reward, done, *rest = env.step(action)
+                if real_time:
+                    decision = asyncio.create_task(engine.act(obs, on_token=on_token))
+                    while True:
+                        await asyncio.wait([decision], timeout=0.05)
+                        fresh_obs, reward, done, info = env.poll()
+                        total_reward += reward
+                        if on_frame is not None:
+                            on_frame(fresh_obs)
+                        if done:
+                            info["decision_cancelled"] = not decision.done()
+                            info["late_decision_discarded"] = decision.done()
+                            if not decision.done():
+                                decision.cancel()
+                            with suppress(asyncio.CancelledError):
+                                await decision
+                            decision = None
+                            break
+                        if decision.done():
+                            action = decision.result()
+                            decision = None
+                            break
+                    if done:
+                        break
+                    obs, reward, done, *rest = await asyncio.to_thread(env.step, action)
+                else:
+                    action = await engine.act(obs, on_token=on_token)
+                    obs, reward, done, *rest = env.step(action)
                 if on_frame is not None:
                     on_frame(obs)
                 total_reward += reward
@@ -71,9 +106,18 @@ async def run_episodes(
         except Exception:
             info = {"error": traceback.format_exc()}
             total_reward = 0.0
+        finally:
+            if decision is not None:
+                if not decision.done():
+                    decision.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await decision
+            if real_time:
+                env.close()
         if on_episode_end is not None:
             on_episode_end()
-        episodes.append({"reward": total_reward, "info": info, "steps": steps})
+        episodes.append({"reward": total_reward, "info": info, "steps": steps,
+                         "seed": getattr(env, "seed", None)})
 
     avg_reward = sum(e["reward"] for e in episodes) / len(episodes) if episodes else 0.0
     return {"env": getattr(env, "name", "task"), "avg_reward": avg_reward, "episodes": episodes}

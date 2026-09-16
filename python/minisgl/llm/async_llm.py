@@ -43,6 +43,25 @@ from minisgl.shared_cache import AsyncContext, CacheBlock, CacheView
 from minisgl.utils import init_logger, load_tokenizer
 from minisgl.utils.hf import load_processor
 
+
+async def _await_inflight(future):
+    """Cancellation may release caller-owned cache blocks: drain the GPU job first."""
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        # Keep the engine's future alive and do not let caller cleanup free
+        # blocks referenced by a queued/in-flight prefill or decode request.
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if future.done() and not future.cancelled():
+            future.exception()  # Retrieve any failure from the drained request.
+        raise
+
 if TYPE_CHECKING:
     from minisgl.core import SamplingParams
     from minisgl.engine import Engine
@@ -171,7 +190,7 @@ class AsyncLLM:
             mm_token_type_ids=mm_token_type_ids.flatten() if mm_token_type_ids is not None else None,
         )
         self._work_event.set()
-        logits = await future
+        logits = await _await_inflight(future)
         return CausalLMOutput(logits=logits, block=block)
 
     async def __call__(self, *args, **kwargs):
@@ -293,7 +312,7 @@ class AsyncLLM:
             mm_token_type_ids=mm_token_type_ids,
         )
         self._work_event.set()
-        return CausalLMOutput(logits=await future, block=write_to)
+        return CausalLMOutput(logits=await _await_inflight(future), block=write_to)
 
     async def _forward_decode_step(
         self, ctx: AsyncContext, input_id: int, return_logits: bool
@@ -304,7 +323,7 @@ class AsyncLLM:
         self._ensure_loop()
         future = self.async_engine.submit_decode(ctx, input_id, return_logits=return_logits)
         self._work_event.set()
-        result = await future
+        result = await _await_inflight(future)
         return result[1] if return_logits else None
 
     async def async_generate(
@@ -346,7 +365,7 @@ class AsyncLLM:
                 return_logits=return_logits,
             )
             self._work_event.set()
-            result = await future
+            result = await _await_inflight(future)
             token = result[0] if return_logits else result
             context.next_input_id = token
             steps += 1

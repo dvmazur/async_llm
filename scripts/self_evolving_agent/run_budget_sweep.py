@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import random
+import re
 import statistics
 import subprocess
 import time
@@ -29,7 +30,8 @@ PROMPT = (
     "Choose the best next action using the current screenshot. "
     "Consider the visible geometry, hazards, and targets. "
     "You may reason before deciding; finish thinking once you have a decision. "
-    "Your final answer must be one of: {actions}."
+    "Return the chosen action in \\boxed{{action}}, using exactly one of: {actions}. "
+    "The game continues at 35 tics/sec while you decide, waiting until your answer is ready."
 )
 
 
@@ -120,6 +122,9 @@ class BudgetEngine:
         )
         block = await self.llm.create_block()
         count, stop = 0, "no_reasoning"
+        generated = []
+        action = None
+        cancelled = False
         try:
             output = await self.llm(**enc, cache_view=[block])
             if self.budget:
@@ -128,27 +133,35 @@ class BudgetEngine:
                     token = await self.llm.sample(output)
                     token_id = int(token)
                     count += 1
-                    if token_id == self.end_think and self.mode == "reasoning":
-                        stop = "end_think"
+                    generated.append(token_id)
+                    decoded = self.llm.tokenizer.decode(generated, skip_special_tokens=False)
+                    answer = decoded.rsplit("</think>", 1)[-1] if self.mode == "reasoning" else decoded
+                    match = re.search(r"\\boxed\{\s*([a-z_]+)\s*\}", answer)
+                    if match and match.group(1) in self.actions and (self.mode != "reasoning" or self.end_think in generated):
+                        action, stop = match.group(1), "boxed_action"
                         break
                     if token_id in self.eos:
                         stop = "eos"
                         break
-                    # Consume even the last budget token before the decision cue.
                     output = await self.llm(token.view(1), cache_view=[block])
-                cue = "\n</think>\n\nAction:" if self.mode == "reasoning" else "\n\nAction:"
+                # Text baselines act only on a completed legal boxed answer.
+                # An incomplete or malformed answer consumes its time and waits.
+                if action is None:
+                    action = "wait"
             else:
-                cue = "Action:"
-            output = await self.llm(
-                self.llm.tokenizer.encode(cue, add_special_tokens=False), cache_view=[block],
-            )
-            action = self.actions[int(output.logits[self.action_ids].argmax())]
-            self.trace.append({"step": len(self.trace) + 1, "action": action,
-                               "reasoning_tokens": count if self.mode == "reasoning" else 0,
-                               "generated_tokens": count, "stop": stop,
-                               "latency_s": time.monotonic() - start})
+                output = await self.llm(
+                    self.llm.tokenizer.encode("Action:", add_special_tokens=False), cache_view=[block])
+                action = self.actions[int(output.logits[self.action_ids].argmax())]
             return action
+        except asyncio.CancelledError:
+            cancelled, stop = True, "episode_ended"
+            raise
         finally:
+            self.trace.append({"attempt": len(self.trace) + 1, "action": action,
+                               "reasoning_tokens": (generated.index(self.end_think) + 1 if self.end_think in generated else count) if self.mode == "reasoning" else 0,
+                               "generated_tokens": count, "stop": stop, "cancelled": cancelled,
+                               "text": self.llm.tokenizer.decode(generated, skip_special_tokens=False),
+                               "latency_s": time.monotonic() - start})
             await self.llm.free_block(block)
 
 
@@ -177,15 +190,18 @@ def _report(out):
             sd = statistics.stdev(means) if n > 1 else None
             half = float(t.ppf(.975, n - 1)) * sd / math.sqrt(n) if n > 1 else None
             steps = sum(r["steps"] for r in cell)
+            attempts = sum(r.get("decision_attempts", r["steps"]) for r in cell)
             rows.append(dict(task=task, mode=config.get("mode", "reasoning"), budget=budget, completed_runs=n,
                              expected_runs=config["runs"], mean_reward=mean,
                              run_sd=sd, ci95_half_width=half,
                              ci95_low=mean-half if half is not None else None,
                              ci95_high=mean+half if half is not None else None,
-                             mean_reasoning_tokens=sum(r["reasoning_tokens"] for r in cell)/steps if steps else None,
-                             mean_generated_tokens=sum(r.get("generated_tokens", r["reasoning_tokens"]) for r in cell)/steps if steps else None,
-                             mean_act_latency_s=sum(r["act_seconds"] for r in cell)/steps if steps else None,
-                             budget_exhaustion_rate=sum(r["budget_hits"] for r in cell)/steps if steps else None,
+                             decision_attempts=attempts, completed_actions=steps,
+                             cancelled_decisions=sum(s.get("cancelled", False) for r in cell for s in r.get("trace", [])),
+                             mean_reasoning_tokens=sum(r["reasoning_tokens"] for r in cell)/attempts if attempts else None,
+                             mean_generated_tokens=sum(r.get("generated_tokens", r["reasoning_tokens"]) for r in cell)/attempts if attempts else None,
+                             mean_act_latency_s=sum(r["act_seconds"] for r in cell)/attempts if attempts else None,
+                             budget_exhaustion_rate=sum(r["budget_hits"] for r in cell)/attempts if attempts else None,
                              capped_episodes=sum(r["hit_step_cap"] for r in cell),
                              errors=sum(bool(r["error"]) for r in cell)))
     with (out / "summary.csv").open("w", newline="") as f:
@@ -195,8 +211,9 @@ def _report(out):
     lines = ["# Fresh baseline budget sweep", "", f"Generation mode: **{config.get('mode', 'reasoning')}**.", "",
              "Reward: mean of run means ± two-sided 95% Student-t CI. Each complete run has "
              f"{config['episodes']} episodes; target {config['runs']} runs per condition. "
-             "Incomplete runs are omitted from CIs and errors are reported explicitly.", "",
-             "| Environment | Generation budget | Complete runs | Mean reward ± 95% CI | Tokens/action | Seconds/action | Errors |",
+             "Incomplete runs are omitted from CIs and errors are reported explicitly. "
+             "Token and latency averages include terminally cancelled decision attempts.", "",
+             "| Environment | Generation budget | Complete runs | Mean reward ± 95% CI | Tokens/attempt | Seconds/attempt | Errors |",
              "|---|---:|---:|---:|---:|---:|---:|"]
     def fmt(x):
         return f"{x:.3f}" if x is not None else "—"
@@ -236,9 +253,11 @@ async def run(args):
     if torch.cuda.device_count() != 1:
         raise ValueError("Exactly one visible GPU required")
     args.output.mkdir(parents=True, exist_ok=True)
+    from tasks.realtime_vizdoom import realtime_options
     config = dict(model=args.model, revision=args.revision, mode=args.mode, runs=args.runs, episodes=args.episodes,
-                  budgets=args.budgets, tasks=args.tasks, seed=args.seed, caps=CAPS,
-                  prompt=PROMPT, protocol_version=2, max_seq_len=32768,
+                  budgets=args.budgets, tasks=args.tasks, seed=args.seed, game_tic_limits={"doom":1000,"health_gathering":10000},
+                  realtime=realtime_options(),
+                  prompt=PROMPT, protocol_version=3, max_seq_len=32768,
                   sampling=dict(temperature=.7, top_k=20, top_p=.9, repetition_penalty=1.0))
     path = args.output / "config.json"
     with file_lock(args.output / "config.lock"):
@@ -267,6 +286,8 @@ async def run(args):
                                   hf_home=os.environ["HF_HOME"]))
         with (args.output / f"packages_gpu{gpu}.txt").open("w") as f:
             subprocess.run(["uv", "pip", "freeze", "--python", os.sys.executable], stdout=f, check=True)
+    from warmup import warmup
+    await warmup(llm)
     try:
         for run_index in range(args.runs):
             conditions = [(task, budget) for task in args.tasks for budget in args.budgets]
@@ -302,7 +323,7 @@ async def run(args):
                         error = ep["info"].get("error", "")
                         row = dict(task=task, budget=budget, run=run_index, episode=episode, gpu=gpu,
                                    seed=seed, reward=ep["reward"], steps=ep["steps"], error=error,
-                                   hit_step_cap=ep["steps"] == CAPS[task],
+                                   hit_step_cap=False, info=ep["info"], decision_attempts=len(engine.trace),
                                    reasoning_tokens=sum(s["reasoning_tokens"] for s in engine.trace),
                                    generated_tokens=sum(s["generated_tokens"] for s in engine.trace),
                                    budget_hits=sum(s["stop"] == "budget" for s in engine.trace),
@@ -330,7 +351,7 @@ if __name__ == "__main__":
     parser.add_argument("--tasks", choices=TASKS, nargs="+", default=TASKS)
     parser.add_argument("--seed", type=int, default=20260915)
     parser.add_argument("--port", type=int, default=2391)
-    parser.add_argument("--allowed-gpus", nargs="+", default=["1", "2"])
+    parser.add_argument("--allowed-gpus", nargs="+", default=["5", "6"])
     parser.add_argument("--report-only", action="store_true")
     args = parser.parse_args()
     if args.runs < 1 or args.episodes < 1 or any(b < 0 for b in args.budgets):

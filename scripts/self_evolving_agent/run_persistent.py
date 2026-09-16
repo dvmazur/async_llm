@@ -16,6 +16,7 @@ import faulthandler
 import json
 import logging
 import shutil
+import random
 import sys
 import time
 from pathlib import Path
@@ -35,6 +36,7 @@ from PIL import Image
 
 import minisgl.llm
 from agent import SelfEvolvingAgent
+from round_validity import invalid_reason
 from self_edit_env import SelfEditEnv
 from tasks.doom_env import DoomEnv
 from tasks.health_gathering_env import HealthGatheringEnv
@@ -67,7 +69,7 @@ PROMPT_VARIANT = sys.argv[4] if len(sys.argv) > 4 else "detailed"
 # starting the same (task, variant) cell in the same second don't collide.
 RUN_ID = (f"{TASK_NAME}_{PROMPT_VARIANT}_{time.strftime('%Y%m%d_%H%M%S')}"
           f"_{os.environ.get('SEA_MUTABLE_DIR', 'mutable')}")
-LOGS_DIR = HERE / "logs" / RUN_ID
+LOGS_DIR = Path(os.environ.get("SEA_LOG_DIR", str(HERE / "logs" / RUN_ID)))
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 # Structured run metadata -- avoids fragile parsing of RUN_ID later (task
 # names like "health_gathering" already contain an underscore).
@@ -189,7 +191,8 @@ def on_task_result(result: dict) -> None:
           f"over {len(result['episodes'])} episode(s)", flush=True)
     record = {
         "step": _step, "ts": _ts(), "env": result["env"], "avg_reward": result["avg_reward"],
-        "episodes": [{"reward": e["reward"], "info": e.get("info")} for e in result["episodes"]],
+        "episodes": result["episodes"],
+        "llm_forward_calls": result.get("llm_forward_calls", 0),
     }
     _task_results_f.write(json.dumps(record) + "\n")
 
@@ -203,9 +206,12 @@ def on_frame(frame) -> None:
     # health_gathering's observation is a dict; unwrap before the ndarray check.
     if isinstance(frame, dict):
         frame = frame.get("screen")
-    if isinstance(frame, np.ndarray):
+    if isinstance(frame, np.ndarray) and (not _frame_buffer or time.monotonic() - on_frame.last >= .2):
+        on_frame.last = time.monotonic()
         _frame_buffer.append(frame)
 
+
+on_frame.last = 0.0
 
 def on_episode_end() -> None:
     global _episode_in_round
@@ -245,16 +251,19 @@ def _write_metrics_csv() -> None:
     with open(LOGS_DIR / "round_metrics.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["round", "score", "delay_s", "avg_act_latency_ms", "round_crashed",
-                    "round_compile_failed"])
+                    "round_compile_failed", "valid_round", "invalid_reason"])
         for m in _metrics:
             w.writerow([m["round"], m["score"], m["delay_s"], m.get("avg_act_latency_ms"),
-                        m.get("round_crashed", False), m.get("round_compile_failed", False)])
+                        m.get("round_crashed", False), m.get("round_compile_failed", False), m["valid_round"], m["invalid_reason"]])
 
 
 def on_step_result(result: dict) -> None:
     global _current_score, _current_interactivity_ms, _best_score
     _touch_progress()
-    if "task" in result:
+    reason = invalid_reason(result)
+    _current_score = None
+    _current_interactivity_ms = None
+    if reason is None:
         _current_score = result["task"]["avg_reward"]
         latency_ms = _task_avg_act_latency_ms(result["task"])
         if latency_ms is not None:
@@ -277,6 +286,8 @@ def on_step_result(result: dict) -> None:
         # this -- runner.py already scores that 0 as real data.
         "round_crashed": bool(result.get("crash")),
         "round_compile_failed": round_compile_failed,
+        "valid_round": sum(m["invalid_reason"] is None for m in _metrics) + 1 if reason is None else None,
+        "invalid_reason": reason,
     })
     _write_metrics_csv()
 
@@ -322,8 +333,12 @@ def plot_metrics(metrics: list[dict], out_dir: Path) -> None:
 
 
 async def main(target_valid_steps: int, max_new_tokens: int, max_attempts: int) -> None:
+    seed = int(os.environ.get("SEA_RUN_SEED", "20260915"))
+    random.seed(seed)
+    torch.manual_seed(seed)
+    from run_budget_sweep import MODEL_REVISION
     llm = minisgl.llm.AsyncLLM(
-        "Qwen/Qwen3.8-27B", dtype=torch.bfloat16, max_running_req=4, memory_ratio=0.9,
+        f"/mnt/LLM/hub/models--Qwen--Qwen3.8-27B/snapshots/{MODEL_REVISION}", dtype=torch.bfloat16, max_running_req=4, memory_ratio=0.9,
         # repetition_penalty fixes the root cause of a failure mode seen live:
         # with no penalty, the model can get stuck emitting the same short
         # <use_tool> tag dozens/hundreds of times. agent.py's
@@ -333,8 +348,13 @@ async def main(target_valid_steps: int, max_new_tokens: int, max_attempts: int) 
             do_sample=True, temperature=0.7, top_k=20, top_p=0.9, repetition_penalty=1.15),
         distributed_addr=f"tcp://127.0.0.1:{os.environ.get('SEA_LLM_PORT', '2370')}")
 
+    from warmup import warmup
+    await warmup(llm)
     env = SelfEditEnv(llm, engine_path=str(ENGINE_PATH), prompt_path=str(PROMPT_PATH))
     env.task_env = TASKS[TASK_NAME]()
+    from run_budget_sweep import seed_for
+    run_index = int(os.environ.get("SEA_RUN_INDEX", "0"))
+    env.task_env.episode_seeds = [seed_for(20260915, TASK_NAME, run_index, e) for e in range(5)]
     logging.info("task env %s seed=%s", TASK_NAME, getattr(env.task_env, "seed", None))
     agent = SelfEvolvingAgent(env, hooks=dict(
         on_thought_start=on_thought_start,
@@ -362,7 +382,12 @@ async def main(target_valid_steps: int, max_new_tokens: int, max_attempts: int) 
             plot_metrics(_metrics, LOGS_DIR)
         except Exception:
             logging.exception("failed to plot round metrics")
+        await llm.close()
         _snapshot_engine("final")
+        with open(LOGS_DIR / "completion.json", "w") as f:
+            json.dump({"valid_rounds": getattr(agent, "valid_steps", 0),
+                       "target_valid_rounds": target_valid_steps,
+                       "complete": getattr(agent, "valid_steps", 0) == target_valid_steps}, f)
 
 
 if __name__ == "__main__":

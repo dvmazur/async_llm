@@ -8,6 +8,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from self_edit_env import SelfEditEnv
+from round_validity import invalid_reason
 
 if TYPE_CHECKING:
     from minisgl.llm import AsyncLLM
@@ -519,13 +520,14 @@ class SelfEvolvingAgent:
             if r.get("tool") in ("start_task", "restart_task") and r.get("ok") and r.get("result") is not None:
                 result["task"] = r["result"]
                 self._call_hook("on_task_result", r["result"])
-                reward = r["result"].get("avg_reward")
-                if reward is not None and (self._best_score is None or reward > self._best_score):
-                    self._best_score = reward
-                    self._best_round = self._step
 
         result["tool_results"] = await apply_tool_calls(self.env, completion, on_result=on_result)
         result["round_delay_s"] = time.monotonic() - round_start
+        result["invalid_reason"] = invalid_reason(result)
+        if result["invalid_reason"] is None:
+            reward = result["task"]["avg_reward"]
+            if self._best_score is None or reward > self._best_score:
+                self._best_score, self._best_round = reward, self._step
         self._call_hook("on_step_result", result)
         return result
 
@@ -537,15 +539,15 @@ class SelfEvolvingAgent:
         instance persists across steps. Task evaluation is entirely
         agent-triggered via start_task/restart_task/end_task.
 
-        With target_valid_steps set, a round that crashed outright or failed
-        to compile doesn't count toward progress -- runs until that many
+        With target_valid_steps set, only fresh, error-free evaluations that
+        call LLM.forward() and compile successfully count -- runs until that many
         valid rounds complete, capped at max_attempts total as a safety
         valve. With it None (default), runs exactly max_steps regardless."""
         source = self.env.reset()
         self._call_hook("on_env_reset", source)
         last_result = self.initial_last_result(source)
 
-        total_cap = max_attempts if target_valid_steps is not None else max_steps
+        total_cap = (max_attempts or 2 * target_valid_steps) if target_valid_steps is not None else max_steps
         valid_steps = 0
         step = 0
         while step < total_cap and (target_valid_steps is None or valid_steps < target_valid_steps):
@@ -556,11 +558,12 @@ class SelfEvolvingAgent:
             last_result = await self.run_step(source, last_result, max_new_tokens=max_new_tokens)
             source = last_result.get("source", source)
             step += 1
-            compile_failed = any(
-                r.get("tool") == "reload_engine_methods" and not r.get("ok")
-                for r in last_result.get("tool_results", []))
-            if not last_result.get("crash") and not compile_failed:
+            reason = invalid_reason(last_result)
+            if reason is None:
                 valid_steps += 1
+            else:
+                logger.warning("Round excluded: %s", reason)
+        self.valid_steps = valid_steps
         if target_valid_steps is not None and valid_steps < target_valid_steps:
             logger.warning(
                 "gave up after %d attempts (cap %d) with only %d/%d valid rounds",

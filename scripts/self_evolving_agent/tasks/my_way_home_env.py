@@ -4,8 +4,7 @@ import random
 import time
 from typing import Any, Optional
 
-import gymnasium
-import vizdoom.gymnasium_wrapper  # noqa: F401  registers the Vizdoom gymnasium env ids
+from .realtime_vizdoom import RealtimeVizdoom, realtime_options
 
 # Confirmed via VizdoomMyWayHome-v1's actual Discrete(6) button_map:
 # index 0 = no button pressed, 1 = TURN_LEFT, 2 = TURN_RIGHT, 3 = MOVE_FORWARD,
@@ -37,13 +36,12 @@ DOC = (
     "generating and parsing free text. Not required -- build it however you like. Given how sparse "
     "the reward is here, a running text history of what's already been tried/seen (e.g. \"turned "
     "left twice, hit a dead end, backtracking\") may matter more for this env than for the others.\n"
-    "The underlying ViZDoom scenario itself carries no notion of your decision speed -- reward is "
-    "purely game score. This harness measures decision speed separately and puts it in the info "
-    "dict step() returns: `act_latency_s` (wall-clock seconds between you receiving an observation "
-    "and this step's action arriving -- i.e. how long your own act() took) and `avg_act_latency_s` "
-    "(the running mean over the episode so far). This is visible to you next round as an average "
-    "over the task run. It isn't part of the reward and nothing enforces a target -- purely "
-    "diagnostic."
+    "The game runs asynchronously at the configured tic rate (normally 35 tics/sec), including "
+    "while act() awaits LLM inference. The default action while waiting is wait; a completed "
+    "action is applied for frame_skip tics. Death and the native episode timeout end evaluation "
+    "and cancel any pending decision. Latency therefore directly affects attainable reward. "
+    "Use real LLM.forward() calls: evaluations with no forward calls are invalid.\n"
+
 )
 
 
@@ -54,6 +52,7 @@ class MyWayHomeEnv:
     goal with sparse terminal reward, instead of aim+shoot or navigate+survive) to
     exercise yet another slice of the agent's own inference structure."""
 
+    real_time = True
     name = "my_way_home"
     doc = DOC
     max_episodes = 2
@@ -66,8 +65,8 @@ class MyWayHomeEnv:
         episode_timeout: int = 2100,
         seed: Optional[int] = None,
     ) -> None:
-        self.env = gymnasium.make(env_id, render_mode="rgb_array", frame_skip=frame_skip,
-                                   episode_timeout=episode_timeout)
+        self.env = RealtimeVizdoom(env_id, frame_skip=frame_skip,
+                                   game_tic_limit=episode_timeout, **realtime_options())
         # See tasks/doom_env.py's DoomEnv.__init__ for why this is randomized
         # rather than a fixed constant -- a hardcoded seed pins vizdoom's own
         # native RNG identically across process launches.
@@ -99,7 +98,7 @@ class MyWayHomeEnv:
         latency = (now - self._last_ts) if self._last_ts is not None else None
         if latency is not None:
             self._latencies.append(latency)
-        obs, reward, terminated, truncated, info = self.env.step(self._to_action_index(action))
+        obs, reward, done, info = self.env.step(self._to_action_index(action))
         self.screen = obs["screen"]
         info = dict(info)
         info["act_latency_s"] = latency
@@ -107,7 +106,18 @@ class MyWayHomeEnv:
             sum(self._latencies) / len(self._latencies) if self._latencies else None
         )
         self._last_ts = time.monotonic()
-        return self.screen, float(reward), bool(terminated or truncated), info
+        return self.screen, float(reward), bool(done), info
+
+    def poll(self):
+        obs, reward, done, info = self.env.poll()
+        self.screen = obs["screen"]
+        info["avg_act_latency_s"] = (sum(self._latencies) / len(self._latencies)
+                                     if self._latencies else None)
+        observation = self.screen
+        return observation, reward, done, info
+
+    def close(self):
+        self.env.close()
 
     def restart(self) -> None:
         """No cyclic prompt cursor to rewind (unlike MathEnv/TTFTEnv) -- every

@@ -4,8 +4,7 @@ import random
 import time
 from typing import Any, Optional
 
-import gymnasium
-import vizdoom.gymnasium_wrapper  # noqa: F401  registers the Vizdoom gymnasium env ids
+from .realtime_vizdoom import RealtimeVizdoom, realtime_options
 
 # Matches VizdoomHealthGathering-v1's actual Discrete(4) button_map: index 0 =
 # no button pressed, 1 = MOVE_FORWARD, 2 = TURN_RIGHT, 3 = TURN_LEFT. No
@@ -41,13 +40,11 @@ DOC = (
     "current-frame block freed and rebuilt every step) instead of one re-encoded blob, and picking "
     "the action via a logit probe over just the action-name tokens instead of generating and "
     "parsing free text. Not required -- build it however you like.\n"
-    "The underlying ViZDoom scenario itself carries no notion of your decision speed -- reward is "
-    "purely game score. This harness measures decision speed separately and puts it in the info "
-    "dict step() returns: `act_latency_s` (wall-clock seconds between you receiving an observation "
-    "and this step's action arriving -- i.e. how long your own act() took) and `avg_act_latency_s` "
-    "(the running mean over the episode so far). This is visible to you next round as an average "
-    "over the task run. It isn't part of the reward and nothing enforces a target -- purely "
-    "diagnostic.\n"
+    "The game runs asynchronously at the configured tic rate (normally 35 tics/sec), including "
+    "while act() awaits LLM inference. The default action while waiting is wait; a completed "
+    "action is applied for frame_skip tics. Death and the native episode timeout end evaluation "
+    "and cancel any pending decision. Latency therefore directly affects attainable reward. "
+    "Use real LLM.forward() calls: evaluations with no forward calls are invalid.\n"
     "Watch out for a degenerate local optimum here: doing nothing at all (e.g. always 'wait', or "
     "any policy that never seeks out a medkit) still nets a score around ~280-290 -- health drains "
     "to 0 on its own after a few hundred tics of living reward, and the resulting -100 death penalty "
@@ -101,6 +98,7 @@ class HealthGatheringEnv:
     (navigate + survive instead of aim + shoot) to exercise a different slice of the
     agent's own inference structure (no fire action, reward is survival time)."""
 
+    real_time = True
     name = "health_gathering"
     doc = DOC
     # Was 2 -- this env's quantized, highly luck-dependent reward (0, 284,
@@ -120,8 +118,8 @@ class HealthGatheringEnv:
         episode_timeout: int = 10000,
         seed: Optional[int] = None,
     ) -> None:
-        self.env = gymnasium.make(env_id, render_mode="rgb_array", frame_skip=frame_skip,
-                                   episode_timeout=episode_timeout)
+        self.env = RealtimeVizdoom(env_id, frame_skip=frame_skip,
+                                   game_tic_limit=episode_timeout, **realtime_options())
         # See tasks/doom_env.py's DoomEnv.__init__ -- same randomized-seed
         # rationale: a fixed seed pins vizdoom's native RNG identically
         # across launches, so `seed=None` (default) draws fresh each episode.
@@ -161,7 +159,7 @@ class HealthGatheringEnv:
         latency = (now - self._last_ts) if self._last_ts is not None else None
         if latency is not None:
             self._latencies.append(latency)
-        obs, reward, terminated, truncated, info = self.env.step(self._to_action_index(action))
+        obs, reward, done, info = self.env.step(self._to_action_index(action))
         self.screen = obs["screen"]
         info = dict(info)
         info["act_latency_s"] = latency
@@ -170,7 +168,18 @@ class HealthGatheringEnv:
         )
         self._last_ts = time.monotonic()
         observation = {"screen": self.screen, "health": float(obs["gamevariables"][0])}
-        return observation, float(reward), bool(terminated or truncated), info
+        return observation, float(reward), bool(done), info
+
+    def poll(self):
+        obs, reward, done, info = self.env.poll()
+        self.screen = obs["screen"]
+        info["avg_act_latency_s"] = (sum(self._latencies) / len(self._latencies)
+                                     if self._latencies else None)
+        observation = {"screen": self.screen, "health": float(obs["gamevariables"][0])}
+        return observation, reward, done, info
+
+    def close(self):
+        self.env.close()
 
     def restart(self) -> None:
         """No cyclic prompt cursor to rewind (unlike MathEnv/TTFTEnv) -- every

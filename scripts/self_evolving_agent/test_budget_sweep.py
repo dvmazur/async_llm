@@ -17,7 +17,8 @@ class FakeLLM:
         self.samples = iter(samples)
         self.inputs = []
         self.freed = False
-        self.tokenizer = SimpleNamespace(encode=lambda text, **kw: [99, 100])
+        self.tokenizer = SimpleNamespace(encode=lambda text, **kw: [99, 100],
+            decode=lambda ids, **kw: "".join({7:"word", 8:" more", 9:"</think>", 10:"<eos>", 11:r"\boxed{fire}"}.get(i, "") for i in ids))
         self.processor = SimpleNamespace(apply_chat_template=lambda *a, **kw: {"input_ids": [50]})
 
     async def create_block(self):
@@ -91,19 +92,24 @@ class BudgetSweepTests(unittest.TestCase):
 
     def test_budget_consumes_last_sample_before_action(self):
         engine = make_engine(2, [7, 8])
-        self.assertEqual(asyncio.run(engine.act(None)), "fire")
-        self.assertEqual(engine.llm.inputs, [[50], [7], [8], [99, 100]])
+        self.assertEqual(asyncio.run(engine.act(None)), "wait")
+        self.assertEqual(engine.llm.inputs, [[50], [7], [8]])
         self.assertEqual(engine.trace[0]["reasoning_tokens"], 2)
         self.assertEqual(engine.trace[0]["stop"], "budget")
         self.assertTrue(engine.llm.freed)
 
-    def test_early_end_think_and_eos(self):
-        for token, reason in [(9, "end_think"), (10, "eos")]:
-            engine = make_engine(100, [7, token])
-            asyncio.run(engine.act(None))
-            self.assertEqual(engine.llm.inputs, [[50], [7], [99, 100]])
-            self.assertEqual(engine.trace[0]["stop"], reason)
-            self.assertEqual(engine.trace[0]["reasoning_tokens"], 2)
+    def test_reasoning_continues_after_end_think_until_boxed_answer(self):
+        engine = make_engine(100, [7, 9, 11])
+        self.assertEqual(asyncio.run(engine.act(None)), "fire")
+        self.assertEqual(engine.llm.inputs, [[50], [7], [9]])
+        self.assertEqual(engine.trace[0]["stop"], "boxed_action")
+        self.assertEqual(engine.trace[0]["reasoning_tokens"], 2)
+        self.assertEqual(engine.trace[0]["generated_tokens"], 3)
+
+    def test_box_inside_thinking_is_not_an_action(self):
+        engine = make_engine(100, [11, 7, 10])
+        self.assertEqual(asyncio.run(engine.act(None)), "wait")
+        self.assertEqual(engine.trace[0]["stop"], "eos")
 
     def test_no_reasoning_never_samples(self):
         engine = make_engine(0, [])

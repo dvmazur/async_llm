@@ -4,8 +4,7 @@ import random
 import time
 from typing import Any, Optional
 
-import gymnasium
-import vizdoom.gymnasium_wrapper  # noqa: F401  registers the Vizdoom gymnasium env ids
+from .realtime_vizdoom import RealtimeVizdoom, realtime_options
 
 # Matches VizdoomDefendLine-v1's actual Discrete(4) button_map (index 0 = no
 # button pressed, 1 = ATTACK, 2 = TURN_RIGHT, 3 = TURN_LEFT).
@@ -25,15 +24,11 @@ DOC = (
     "current-frame block freed and rebuilt every step) instead of one re-encoded blob, and "
     "picking the action via a logit probe over just the action-name tokens instead of generating "
     "and parsing free text. Not required -- build it however you like.\n"
-    "The underlying ViZDoom scenario itself carries no notion of your decision speed -- reward is "
-    "purely game score, and the env's own info dict from the ViZDoom gymnasium wrapper is empty. "
-    "This harness now measures it separately and puts it in the info dict step() returns: "
-    "`act_latency_s` (wall-clock seconds between you receiving an observation and this step's "
-    "action arriving -- i.e. how long your own act() took) and `avg_act_latency_s` (the running "
-    "mean over the episode so far). This is visible to you next round as an average over the task "
-    "run. It isn't part of the reward and nothing enforces a target -- purely diagnostic, e.g. to "
-    "see the actual cost of an architecture change (more cache blocks per act(), a generation loop "
-    "instead of a logit probe, etc.) rather than reasoning about it in the abstract.\n"
+    "The game runs asynchronously at the configured tic rate (normally 35 tics/sec), including "
+    "while act() awaits LLM inference. The default action while waiting is wait; a completed "
+    "action is applied for frame_skip tics. Death and the native episode timeout end evaluation "
+    "and cancel any pending decision. Latency therefore directly affects attainable reward. "
+    "Use real LLM.forward() calls: evaluations with no forward calls are invalid.\n"
     "Reward is the only thing this experiment scores on. A fast policy that scores low is not an "
     "improvement over a slower one that scores high -- act() latency should only be a concern if "
     "it's genuinely blocking something that would raise reward, never a goal in its own right.\n"
@@ -56,6 +51,7 @@ class DoomEnv:
     tasks/math_env.py and tasks/ttft_env.py. Unlike those, an episode here is
     genuinely multi-step -- see max_steps_per_episode, read by tasks/runner.py."""
 
+    real_time = True
     name = "doom"
     doc = DOC
     # Matches run_baseline.py's DEFAULT_EPISODES=5 and health_gathering_env.py's
@@ -70,8 +66,8 @@ class DoomEnv:
         episode_timeout: int = 1000,
         seed: Optional[int] = None,
     ) -> None:
-        self.env = gymnasium.make(env_id, render_mode="rgb_array", frame_skip=frame_skip,
-                                   episode_timeout=episode_timeout)
+        self.env = RealtimeVizdoom(env_id, frame_skip=frame_skip,
+                                   game_tic_limit=episode_timeout, **realtime_options())
         # A fixed seed pins vizdoom's native RNG for every episode (useful to
         # reproduce a specific run); `seed=None` (default) means reset() below
         # draws a fresh seed each episode instead.
@@ -113,7 +109,7 @@ class DoomEnv:
         latency = (now - self._last_ts) if self._last_ts is not None else None
         if latency is not None:
             self._latencies.append(latency)
-        obs, reward, terminated, truncated, info = self.env.step(self._to_action_index(action))
+        obs, reward, done, info = self.env.step(self._to_action_index(action))
         self.screen = obs["screen"]
         info = dict(info)
         info["act_latency_s"] = latency
@@ -121,7 +117,18 @@ class DoomEnv:
             sum(self._latencies) / len(self._latencies) if self._latencies else None
         )
         self._last_ts = time.monotonic()
-        return self.screen, float(reward), bool(terminated or truncated), info
+        return self.screen, float(reward), bool(done), info
+
+    def poll(self):
+        obs, reward, done, info = self.env.poll()
+        self.screen = obs["screen"]
+        info["avg_act_latency_s"] = (sum(self._latencies) / len(self._latencies)
+                                     if self._latencies else None)
+        observation = self.screen
+        return observation, reward, done, info
+
+    def close(self):
+        self.env.close()
 
     def restart(self) -> None:
         """No cyclic prompt cursor to rewind (unlike MathEnv/TTFTEnv) -- every
