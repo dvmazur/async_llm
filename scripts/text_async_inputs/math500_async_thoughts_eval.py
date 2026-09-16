@@ -49,6 +49,10 @@ def arguments():
     p.add_argument("--memory-ratio", type=float, default=.8)
     p.add_argument("--page-size", type=int, default=1)
     p.add_argument("--distributed-port", type=int, default=2360)
+    p.add_argument("--temperature", type=float, default=.6)
+    p.add_argument("--top-p", type=float, default=.95)
+    p.add_argument("--top-k", type=int, default=20)
+    p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
 
 
@@ -56,7 +60,26 @@ def forbidden(tokenizer, names):
     return [i for i in (vocab_id_or_none(tokenizer, n) for n in names) if i is not None]
 
 
-async def append_to_stream(llm, ctx, block, ids, forbid_ids):
+def sample_token(logits, forbid_ids, temperature, top_p, top_k):
+    """Qwen-recommended temperature/top-k/top-p multinomial sampling."""
+    scores = logits.float().clone()
+    if forbid_ids:
+        scores[forbid_ids] = float("-inf")
+    scores /= temperature
+    if top_k > 0 and top_k < scores.numel():
+        cutoff = torch.topk(scores, top_k).values[-1]
+        scores[scores < cutoff] = float("-inf")
+    if top_p < 1:
+        sorted_scores, sorted_indices = torch.sort(scores, descending=True)
+        cumulative = torch.softmax(sorted_scores, dim=-1).cumsum(dim=-1)
+        remove = cumulative > top_p
+        remove[1:] = remove[:-1].clone()
+        remove[0] = False
+        scores[sorted_indices[remove]] = float("-inf")
+    return int(torch.multinomial(torch.softmax(scores, dim=-1), 1))
+
+
+async def append_to_stream(llm, ctx, block, ids, forbid_ids, sampling):
     """Commit a pending sampled token, append text in-place, and reseed decode."""
     if ctx.next_input_id is not None:
         await llm.forward(cache_view=ctx)
@@ -65,11 +88,11 @@ async def append_to_stream(llm, ctx, block, ids, forbid_ids):
     logits = out.logits
     if forbid_ids:
         logits[forbid_ids] = float("-inf")
-    ctx.next_input_id = int(logits.argmax())
+    ctx.next_input_id = sample_token(logits, forbid_ids, *sampling)
 
 
 async def generate(llm, tokenizer, first, second, k_steps, budget, probe_period,
-                   defer_writer_reminder):
+                   defer_writer_reminder, sampling):
     problem = first + second if k_steps == 0 else first
     prompting = Prompting(
         "Please reason step by step, and put your final answer within \\boxed{}.\n\n" + problem
@@ -104,12 +127,12 @@ async def generate(llm, tokenizer, first, second, k_steps, budget, probe_period,
         injection_done.clear()
         shard = encode(f"\n\nADDITIONAL INFORMATION: {second}\n\n", tokenizer)
         await llm.forward(shard, cache_view=[prompt], write_to=prompt, return_logits=False)
-        await append_to_stream(llm, thinker_ctx, thinker, shard, thinker_forbid)
+        await append_to_stream(llm, thinker_ctx, thinker, shard, thinker_forbid, sampling)
         if defer_writer_reminder:
             writer_reminder_pending = True
         else:
             await append_to_stream(llm, writer_ctx, writer,
-                                   encode(WRITER_REMINDER, tokenizer), writer_forbid)
+                                   encode(WRITER_REMINDER, tokenizer), writer_forbid, sampling)
         injected = True
         injection_done.set()
 
@@ -121,9 +144,7 @@ async def generate(llm, tokenizer, first, second, k_steps, budget, probe_period,
                 if not injected and k_steps > 0 and steps >= k_steps:
                     await inject()
                 out = await llm.forward(cache_view=thinker_ctx)
-                logits = out.logits
-                if thinker_forbid: logits[thinker_forbid] = float("-inf")
-                thinker_ctx.next_input_id = int(logits.argmax())
+                thinker_ctx.next_input_id = sample_token(out.logits, thinker_forbid, *sampling)
                 steps += 1
                 if steps % probe_period == 0 or ends_with_double_newline(
                     _tokens_with_pending(thinker, thinker_ctx), tokenizer
@@ -138,9 +159,8 @@ async def generate(llm, tokenizer, first, second, k_steps, budget, probe_period,
             await writer_run.wait(); await injection_done.wait()
             if done.is_set(): return
             out = await llm.forward(cache_view=writer_ctx)
-            logits = out.logits
-            if writer_forbid: logits[writer_forbid] = float("-inf")
-            token = int(logits.argmax()); writer_ctx.next_input_id = token
+            token = sample_token(out.logits, writer_forbid, *sampling)
+            writer_ctx.next_input_id = token
             if token == eos: done.set(); return
             steps += 1
             boundary = token == nn or ends_with_double_newline(
@@ -148,7 +168,7 @@ async def generate(llm, tokenizer, first, second, k_steps, budget, probe_period,
             )
             if boundary and writer_reminder_pending:
                 await append_to_stream(llm, writer_ctx, writer,
-                                       encode(WRITER_REMINDER, tokenizer), writer_forbid)
+                                       encode(WRITER_REMINDER, tokenizer), writer_forbid, sampling)
                 writer_reminder_pending = False
             if steps >= budget:
                 done.set(); return
@@ -196,9 +216,12 @@ async def run(args):
                 continue
             item = data[idx]
             try:
+                torch.manual_seed(args.seed + idx)
+                torch.cuda.manual_seed_all(args.seed + idx)
                 response, thoughts, injected = await generate(
                     llm, tokenizer, *item["problem_shards"], args.k_steps,
-                    args.budget, args.probe_period, args.defer_writer_reminder)
+                    args.budget, args.probe_period, args.defer_writer_reminder,
+                    (args.temperature, args.top_p, args.top_k))
                 predicted = find_last_boxed_answer(response)
                 equal = check_equality(predicted, str(item["answer"]))
                 result = {"idx": idx, "k_steps": args.k_steps, "is_equal": equal,
@@ -206,7 +229,9 @@ async def run(args):
                           "generated_text": response, "thinker_text": thoughts,
                           "shard_injected": injected,
                           "routing": {"prompt": "shard", "thinker": "shard",
-                                      "writer": "deferred_reminder" if args.defer_writer_reminder else "reminder"}}
+                                      "writer": "deferred_reminder" if args.defer_writer_reminder else "reminder"},
+                          "sampling": {"temperature": args.temperature, "top_p": args.top_p,
+                                       "top_k": args.top_k, "seed": args.seed + idx}}
                 path.write_text(json.dumps(result, indent=2))
                 correct += int(equal); total += 1
                 print(f"[{idx}] correct={equal} accuracy={correct/total:.3f}", flush=True)
