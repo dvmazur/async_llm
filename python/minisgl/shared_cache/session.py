@@ -418,8 +418,6 @@ class SharedCacheSession:
                     A_second=right_pair[0],
                     B_second=right_pair[1],
                 )
-        destination.linear_affine = merged_affine
-
         merged_conv: Dict[int, torch.Tensor] = {}
         conv_layers = set(left.linear_conv_state) | set(right.linear_conv_state)
         for layer_idx in conv_layers:
@@ -430,7 +428,7 @@ class SharedCacheSession:
             merged_conv[layer_idx] = (
                 state if keep_left_state and right_state is None else state.clone()
             )
-        destination.linear_conv_state = merged_conv
+        destination._replace_linear_states(merged_affine, merged_conv)
 
     def _validate_block(self, block: CacheBlock) -> None:
         if block.device != self.device:

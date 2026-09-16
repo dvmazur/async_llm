@@ -7,6 +7,8 @@ import torch
 from minisgl.kvcache import BaseCacheHandle
 from minisgl.utils import div_ceil
 
+from .gdn_state import StateCache, StateDict
+
 
 @dataclass(frozen=True)
 class _NullCacheHandle(BaseCacheHandle):
@@ -62,10 +64,40 @@ class CacheBlock:
         # trajectory, keyed by linear-layer index; fp32, block convention
         # (A_hat [1,H,d_k,d_k], B_hat [1,H,d_v,d_k]).  Composing a worker's chain
         # of these folds into an initial recurrent state (see shared_cache.gdn).
-        self.linear_affine: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self._gdn_state_cache = StateCache()
+        self.linear_affine = StateDict(self._gdn_state_cache)
         # Rolling causal-conv window (last conv_kernel columns) per linear layer,
         # [conv_dim, conv_kernel].  Standard full-attention blocks leave these empty.
-        self.linear_conv_state: Dict[int, torch.Tensor] = {}
+        self.linear_conv_state = StateDict(self._gdn_state_cache)
+
+    def invalidate_gdn_state(self):
+        """Required after debug edits that change an internal tensor's layout/storage."""
+        self._gdn_state_cache.prepared = None
+
+    @property
+    def linear_affine(self) -> Dict[int, Tuple[torch.Tensor, torch.Tensor]]:
+        return self._linear_affine
+
+    @linear_affine.setter
+    def linear_affine(self, value):
+        self.invalidate_gdn_state()
+        # Preserve aliases of externally supplied dicts; prepare won't cache them.
+        self._linear_affine = value
+
+    @property
+    def linear_conv_state(self) -> Dict[int, torch.Tensor]:
+        return self._linear_conv_state
+
+    @linear_conv_state.setter
+    def linear_conv_state(self, value):
+        self.invalidate_gdn_state()
+        self._linear_conv_state = value
+
+    def _replace_linear_states(self, affine, conv):
+        """Internal replacement with dictionaries whose mutations we own/track."""
+        self.linear_affine = StateDict(self._gdn_state_cache, affine)
+        self.linear_conv_state = StateDict(self._gdn_state_cache, conv)
+
     @property
     def mrope_span(self) -> int:
         """Running-mRoPE advance over this block (== num_tokens unless overridden)."""
@@ -146,6 +178,7 @@ class CacheBlock:
 
     def clear(self) -> List[int]:
         """Reset the block and return the page-start slots the caller should free."""
+        self.invalidate_gdn_state()
         pages = list(self.page_starts)
         self.page_starts.clear()
         self.num_tokens = 0
