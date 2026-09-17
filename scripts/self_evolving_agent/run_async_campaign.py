@@ -130,26 +130,28 @@ def baseline_worker(root, gpu, plans):
             raise RuntimeError(f"Incomplete baseline: {out}")
 
 
-def main(root, gpus, adoptions):
+def main(root, gpus, adoptions, baselines_only=False):
     root.mkdir(parents=True, exist_ok=True)
     with file_lock(root / "campaign.lock", blocking=False) as owner:
         if not owner:
             raise RuntimeError("Campaign already running")
-        state = dict(pid=os.getpid(), status="running", phase="minimal", gpus=[int(g) for g in gpus],
+        state = dict(pid=os.getpid(), status="running", phase="baselines" if baselines_only else "minimal", gpus=[int(g) for g in gpus],
                      runs=10, episodes=5, valid_rounds=5, ticrate=35, action_policy="wait")
         atomic_json(root / "status.json", state)
         try:
-            with ThreadPoolExecutor(max_workers=len(gpus)) as pool:
-                futures = [pool.submit(evolution_worker, root, gpu, adoptions) for gpu in gpus]
-                while not all(f.done() for f in futures):
-                    for f in futures:
-                        if f.done(): f.result()
-                    evolution_report(root)
-                    state["updated"] = time.time(); atomic_json(root / "status.json", state)
-                    time.sleep(30)
-                for f in futures: f.result()
-            evolution_report(root)
+            if not baselines_only:
+                with ThreadPoolExecutor(max_workers=len(gpus)) as pool:
+                    futures = [pool.submit(evolution_worker, root, gpu, adoptions) for gpu in gpus]
+                    while not all(f.done() for f in futures):
+                        for f in futures:
+                            if f.done(): f.result()
+                        evolution_report(root)
+                        state["updated"] = time.time(); atomic_json(root / "status.json", state)
+                        time.sleep(30)
+                    for f in futures: f.result()
+                evolution_report(root)
             state.update(phase="baselines", updated=time.time()); atomic_json(root / "status.json", state)
+            from action_efficiency import report as efficiency_report
             plans = [[] for _ in gpus]
             for index, plan in enumerate([("reasoning", [16384]), ("no_think", [64,128,512,1024]), ("logit", [0])]):
                 plans[index % len(gpus)].append(plan)
@@ -162,9 +164,11 @@ def main(root, gpus, adoptions):
                 while not all(f.done() for f in futures):
                     for f in futures:
                         if f.done(): f.result()
+                    efficiency_report(root)
                     state["updated"] = time.time(); atomic_json(root / "status.json", state)
                     time.sleep(30)
                 for f in futures: f.result()
+            efficiency_report(root)
             rows = [r for name in ("reasoning","logit","no_think","random") for r in report(root / name)]
             with (root / "baseline_summary.csv").open("w", newline="") as f:
                 w=csv.DictWriter(f,fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
@@ -180,10 +184,13 @@ if __name__ == "__main__":
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--gpus", nargs="+", default=["5", "6"])
     p.add_argument("--adopt", type=Path, help="Explicit task/run -> live PID and GPU mapping")
+    p.add_argument("--baselines-only", action="store_true", help="Skip evolution and run the agreed seven baseline conditions")
     args = p.parse_args()
     if len(set(args.gpus)) != len(args.gpus):
         p.error("GPU IDs must be unique")
     adoptions = json.loads(args.adopt.read_text()) if args.adopt else {}
     if any(a["gpu"] not in args.gpus for a in adoptions.values()):
         p.error("Every adopted worker must use an authorized GPU")
-    main(args.output.resolve(), args.gpus, adoptions)
+    if args.baselines_only and adoptions:
+        p.error("Cannot adopt evolution workers in baselines-only mode")
+    main(args.output.resolve(), args.gpus, adoptions, args.baselines_only)

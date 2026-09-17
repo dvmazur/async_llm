@@ -22,6 +22,23 @@ class WorkerTests(unittest.TestCase):
                     for future in futures: future.result()
             self.assertEqual(len(calls),20)
             self.assertEqual(len(set(calls)),20)
+    def test_baselines_only_skips_evolution_and_finishes_reports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            campaign.STOP.clear()
+            with patch.object(campaign, 'evolution_worker') as evolution, \
+                 patch.object(campaign, 'baseline_worker') as baseline, \
+                 patch.object(campaign, 'command') as command, \
+                 patch.object(campaign, 'report', return_value=[{'completed_runs':10,'errors':0}]), \
+                 patch('action_efficiency.report') as efficiency, \
+                 patch.object(campaign.time, 'sleep'):
+                campaign.main(root, ['0','1','3','4'], {}, baselines_only=True)
+                evolution.assert_not_called()
+                self.assertEqual(baseline.call_count, 3)
+                command.assert_called_once()
+                efficiency.assert_called()
+            self.assertEqual(json.loads((root/'status.json').read_text())['status'], 'complete')
+
     def test_adoption_waits_without_relaunching_existing_run(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
