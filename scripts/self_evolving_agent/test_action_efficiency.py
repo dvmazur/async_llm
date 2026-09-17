@@ -6,6 +6,13 @@ import unittest
 from action_efficiency import ForwardCounter, ratio, report, summarize
 
 class EfficiencyTests(unittest.TestCase):
+    def test_forwards_per_step_averages_run_ratios_and_random_is_zero(self):
+        row = summarize('test', 'doom', [(10, 20), (20, 100)])
+        self.assertEqual(row['mean_forwards_per_env_step'], 3.5)
+        self.assertGreater(row['forwards_per_env_step_ci95_half_width'], 0)
+        self.assertNotEqual(row['mean_forwards_per_env_step'], 1 / row['mean_actions_per_forward'])
+        self.assertEqual(summarize('random', 'doom', [(10, 0)])['mean_forwards_per_env_step'], 0)
+        self.assertIsNone(summarize('empty', 'doom', [(0, 20)])['mean_forwards_per_env_step'])
     def test_counts_prefill_decode_and_cancelled_call(self):
         class LLM:
             async def forward(self, ids):

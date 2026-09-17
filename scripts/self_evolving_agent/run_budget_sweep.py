@@ -33,6 +33,9 @@ PROMPT = (
     "Return the chosen action in \\boxed{{action}}, using exactly one of: {actions}. "
     "The game continues at 35 tics/sec while you decide."
 )
+if os.environ.get("SEA_GAME_MODE") == "synchronous":
+    PROMPT = PROMPT.replace("The game continues at 35 tics/sec while you decide.",
+                            "The game is paused while you decide; each action advances four tics.")
 
 
 def retry_disk_full(func):
@@ -126,6 +129,8 @@ class BudgetEngine:
         generated = []
         action = None
         cancelled = False
+        counter = getattr(self.llm, "forward_counter", None)
+        forwards_before = counter.calls if counter else 0
         try:
             output = await self.llm(**enc, cache_view=[block])
             if self.budget:
@@ -159,6 +164,7 @@ class BudgetEngine:
             raise
         finally:
             self.trace.append({"attempt": len(self.trace) + 1, "action": action,
+                               "llm_forward_calls": counter.calls - forwards_before if counter else None,
                                "reasoning_tokens": (generated.index(self.end_think) + 1 if self.end_think in generated else count) if self.mode == "reasoning" else 0,
                                "generated_tokens": count, "stop": stop, "cancelled": cancelled,
                                "text": self.llm.tokenizer.decode(generated, skip_special_tokens=False),
@@ -254,11 +260,11 @@ async def run(args):
     if torch.cuda.device_count() != 1:
         raise ValueError("Exactly one visible GPU required")
     args.output.mkdir(parents=True, exist_ok=True)
-    from tasks.realtime_vizdoom import realtime_options
+    from tasks.realtime_vizdoom import realtime_options, game_tic_limits, game_mode, action_policy_doc
     config = dict(model=args.model, revision=args.revision, mode=args.mode, runs=args.runs, episodes=args.episodes,
-                  budgets=args.budgets, tasks=args.tasks, seed=args.seed, game_tic_limits={"doom":1000,"health_gathering":10000},
-                  realtime=realtime_options(),
-                  prompt=PROMPT, protocol_version=3, max_seq_len=32768,
+                  budgets=args.budgets, tasks=args.tasks, seed=args.seed, game_tic_limits=game_tic_limits(),
+                  realtime=realtime_options(), game_mode=game_mode(), action_policy_description=action_policy_doc(),
+                  prompt=PROMPT, protocol_version=4, max_seq_len=32768,
                   sampling=dict(temperature=.7, top_k=20, top_p=.9, repetition_penalty=1.0))
     path = args.output / "config.json"
     with file_lock(args.output / "config.lock"):
@@ -328,6 +334,7 @@ async def run(args):
                         row = dict(task=task, budget=budget, run=run_index, episode=episode, gpu=gpu,
                                    seed=seed, reward=ep["reward"], steps=ep["steps"], error=error,
                                    llm_forward_calls=forward_counter.calls - forwards_before,
+                                   forwards_per_env_step=ratio(forward_counter.calls - forwards_before, ep["steps"]),
                                    actions_per_forward=ratio(ep["steps"], forward_counter.calls - forwards_before),
                                    hit_step_cap=False, info=ep["info"], decision_attempts=len(engine.trace),
                                    reasoning_tokens=sum(s["reasoning_tokens"] for s in engine.trace),

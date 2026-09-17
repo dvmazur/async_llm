@@ -43,10 +43,10 @@ async def evaluate(out):
     from tasks.health_gathering_env import ACTION_NAMES as HA, HealthGatheringEnv
     from tasks.runner import run_episodes
 
-    from tasks.realtime_vizdoom import realtime_options
+    from tasks.realtime_vizdoom import realtime_options, game_tic_limits, game_mode
     config = dict(mode="uniform_random", tasks=TASKS, budgets=[0], runs=10, episodes=5,
-                  seed=20260915, game_tic_limits={"doom":1000,"health_gathering":10000},
-                  realtime=realtime_options(), protocol_version=3,
+                  seed=20260915, game_tic_limits=game_tic_limits(),
+                  realtime=realtime_options(), game_mode=game_mode(), protocol_version=4,
                   description="Independent uniform choice among all four legal actions each step; no LLM.")
     path = out / "config.json"
     if path.exists() and json.loads(path.read_text()) != config:
@@ -76,7 +76,7 @@ async def evaluate(out):
                 error = ep["info"].get("error", "")
                 row = dict(task=task, budget=0, run=run, episode=episode, seed=env_seed,
                            action_seed=action_seed, reward=ep["reward"], steps=ep["steps"], error=error,
-                           llm_forward_calls=0, actions_per_forward=None,
+                           llm_forward_calls=0, actions_per_forward=None, forwards_per_env_step=0.0 if ep["steps"] else None,
                            hit_step_cap=False, info=ep["info"], decision_attempts=len(engine.trace), reasoning_tokens=0,
                            generated_tokens=0, budget_hits=0,
                            act_seconds=sum(s["latency_s"] for s in engine.trace),

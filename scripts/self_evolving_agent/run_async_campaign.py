@@ -14,7 +14,7 @@ import time
 import threading
 
 from run_budget_sweep import atomic_json, report, seed_for, file_lock
-from tasks.realtime_vizdoom import realtime_options
+from tasks.realtime_vizdoom import realtime_options, game_mode, game_tic_limits
 
 HERE = Path(__file__).resolve().parent
 STOP = threading.Event()
@@ -137,7 +137,8 @@ def main(root, gpus, adoptions, baselines_only=False, evolution_only=False):
         if not owner:
             raise RuntimeError("Campaign already running")
         state = dict(pid=os.getpid(), status="running", phase="baselines" if baselines_only else "minimal", gpus=[int(g) for g in gpus],
-                     runs=10, episodes=5, valid_rounds=5, ticrate=35, action_policy=realtime_options()["action_policy"])
+                     runs=10, episodes=5, valid_rounds=5, ticrate=35, action_policy="step" if game_mode() == "synchronous" else realtime_options()["action_policy"],
+                     game_mode=game_mode(), game_tic_limits=game_tic_limits())
         atomic_json(root / "status.json", state)
         from action_efficiency import report as efficiency_report
         try:
@@ -189,6 +190,9 @@ def main(root, gpus, adoptions, baselines_only=False, evolution_only=False):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--doom-tics", type=int, default=game_tic_limits()["doom"])
+    p.add_argument("--health-tics", type=int, default=game_tic_limits()["health_gathering"])
+    p.add_argument("--game-mode", choices=["asynchronous", "synchronous"], default=game_mode())
     p.add_argument("--action-policy", choices=["hold_last", "wait"], default=realtime_options()["action_policy"])
     p.add_argument("--gpus", nargs="+", default=["5", "6"])
     p.add_argument("--adopt", type=Path, help="Explicit task/run -> live PID and GPU mapping")
@@ -196,6 +200,11 @@ if __name__ == "__main__":
     p.add_argument("--baselines-only", action="store_true", help="Skip evolution and run the agreed seven baseline conditions")
     args = p.parse_args()
     os.environ["SEA_INFERENCE_ACTION"] = args.action_policy
+    os.environ["SEA_GAME_MODE"] = args.game_mode
+    if args.doom_tics <= 0 or args.health_tics <= 0:
+        p.error("Game tic limits must be positive")
+    os.environ["SEA_DOOM_TIC_LIMIT"] = str(args.doom_tics)
+    os.environ["SEA_HEALTH_GATHERING_TIC_LIMIT"] = str(args.health_tics)
     if len(set(args.gpus)) != len(args.gpus):
         p.error("GPU IDs must be unique")
     adoptions = json.loads(args.adopt.read_text()) if args.adopt else {}

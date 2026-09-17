@@ -32,8 +32,9 @@ async def run_episodes(
     enough between episode boundaries that a heartbeat only at the top of
     each episode risks a false "hung process" verdict from a caller's
     watchdog.
-    Real-time games run to native death/timeout, polling during inference and
-    cancelling late decisions; decision-count caps do not apply to them.
+    ViZDoom games run to native death/timeout without decision-count caps.
+    Real-time games poll during inference and cancel late decisions;
+    synchronous games pause during inference and advance only on step().
     `max_steps_per_episode` for other tasks is only a default -- an env can define its own
     `max_steps_per_episode` attribute to override it (e.g. a real multi-step
     game episode needs far more than 8 steps to show anything meaningful,
@@ -51,6 +52,7 @@ async def run_episodes(
     on_token = getattr(env, "on_token", None)
     steps_cap = getattr(env, "max_steps_per_episode", max_steps_per_episode)
     real_time = getattr(env, "real_time", False)
+    native_limit = getattr(env, "native_episode_limit", real_time)
 
     for episode_index in range(n_episodes):
         if hasattr(env, "episode_seeds"):
@@ -66,9 +68,8 @@ async def run_episodes(
         steps = 0
         decision = None
         try:
-            # A real-time environment enforces a fixed game-tic horizon.
-            # Counting decisions instead would give slower agents extra time.
-            while not done and (real_time or steps < steps_cap):
+            # Native ViZDoom horizons apply in both timing modes.
+            while not done and (native_limit or steps < steps_cap):
                 if on_step is not None:
                     on_step()
                 if real_time:
@@ -112,7 +113,7 @@ async def run_episodes(
                     decision.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await decision
-            if real_time:
+            if native_limit:
                 env.close()
         if on_episode_end is not None:
             on_episode_end()

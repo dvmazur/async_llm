@@ -4,7 +4,7 @@ import random
 import time
 from typing import Any, Optional
 
-from .realtime_vizdoom import RealtimeVizdoom, realtime_options, action_policy_doc
+from .realtime_vizdoom import make_vizdoom, realtime_options, game_mode, environment_doc
 
 # Confirmed via VizdoomMyWayHome-v1's actual Discrete(6) button_map:
 # index 0 = no button pressed, 1 = TURN_LEFT, 2 = TURN_RIGHT, 3 = MOVE_FORWARD,
@@ -65,8 +65,10 @@ class MyWayHomeEnv:
         episode_timeout: int = 2100,
         seed: Optional[int] = None,
     ) -> None:
-        self.doc = DOC + "\n" + action_policy_doc()
-        self.env = RealtimeVizdoom(env_id, frame_skip=frame_skip,
+        self.doc = environment_doc(DOC)
+        self.real_time = game_mode() == "asynchronous"
+        self.native_episode_limit = True
+        self.env = make_vizdoom(env_id, frame_skip=frame_skip,
                                    game_tic_limit=episode_timeout, **realtime_options())
         # See tasks/doom_env.py's DoomEnv.__init__ for why this is randomized
         # rather than a fixed constant -- a hardcoded seed pins vizdoom's own

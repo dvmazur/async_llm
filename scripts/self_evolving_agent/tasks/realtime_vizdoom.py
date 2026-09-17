@@ -20,6 +20,36 @@ def realtime_options():
             "action_policy": os.environ.get("SEA_INFERENCE_ACTION", "hold_last")}
 
 
+def game_mode():
+    mode = os.environ.get("SEA_GAME_MODE", "asynchronous")
+    if mode not in {"synchronous", "asynchronous"}:
+        raise ValueError(f"Unknown game mode: {mode}")
+    return mode
+
+
+def game_tic_limits():
+    limits = {"doom": int(os.environ.get("SEA_DOOM_TIC_LIMIT", "1000")),
+              "health_gathering": int(os.environ.get("SEA_HEALTH_GATHERING_TIC_LIMIT", "10000"))}
+    if any(value <= 0 for value in limits.values()):
+        raise ValueError("Native game tic limits must be positive")
+    return limits
+
+
+def make_vizdoom(env_id, **options):
+    if game_mode() == "synchronous":
+        from .synchronous_vizdoom import SynchronousVizdoom
+        return SynchronousVizdoom(env_id, **options)
+    return RealtimeVizdoom(env_id, **options)
+
+
+def environment_doc(doc):
+    if game_mode() == "synchronous":
+        start = doc.index("The game runs asynchronously")
+        end = doc.index("Use real LLM.forward()", start)
+        doc = doc[:start] + doc[end:]
+    return doc + "\n" + action_policy_doc()
+
+
 class RealtimeVizdoom:
     def __init__(self, env_id, *, frame_skip, ticrate, game_tic_limit, action_policy):
         if ticrate <= 0 or game_tic_limit <= 0 or frame_skip <= 0:
@@ -165,6 +195,10 @@ class RealtimeVizdoom:
 
 
 def action_policy_doc():
+    if game_mode() == "synchronous":
+        return ("The game is synchronous and paused during inference. Each returned action "
+                "advances the game by four tics (or until native death/timeout). "
+                "Interactivity is measured as LLM.forward() calls per completed environment step.")
     policy = realtime_options()["action_policy"]
     if policy == "hold_last":
         return ("Active inference action policy: hold_last. The game keeps the last returned "

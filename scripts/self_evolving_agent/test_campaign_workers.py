@@ -8,6 +8,30 @@ from unittest.mock import patch
 import run_async_campaign as campaign
 
 class WorkerTests(unittest.TestCase):
+    def test_single_gpu_synchronous_baselines_propagate_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            campaign.STOP.clear()
+            with patch.dict(campaign.os.environ, SEA_GAME_MODE='synchronous',
+                            SEA_DOOM_TIC_LIMIT='100', SEA_HEALTH_GATHERING_TIC_LIMIT='1000'), \
+                 patch.object(campaign, 'evolution_worker') as evolution, \
+                 patch.object(campaign, 'command') as command, \
+                 patch.object(campaign, 'report', return_value=[{'completed_runs':10,'errors':0}]), \
+                 patch('action_efficiency.report'), patch.object(campaign.time, 'sleep'):
+                campaign.main(root, ['1'], {}, baselines_only=True)
+            evolution.assert_not_called()
+            self.assertEqual(command.call_count, 4)
+            for call in command.call_args_list:
+                self.assertEqual(call.args[1]['SEA_GAME_MODE'], 'synchronous')
+                self.assertEqual(call.args[1]['SEA_DOOM_TIC_LIMIT'], '100')
+                self.assertEqual(call.args[1]['SEA_HEALTH_GATHERING_TIC_LIMIT'], '1000')
+            self.assertCountEqual([c.args[1]['CUDA_VISIBLE_DEVICES'] for c in command.call_args_list],
+                                  ['1', '1', '1', ''])
+            state = json.loads((root/'status.json').read_text())
+            self.assertEqual(state['game_mode'], 'synchronous')
+            self.assertEqual(state['action_policy'], 'step')
+            self.assertEqual(state['game_tic_limits'], {'doom':100, 'health_gathering':1000})
+
     def test_three_workers_claim_each_run_once(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); calls=[]; lock=threading.Lock()

@@ -4,7 +4,7 @@ import random
 import time
 from typing import Any, Optional
 
-from .realtime_vizdoom import RealtimeVizdoom, realtime_options, action_policy_doc
+from .realtime_vizdoom import make_vizdoom, realtime_options, game_mode, environment_doc, game_tic_limits
 
 # Matches VizdoomHealthGathering-v1's actual Discrete(4) button_map: index 0 =
 # no button pressed, 1 = MOVE_FORWARD, 2 = TURN_RIGHT, 3 = TURN_LEFT. No
@@ -115,11 +115,15 @@ class HealthGatheringEnv:
         self,
         env_id: str = "VizdoomHealthGathering-v1",
         frame_skip: int = 4,
-        episode_timeout: int = 10000,
+        episode_timeout: Optional[int] = None,
         seed: Optional[int] = None,
     ) -> None:
-        self.doc = DOC + "\n" + action_policy_doc()
-        self.env = RealtimeVizdoom(env_id, frame_skip=frame_skip,
+        if episode_timeout is None:
+            episode_timeout = game_tic_limits()["health_gathering"]
+        self.doc = environment_doc(DOC)
+        self.real_time = game_mode() == "asynchronous"
+        self.native_episode_limit = True
+        self.env = make_vizdoom(env_id, frame_skip=frame_skip,
                                    game_tic_limit=episode_timeout, **realtime_options())
         # See tasks/doom_env.py's DoomEnv.__init__ -- same randomized-seed
         # rationale: a fixed seed pins vizdoom's native RNG identically

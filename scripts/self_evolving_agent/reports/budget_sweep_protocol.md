@@ -1,5 +1,37 @@
 # Real-time evaluation protocol (hold-last update)
 
+## Synchronous baseline rerun (September 17)
+
+Use `run_async_campaign.py --baselines-only --game-mode synchronous --gpus 1 --doom-tics 100 --health-tics 1000`
+with a fresh output directory. `SEA_GAME_MODE=synchronous` selects native
+ViZDoom `PLAYER` mode: inference pauses game time, and each completed decision
+advances four tics, or fewer if native death/timeout occurs. This rerun uses
+the user's shortened horizons: 100 tics for Defend the Line and 1,000 for Health
+Gathering (at most 25 and 250 steps). No separate decision cap is applied.
+`--doom-tics` / `--health-tics` propagate through `SEA_DOOM_TIC_LIMIT` /
+`SEA_HEALTH_GATHERING_TIC_LIMIT`; defaults remain 1,000 / 10,000 for other campaigns.
+The game clock retains 35 tics per simulated second, but is
+not paced against wall time. Inference wait/hold-last policy is inapplicable
+while paused. The asynchronous default remains available for existing campaigns.
+
+Retain the seven conditions, pinned BF16 checkpoint, paired seeds, 10 runs ×
+five episodes per environment, and token budgets. Do not pool this campaign
+with asynchronous results. Full reasoning can now consume its complete token
+budget on every step, so wall-clock runtime can be much longer.
+
+`interactivity.csv` and `.md` report **forwards per environment step**: each run
+uses total evaluation `LLM.forward()` calls divided by total completed steps
+across its five episodes; report the mean of these ten ratios with 95% Student-t
+CI. Count prefill and decode calls, excluding warm-up and non-evaluation work.
+Random is zero forwards/step. A run with zero completed steps has an undefined
+ratio and is explicitly excluded from the ratio CI. Episode JSON includes the
+ratio and decision traces include forward counts. This is not the inverse of
+the mean actions/forward ratio. Existing action-efficiency reports are retained.
+
+Validate native clock pausing and exact horizons with `test_synchronous.py`,
+and run `smoke_synchronous.py` with `SEA_GAME_MODE=synchronous` on an authorized
+GPU before launching scored episodes. Warm-up remains outside evaluation.
+
 This replaces the synchronous September 15 campaign. Old results are preserved
 but are not pooled with these experiments.
 
