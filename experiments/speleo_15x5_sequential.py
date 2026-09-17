@@ -1,4 +1,8 @@
-"""Portable RTX benchmark. Prepare once (README.md), then run this file."""
+"""Edit the settings below, then: python /path/to/repo/experiments/speleo_15x5_sequential.py.
+
+Works from any working directory, without installing the runner into either Python.
+For JSON instead: ENGINE_PARAMS = json.loads((HERE / 'engine.json').read_text()).
+"""
 from pathlib import Path
 import sys
 
@@ -10,13 +14,15 @@ from experiment_runner import Runner, RepeatedPipeline, Recorder
 from pipelines.speleo import SpeleoPipeline, RoleParams
 from pipelines.world import SpeleoWorld
 
+
+# All choices belong to this experiment file, not CLI flags or environment variables.
 VENV = REPOSITORY / '.venvs' / 'minisgl'
 MODEL = REPOSITORY / 'models' / 'Qwen3.6-35B-A3B-FP8'
-RESULTS = REPOSITORY / 'results' / 'speleo_15x10_fast_falsifer'
+RESULTS = HERE / 'results' / 'speleo_15x5_sequential'
 GPUS = [0]
 PIPELINES_PER_GPU = 15
 REPEATS = 1
-ACTIONS = 10
+ACTIONS = 5
 MODEL_SEED_START = 0
 WORLD_SEED_START = 0
 DUMP_IMAGES = False
@@ -37,6 +43,7 @@ ENGINE_PARAMS = {
         'cuda_graph_bs': [4, 16, 48, 64], 'cuda_graph_max_bs': 64,
         'shared_cuda_graph_prefill_rows': [256, 1024, 4096],
         'shared_cuda_graph_max_depth': 16,
+        # Engine defaults, not the policy's per-role sampling parameters above.
         'generation_config': {'do_sample': True, 'temperature': .6, 'top_k': 20, 'top_p': .9},
     },
     'adapter_options': {'cpu_threads': 4},
@@ -49,10 +56,14 @@ def make_pipeline(engine, context):
         engine, context=context, max_actions=ACTIONS, role_params=ROLE_PARAMETERS)
 
 
-if __name__ == '__main__':
+def main():
     (Runner(VENV, model_seed_start=MODEL_SEED_START, world_seed_start=WORLD_SEED_START)
         .set_engine_params(ENGINE_PARAMS)
         .set_pipeline(RepeatedPipeline(make_pipeline, repeats=REPEATS))
         .set_concurrency(PIPELINES_PER_GPU)
         .set_results_directory(RESULTS)
         .run(gpus=GPUS))
+
+
+if __name__ == '__main__':
+    main()

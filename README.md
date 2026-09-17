@@ -1,11 +1,13 @@
-# Speleo runner — fast_falsifer
+# Speleo runner — sequential
 
 Одна модель на GPU, несколько параллельных pipeline. Подробное описание API,
 ролей, телеметрии и тестов — [DOCUMENTATION.md](DOCUMENTATION.md).
 
-Текущая стратегия — **V9**: короткие observer/executor/falsifier, без refine;
-planner запускается не чаще раза в 10 действий. Предыдущий Falsifier доступен
-в коммите `d1920dd`, а не через переключатель в текущем коде.
+Текущая стратегия — **pure sequential**: пара картинок → Observer → Planner →
+Falsifier → Executor → выбор действия. Весь эпизод — один растущий контекст,
+без обрезки истории и параллельной генерации ролей. Planner вызывается на шагах
+0, 10, 20…; лимиты ролей — 18/60/18/16 токенов. Между разными pipeline Runner
+по-прежнему допускает параллельную работу.
 
 ## 1. Выбрать движок
 
@@ -79,12 +81,12 @@ Setup не нужно запускать заново перед каждым э
 
 ## 3. Настроить и запустить эксперимент
 
-Откройте `experiments/speleo_15x10_fast_falsifer.py` и проверьте настройки в начале файла:
+Откройте `experiments/speleo_15x10_sequential.py` и проверьте настройки в начале файла:
 
 ```python
 VENV = REPOSITORY / '.venvs' / 'minisgl'  # папка venv, созданная setup
 MODEL = REPOSITORY / 'models' / 'Qwen3.6-35B-A3B-FP8'  # скачанные веса
-RESULTS = REPOSITORY / 'results' / 'speleo_15x10_fast_falsifer'  # новый каталог результатов
+RESULTS = REPOSITORY / 'results' / 'speleo_15x10_sequential'  # новый каталог результатов
 
 GPUS = [0]               # на каких GPU запускать
 PIPELINES_PER_GPU = 15    # сколько pipeline одновременно на каждой GPU
@@ -110,7 +112,7 @@ GIF_ON = False           # не сохранять GIF
 Сохраните файл и запустите на GPU-машине из папки запускалки:
 
 ```bash
-python3 experiments/speleo_15x10_fast_falsifer.py
+python3 experiments/speleo_15x10_sequential.py
 ```
 
 Активировать venv не нужно: Runner сам использует `VENV/bin/python`.
@@ -123,12 +125,12 @@ python3 experiments/speleo_15x10_fast_falsifer.py
 
 ## 4. Забрать результаты
 
-По умолчанию — `results/speleo_15x10_fast_falsifer/`. Summary печатается в терминале и записывается
+По умолчанию — `results/speleo_15x10_sequential/`. Summary печатается в терминале и записывается
 в `analysis/summary.json`: TPS, tokens/action, средние decode/prefill batches,
 выборочное среднее GPU util. Высота и действия сохраняются и без PNG/GIF.
 
 ```bash
-python3 -m experiment_runner.artifacts results/speleo_15x10_fast_falsifer results/speleo_15x10_fast_falsifer.zip
+python3 -m experiment_runner.artifacts results/speleo_15x10_sequential results/speleo_15x10_sequential.zip
 ```
 
 BF16 GDN требует соответствующей ветки/флага, а не просто `dtype='bfloat16'`.

@@ -2,13 +2,13 @@ from pathlib import Path
 
 
 def test_portable_15x10_matches_bench_and_disables_media():
-    from experiments import speleo_15x10_fast_falsifer as run
-    from experiments.speleo_15x5_fast_falsifer import ENGINE_PARAMS
+    from experiments import speleo_15x10_sequential as run
+    from experiments.speleo_15x5_sequential import ENGINE_PARAMS
     assert run.ENGINE_PARAMS == ENGINE_PARAMS
     assert (run.PIPELINES_PER_GPU, run.REPEATS, run.ACTIONS, run.GPUS) == (15, 1, 10, [0])
     assert run.DUMP_IMAGES is False and run.GIF_ON is False
     assert run.VENV == run.REPOSITORY / '.venvs' / 'minisgl'
-    assert run.RESULTS == run.REPOSITORY / 'results' / 'speleo_15x10_fast_falsifer'
+    assert run.RESULTS == run.REPOSITORY / 'results' / 'speleo_15x10_sequential'
     assert run.MODEL_SEED_START == run.WORLD_SEED_START == 0
 
 
@@ -18,7 +18,7 @@ def test_release_has_readme_documentation_and_no_machine_specific_experiments():
     paths = {str(p.relative_to(root)) for p in source_files(root)}
     assert {'README.md', 'DOCUMENTATION.md'} <= paths
     assert 'QUICKSTART.md' not in paths
-    assert 'experiments/speleo_15x10_fast_falsifer.py' in paths
+    assert 'experiments/speleo_15x10_sequential.py' in paths
     assert not any(p.startswith('experiments/rtx_') for p in paths)
 
 
@@ -44,7 +44,7 @@ def test_each_experiment_declares_its_own_parameters():
     for path in (root/'experiments').glob('*.py'):
         if path.name == '__init__.py':
             continue
-        assert path.stem.endswith('_fast_falsifer'), path
+        assert path.stem.endswith('_sequential'), path
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
@@ -64,11 +64,11 @@ def test_historical_layouts_preserved_when_inlining():
     import ast
     root = Path(__file__).resolve().parents[1]/'experiments'
     expected = {
-        'rtx_15x100_cuda_graphs_fast_falsifer': (24576, 1024, [4, 16, 48, 64], [256, 1024], 'fp8', False),
-        'rtx_15x10_24d940f_fast_falsifer': (8192, 4096, [4, 16, 48, 64], [256, 1024, 4096], 'fp8', False),
-        'rtx_15x10_cuda_graphs_fast_falsifer': (8192, 4096, [4, 16, 48, 64], [256, 1024, 4096], 'fp8', False),
-        'rtx_15x10_gdn_bf16_fast_falsifer': (8192, 4096, [4, 16, 48, 64], [256, 1024, 4096], 'fp8', True),
-        'rtx_bf16_1x10_prefill_graphs_fast_falsifer': (8192, 4096, [4], [256, 1024, 4096], None, False),
+        'rtx_15x100_cuda_graphs_sequential': (24576, 1024, [4, 16, 48, 64], [256, 1024], 'fp8', False),
+        'rtx_15x10_24d940f_sequential': (8192, 4096, [4, 16, 48, 64], [256, 1024, 4096], 'fp8', False),
+        'rtx_15x10_cuda_graphs_sequential': (8192, 4096, [4, 16, 48, 64], [256, 1024, 4096], 'fp8', False),
+        'rtx_15x10_gdn_bf16_sequential': (8192, 4096, [4, 16, 48, 64], [256, 1024, 4096], 'fp8', True),
+        'rtx_bf16_1x10_prefill_graphs_sequential': (8192, 4096, [4], [256, 1024, 4096], None, False),
     }
     for name, layout in expected.items():
         tree = ast.parse((root/(name+'.py')).read_text())

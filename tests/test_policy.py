@@ -1,139 +1,214 @@
+"""CPU contract tests for the single append-only conversation (no model mocks run GPU)."""
 import asyncio
-import hashlib
+from collections import Counter
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from experiment_runner import EpisodeContext, Recorder
-from experiment_runner.logs import read_jsonl
 from experiment_runner.blocks import BlockHandle
-from pipelines.speleo import SpeleoPipeline
+from experiment_runner.logs import read_jsonl
+from pipelines.prompts import SPELEO, role_request
+from pipelines.speleo import SpeleoPipeline, ROLE_ORDER, ROLE_PARAMS
 from pipelines.world import Observation
 
 
-class FakeEngine:
-    def __init__(self):
-        self.live_blocks = {}
-        self.common = None
-        self.calls = []
-        self.role_counts = {}
+def test_role_limits_and_sequential_order():
+    assert ROLE_ORDER == ('observer', 'planner', 'falsifier', 'executor')
+    assert {r: (p.budget, p.temperature, p.seed_offset, p.top_k, p.top_p)
+            for r, p in ROLE_PARAMS.items()} == {
+        'observer': (18, .35, 1, 20, .9), 'planner': (60, .65, 2, 20, .9),
+        'falsifier': (18, .45, 4, 20, .9), 'executor': (16, .45, 5, 20, .9)}
 
-    async def cached_prefix(self, text):
-        self.calls.append(('system', text))
-        if self.common is None:
-            self.common = await BlockHandle.create(self, 'shared/system')
-            await self.prefill(text, [], self.common)
-        return self.common.share()
+
+class Engine:
+    def __init__(self, *, fail=None, eos=False):
+        self.common = None
+        self.live = {}
+        self.calls = []
+        self.active = set()
+        self.fail, self.eos = fail, eos
+        self.samples = Counter()
+        self.created = 0
 
     async def create_block(self):
-        block = SimpleNamespace(num_tokens=0)
-        self.live_blocks[id(block)] = block
-        return block
+        raw = SimpleNamespace(num_tokens=0, data=[])
+        self.live[id(raw)] = raw
+        self.created += 1
+        return raw
 
-    async def free_block(self, block):
-        del self.live_blocks[id(block)]
+    async def free_block(self, raw):
+        assert id(raw) not in self.active
+        del self.live[id(raw)]
 
-    async def merge_blocks(self, left, right):
-        self.calls.append(('snapshot', left.num_tokens, right.num_tokens))
-        block = await self.create_block()
-        block.num_tokens = left.num_tokens+right.num_tokens
-        return block
+    async def cached_prefix(self, text):
+        if self.common is None:
+            self.common = await BlockHandle.create(self, 'shared/system')
+            self.common.raw.data.append(('system', text))
+        return self.common.share()
+
+    async def append(self, kind, value, deps, target):
+        raw = target.raw
+        assert [d.raw for d in deps] == [self.common.raw]
+        assert raw is not self.common.raw
+        assert id(raw) not in self.active  # no concurrent role requests per conversation
+        self.active.add(id(raw))
+        try:
+            before = list(raw.data)
+            self.calls.append((kind, value, raw, before, asyncio.current_task()))
+            await asyncio.sleep(0)
+            assert list(raw.data) == before and id(raw) in self.live
+            raw.data.append((kind, value))
+            raw.num_tokens += 1
+        finally:
+            self.active.remove(id(raw))
 
     async def prefill(self, text, deps, target):
-        self.calls.append(('prefill', text, [b.name for b in deps], target.name))
-        target.raw.num_tokens += len(text)
-        await asyncio.sleep(0)
-        return None
-
-    async def decode(self, token, deps, target):
-        target.raw.num_tokens += 1
-        await asyncio.sleep(0)
-        return None
+        role = next((r for r in ROLE_ORDER if f'Role: {r.upper()}.' in text), None)
+        if self.fail is not None and (self.fail == role or
+                (self.fail == 'readout' and 'choose the actual next action' in text)):
+            raise RuntimeError(self.fail)
+        await self.append('text', text, deps, target)
 
     async def prefill_messages(self, messages, deps, target):
-        content = messages[0]['content']
-        self.calls.append(('images', content[0]['text'], [int(item['image'][0, 0, 0]) for item in content[1:]]))
-        target.raw.num_tokens += 2
-        await asyncio.sleep(0)
+        if self.fail == 'images':
+            raise RuntimeError('images')
+        contents = messages[0]['content']
+        value = (contents[0]['text'], [int(x['image'][0, 0, 0]) for x in contents[1:]])
+        await self.append('images', value, deps, target)
+
+    async def decode(self, token, deps, target):
+        await self.append('token', token, deps, target)
 
     def new_generator(self, seed):
         return seed
 
-    def encode(self, text):
-        from pipelines.prompts import SPELEO
-        return [[name for name, _ in SPELEO.actions].index(text)]
-
     def sample(self, output, *, generator, temperature, top_k, top_p):
         role = {1: 'observer', 2: 'planner', 4: 'falsifier', 5: 'executor'}[generator % 1_000_003]
-        self.calls.append(('sampling', role, temperature, top_k, top_p))
-        self.role_counts[generator] = self.role_counts.get(generator, 0) + 1
-        n = self.role_counts[generator]
-        # Short real role streams; exercise EOS before wait_tokens(4).
-        return n, ' REPLAN' if role == 'executor' else ' evidence', n % 3 == 0
+        self.samples[role] += 1
+        return generator, role+' answer ', self.eos
 
-    def score_tokens(self, output, token_ids):
-        return [float(i == 0) for i in range(len(token_ids))]
+    def encode(self, text):
+        return [[name for name, _ in SPELEO.actions].index(text)]
+
+    def score_tokens(self, output, ids):
+        assert ids == list(range(7))
+        return [1., 0., 0., 0., 0., 0., 0.]
 
 
-class FakeWorld:
-    closed = False
-    def __init__(self, fail=False):
-        self.i = 0
-        self.fail = fail
+class World:
+    def __init__(self, *, fail=False, done_after=None):
+        self.i, self.closed = 0, False
+        self.fail, self.done_after = fail, done_after
 
     async def reset(self):
         return Observation(np.zeros((2, 2, 3), dtype=np.uint8), info={'player_pos': [99, 10, 99]})
 
     async def pass_action(self, action):
-        if self.fail:
-            raise RuntimeError('world failed')
         assert action == 0
+        if self.fail:
+            raise RuntimeError('world')
         self.i += 1
-        return Observation(np.full((2, 2, 3), self.i, dtype=np.uint8), float(self.i), False,
-                           {'player_pos': [99, 10-self.i, 99]})
+        return Observation(np.full((2, 2, 3), self.i, dtype=np.uint8), float(self.i),
+            self.i == self.done_after, {'player_pos': [99, 10-self.i, 99]})
 
     async def aclose(self):
         self.closed = True
 
 
-@pytest.mark.parametrize('fail', [False, True])
-def test_policy_feedback_frames_drain_and_ownership(tmp_path, fail):
-    engine, world = FakeEngine(), FakeWorld(fail)
-    context = EpisodeContext('test', 0, 0, tmp_path, 0, 0, 0)
+def pipeline(tmp_path, engine, world, **kwargs):
+    return SpeleoPipeline(world, Recorder(tmp_path), engine,
+        context=EpisodeContext('test', 7, 9, tmp_path, 3, 0, 0), **kwargs)
+
+
+@pytest.mark.parametrize('eos', [False, True])
+def test_order_whole_history_and_chosen_actions_are_retained(tmp_path, eos):
+    engine, world = Engine(eos=eos), World()
+    p = pipeline(tmp_path, engine, world, max_actions=3)
+    asyncio.run(p.run())
+    # One shared system block, exactly one private conversation; no per-role
+    # allocations, snapshots, merges, recent-history truncation or rolling images.
+    assert engine.created == 2
+    assert len({id(c[2]) for c in engine.calls}) == 1
+    assert len({id(c[4]) for c in engine.calls}) == 1
+    transcript = engine.calls[-1][2].data
+    assert all(c[3] == transcript[:i] for i, c in enumerate(engine.calls))
+    role_calls = [c for c in engine.calls if c[0] == 'text' and c[1].startswith(('<|im_start|>user\nRole:', '<|im_end|>\n<|im_start|>user\nRole:'))]
+    expected = [(step, role) for step in range(3) for role in ROLE_ORDER
+                if role != 'planner' or step % 10 == 0]
+    assert [r for c in role_calls for r in ROLE_ORDER if f'Role: {r.upper()}.' in c[1]] == [r for _, r in expected]
+    for call, (step, role) in zip(role_calls, expected):
+        assert call[1] == role_request(role, step,
+            'none' if step == 0 else 'wait', close_previous=role != 'observer')
+    images = [c for c in engine.calls if c[0] == 'images']
+    assert [c[1][1] for c in images] == [[0, 0], [0, 1], [1, 2]]
+    assert '"reward": 1.0' in images[1][1][0]
+    assert '"reward": 2.0' in images[2][1][0]
+    for call in images[1:]:
+        assert call[3][-2:] == [('token', 0), ('text', '<|im_end|>\n')]
+        assert any(kind == 'images' and value[1] == [0, 0] for kind, value in call[3])
+    assert engine.samples == {r: (1 if r == 'planner' else 3)*(1 if eos else p.budget)
+                              for r, p in ROLE_PARAMS.items()}
+    rows = list(read_jsonl(tmp_path/'events.jsonl'))
+    assert [r['role'] for r in rows if r['kind'] == 'stream'] == [r for _, r in expected]
+    assert len([r for r in rows if r['kind'] == 'decision']) == 3
+    assert [r['feedback'] for r in rows if r['kind'] == 'event'] == [None,
+        {'reward': 1., 'episode_done': False}, {'reward': 2., 'episode_done': False}]
+    assert all('player_pos' not in c[1] for c in engine.calls if c[0] == 'text')
+    assert world.closed and p.history is p.common is None
+    assert list(engine.live.values()) == [engine.common.raw]
+    assert json.loads((tmp_path/'completion.json').read_text())['status'] == 'completed'
+
+
+@pytest.mark.parametrize('failure', ['images', *ROLE_ORDER, 'readout', 'world'])
+def test_failure_releases_conversation(tmp_path, failure):
+    engine, world = Engine(fail=failure), World(fail=failure == 'world')
+    p = pipeline(tmp_path, engine, world, max_actions=2)
+    with pytest.raises(RuntimeError, match=failure):
+        asyncio.run(p.run())
+    assert world.closed and not engine.active
+    assert list(engine.live.values()) == [engine.common.raw]
+    assert json.loads((tmp_path/'completion.json').read_text())['status'] == 'failed'
+
+
+def test_two_episodes_share_model_not_conversations(tmp_path):
     async def run():
-        recorder = Recorder(tmp_path)
-        pipeline = SpeleoPipeline(world, recorder, engine, context=context, max_actions=2)
-        await pipeline.run()
-    if fail:
-        with pytest.raises(RuntimeError, match='world failed'):
-            asyncio.run(run())
-    else:
-        asyncio.run(run())
-    assert world.closed
-    assert list(engine.live_blocks.values()) == [engine.common.raw]
-    result = json.loads((tmp_path/'completion.json').read_text())
-    assert result['status'] == ('failed' if fail else 'completed')
-    events = list(read_jsonl(tmp_path/'events.jsonl'))
-    decisions = [e for e in events if e['kind'] == 'decision']
-    # A readout is recorded even when World subsequently fails to execute it.
-    assert len(decisions) == (1 if fail else 2)
-    assert all(e['action'] == 'wait' for e in decisions)
-    if not fail:
-        history = [e for e in events if e['kind'] == 'event']
-        assert history[0]['feedback'] is None
-        assert history[1]['feedback'] == {'reward': 1., 'episode_done': False}
-        assert history[1]['after_action'] == 'wait'
-        assert [c for c in engine.calls if c[0] == 'images'] == [
-            ('images', 'Observation 0. Last action: none. First image previous; second image current.', [0, 0]),
-            ('images', 'Observation 1. Last action: wait. First image previous; second image current.', [0, 1])]
-        assert any(c[0] == 'snapshot' for c in engine.calls)
-        assert {e['role'] for e in events if e['kind'] == 'stream'} == {
-            'observer', 'planner', 'executor', 'falsifier'}
-        for call in engine.calls:
-            if call[0] == 'prefill':
-                assert 'player_pos' not in call[1]
-                assert '[99,' not in call[1]
-        assert [r['height'] for r in read_jsonl(tmp_path/'steps.jsonl')] == [10., 9., 8.]
+        engine = Engine(eos=True)
+        ps = []
+        for i in range(2):
+            out = tmp_path/str(i)
+            ps.append(SpeleoPipeline(World(done_after=2), Recorder(out), engine,
+                context=EpisodeContext(str(i), i, i, out, i, 0, 0), max_actions=5))
+        await asyncio.gather(*(p.run() for p in ps))
+        assert engine.created == 3
+        assert len({id(c[2]) for c in engine.calls}) == 2
+        assert all(p.world.i == 2 and p.world.closed for p in ps)
+        assert list(engine.live.values()) == [engine.common.raw]
+    asyncio.run(run())
+
+
+def test_stop_waits_for_complete_action_without_starting_another(tmp_path):
+    engine, world = Engine(eos=True), World()
+    p = pipeline(tmp_path, engine, world, max_actions=5)
+    p.stop_requested = lambda: world.i >= 1
+    asyncio.run(p.run())
+    assert world.i == 1 and world.closed
+    assert engine.samples == dict.fromkeys(ROLE_ORDER, 1)
+    assert list(engine.live.values()) == [engine.common.raw]
+    assert json.loads((tmp_path/'completion.json').read_text())['status'] == 'stopped'
+
+
+@pytest.mark.parametrize('eos', [False, True])
+def test_planner_cadence_including_empty_answers(tmp_path, eos):
+    engine, world = Engine(eos=eos), World()
+    p = pipeline(tmp_path, engine, world, max_actions=21)
+    asyncio.run(p.run())
+    rows = list(read_jsonl(tmp_path/'events.jsonl'))
+    assert [r['observation'] for r in rows if r['kind'] == 'stream' and r['role'] == 'planner'] == [0, 10, 20]
+    decisions = [r for r in rows if r['kind'] == 'decision']
+    assert [r['observation'] for r in decisions if r['new_planner_started']] == [0, 10, 20]
+    assert [r['published_plan_based_on'] for r in decisions] == (
+        [-1]*21 if eos else [0]*10 + [10]*10 + [20])
+    assert engine.samples['planner'] == 3*(1 if eos else 60)

@@ -1,4 +1,4 @@
-# Portable Speleo runner — fast_falsifer
+# Portable Speleo runner — sequential
 
 **Короткая инструкция установки и запуска 15×10: [README.md](README.md).**
 
@@ -11,10 +11,10 @@ parameter-heavy launcher CLI. Runner/pipeline sources are read from this checkou
 they do not need to be installed in either the launching Python or the engine venv.
 
 ```text
-experiments/speleo_15x5_fast_falsifer.py  # edit venv, model/config, GPUs, repeats, output path here
+experiments/speleo_15x5_sequential.py  # edit venv, model/config, GPUs, repeats, output path here
 experiment_runner/        # execution and telemetry infrastructure
 environment/              # explicit setup, dependency and Qwen/Craftium checks
-pipelines/speleo.py        # role coroutines, token loop and all their communication
+pipelines/speleo.py        # sequential roles and one append-only conversation
 pipelines/prompts.py       # prompt text; no scheduling
 pipelines/world.py         # async environment transport
 tools/                    # optional checks, plotting and release packaging
@@ -73,12 +73,12 @@ revision must not be treated as exactly matched controls.
 
 ## Run
 
-Open `experiments/speleo_15x5_fast_falsifer.py` and edit its settings:
+Open `experiments/speleo_15x5_sequential.py` and edit its settings:
 
 ```python
 VENV = Path('/path/to/engine-venv')
 MODEL = Path('/path/to/Qwen3.6-35B-A3B-FP8')
-RESULTS = HERE / 'results' / 'experiment-001_fast_falsifer'
+RESULTS = HERE / 'results' / 'experiment-001_sequential'
 GPUS = [0, 1]
 PIPELINES_PER_GPU = 15
 REPEATS = 3
@@ -89,7 +89,7 @@ ACTIONS = 5
 Then run the file, from any working directory:
 
 ```bash
-python /path/to/repo/experiments/speleo_15x5_fast_falsifer.py
+python /path/to/repo/experiments/speleo_15x5_sequential.py
 ```
 
 The launching Python only needs the standard library. The file adds its own source
@@ -123,7 +123,7 @@ assignment. JSON is optional: parse it yourself and pass a dict. Values must be
 serializable; use strings for paths and dtypes. Prefer absolute model paths.
 Unknown engine/adapter parameters fail, not silently change the run.
 
-`experiments/speleo_15x5_fast_falsifer.py` contains the fast validated layout: KV page
+`experiments/speleo_15x5_sequential.py` contains the fast validated layout: KV page
 size 16, 8192 pages, max sequence 32768, decode profiles 4/16/48/64, prefill profiles
 256/1024/4096, prefill cap 4096, depth 16. Attention workspace is managed by the
 engine's existing backend; this runner does not override it. This is **FP8 weights
@@ -137,12 +137,12 @@ an explicitly sized config and memory check; no automatic resizing/fallback.
 его, не затрагивая другие запуски:
 
 ```bash
-cp experiments/speleo_15x10_fast_falsifer.py experiments/my_run_fast_falsifer.py
+cp experiments/speleo_15x10_sequential.py experiments/my_run_sequential.py
 ```
 
-Все настройки ниже редактируются **в `experiments/my_run_fast_falsifer.py`**. Они не импортируются
+Все настройки ниже редактируются **в `experiments/my_run_sequential.py`**. Они не импортируются
 из другого эксперимента. Файлы `rtx_*.py` — исторические контроли; для нового
-эксперимента начните со `speleo_15x10_fast_falsifer.py`, а не с них.
+эксперимента начните со `speleo_15x10_sequential.py`, а не с них.
 
 ### Пути, GPU и объём эксперимента
 
@@ -153,7 +153,7 @@ cp experiments/speleo_15x10_fast_falsifer.py experiments/my_run_fast_falsifer.py
 ```python
 VENV = REPOSITORY / '.venvs' / 'minisgl'
 MODEL = REPOSITORY / 'models' / 'Qwen3.6-35B-A3B-FP8'
-RESULTS = REPOSITORY / 'results' / 'my-run-5x10-repeat2_fast_falsifer'
+RESULTS = REPOSITORY / 'results' / 'my-run-5x10-repeat2_sequential'
 
 GPUS = [0]
 PIPELINES_PER_GPU = 5
@@ -227,17 +227,18 @@ GIF_ON = False
 | Ключ | Работа роли | Budget по умолчанию |
 |---|---|---:|
 | `observer` | Коротко описывает наблюдения | 18 |
-| `planner` | Строит план, не чаще раза в 10 действий | 60 |
+| `planner` | Строит план на шагах 0, 10, 20… | 60 |
 | `executor` | Формулирует намерение и решающее свидетельство | 16 |
-| `falsifier` | Проверяет намерение на каждом действии | 18 |
+| `falsifier` | Проверяет план перед executor | 18 |
 
-Отдельного refine нет. Executor стартует после одного видимого токена observer,
-falsifier — после четырёх токенов ещё работающего executor (или его раннего EOS).
-Action-readout ждёт завершения executor и falsifier. Planner может продолжать
-генерацию между действиями. Интервал считается от старта предыдущего planner,
-даже если тот вернул пустой ответ; `REPLAN` не обходит лимит.
-Максимум за 100 действий — 5800 токенов ролей плюс 100 action-readout;
-исторически получалось около 55 токенов/действие с учётом readout.
+Каждая роль полностью заканчивает генерацию перед началом следующей:
+Observer → Planner → Falsifier → Executor. Отдельного refine нет.
+Бюджеты и частота Planner сохранены из V9: за 100 действий не более 5800 токенов
+ролей плюс 100 action-readout. Planner полностью заканчивает ответ в своём шаге;
+на промежуточных шагах его последний план уже находится в общем контексте.
+Интервал задаётся аргументом `planner_interval=10` у `SpeleoPipeline`; пустой
+ответ и REPLAN не вызывают внеочередного planner. Промпты и изображения в этот
+счёт выходных токенов не входят.
 Seed роли: `1_000_003 * (context.model_seed + 1) + seed_offset`, как в V9;
 offsets observer/planner/executor/falsifier — 1/2/5/4, температуры — .35/.65/.45/.45.
 
@@ -262,12 +263,12 @@ if __name__ == '__main__':
 Сохраните файл и запустите **на GPU-машине**:
 
 ```bash
-python3 experiments/my_run_fast_falsifer.py
+python3 experiments/my_run_sequential.py
 ```
 
 Venv активировать не нужно. Запускающий Python использует стандартную библиотеку;
 процесс каждой модели запускается через выбранный `VENV/bin/python`.
-Для исходного примера без изменений команда — `python3 experiments/speleo_15x10_fast_falsifer.py`.
+Для исходного примера без изменений команда — `python3 experiments/speleo_15x10_sequential.py`.
 Не меняйте файл эксперимента во время выполнения: worker перечитывает тот же файл.
 
 Первый запуск может компилировать FlashInfer и захватывать CUDA Graphs.
@@ -289,66 +290,49 @@ recreates it inside each worker; it is not serialized. Keep launch code in
 the `if __name__ == '__main__'` guard. The model-facing adapter lives in
 `experiment_runner/engine.py`; it has no role names, temperatures or game rules.
 
-### The coroutine protocol is one file: `pipelines/speleo.py`
+### One append-only conversation: `pipelines/speleo.py`
 
-There are four persistent role tasks per episode:
+Each episode has one immutable system prefix (shared by the engine) and one
+private growing conversation block. The prefix plus that block form one logical
+sequence; there are no independent role branches, snapshots or recent-history
+windows. The conversation is kept until the episode ends.
 
-- `observer` receives previous/current frames and the last action, prepares the image
-  KV block, chooses its input chain and generates a live description.
-- `planner` owns the ten-action start interval, freezes history, chooses its live inputs,
-  and publishes completed plans at action boundaries. The executor reports observations;
-  it does not construct planner prompts or decide when a plan is stale.
-- `falsifier` receives the growing intention and evidence on every action,
-  builds its own read chain and generates objections.
-- `executor` drives the episode, generates one intention without a refine stage,
-  selects an action and calls `await world.pass_action(...)`.
+For every action, a single coroutine awaits these operations in order:
 
-`generate_tokens()` is the shared model-IO loop:
-prefill its instruction block, sample one token, append through decode to its KV tail,
-then notify readers. A `Generation` carries the input block chain, instruction block,
-growing output block, text and completion/token notifications. The executor passes
-these live KV blocks to other roles rather than copying partially generated text.
-Observer and falsifier await this loop directly. Executor owns an `executor/tokens`
-child task so it can submit the falsifier after four tokens while continuing generation;
-it drains that child even on failure. Planner owns one `planner/tokens` child task:
-a long generation must not prevent its controller
-from acknowledging later observations. It starts no second generation until the
-first is finished/published, and drains its child before shutdown. This is local
-policy concurrency, not a second scheduler or a new engine abstraction.
+1. Append a user message with the previous/current image pair, previous action,
+   and feedback from that action. At reset both images are identical.
+2. Append the Observer prompt and its generated tokens (budget 18).
+3. On steps 0, 10, 20… append the Planner prompt and its generated tokens (budget 60).
+   Otherwise skip this role: previous plans already remain in the conversation.
+4. Append the Falsifier prompt and its generated tokens (budget 18). It critiques
+   the plan, since the current Executor has not spoken yet.
+5. Append the Executor prompt and its generated tokens (budget 16).
+6. Append the action question, choose argmax among the seven action tokens, append
+   the actual selected token and close the assistant turn.
+7. Await World and record its response. Next action continues the same conversation.
 
-All queues, waits, read/write chains, planner publication, REPLAN decisions and
-environment steps are visible in that file. Waiting for one observer token and
-four executor tokens exposes live KV tails; planner can span environment actions.
-The action query reads the executor blocks, then falsifier blocks, exactly once.
+All old images, prompts, role answers and selected actions remain in KV. No replay
+of the whole text or automatic truncation is used. `max_prefill_rows` may chunk
+new input without deleting old context; the engine's capacity limits still apply.
+Long episodes need an appropriately sized KV pool/context capacity: this policy
+does not silently trim history to avoid OOM.
 
-The policy has `ROLE_PARAMS` defaults for direct use. Each supplied experiment
-declares its own complete `ROLE_PARAMETERS` (budgets, temperatures, top-k/top-p,
-seed offsets) and passes `role_params=...`; it imports neither another experiment's
-config nor the policy's default dict. Engine sampling
-receives explicit parameters and an RNG, with no role lookup. Token scoring is a
-generic engine operation; action names and argmax selection belong to the executor.
-`BlockHandle` in `experiment_runner/blocks.py` owns a native engine block.
-Each consumer acquires its own handle with `share()` and releases it with
-`await handle.aclose()` (or `async with`). Closing the last handle calls the engine's
-normal `free_block`; there is no separate pool, allocator or block registry.
-Closing a handle twice is harmless; reading/sharing a closed handle is an error.
-Snapshot uses the native merge operation. Cached system prefixes have one engine
-owner plus an independent handle per episode. All handles must be closed before
-engine shutdown; Python assignment is only an alias, not an ownership acquisition.
-We do not call asynchronous GPU cleanup from a Python destructor.
-The old orchestration classes `Client`/`Stream` and `pipelines/core.py` are removed.
+There are no role tasks, queues, partial-answer waits or refine stage.
+Planner uses the fixed ten-action interval, also after an empty answer.
+`async def` is retained for the engine/World
+API, but each pipeline has at most one pending model call. Different pipeline
+episodes can still run concurrently and be batched by the unchanged Runner/engine.
 
-World returns an Observation from `await reset()` / `await pass_action(action)`.
-The unmodified Craftium bridge can hold the GIL, so World uses a spawned helper
-process and async IPC. Images are owned snapshots. Native rendering uses software
-Mesa with two rendering threads and an Xvfb display when no DISPLAY is provided.
-Position is logged for evaluation, **not added to model prompts**.
+Generation stops at the budget or EOS/chat-boundary token. Terminal tokens are
+counted by telemetry but not inserted into the dialogue; the next role prompt
+closes the preceding assistant turn. After action readout, the chosen action is
+explicitly decoded into the cache (scoring logits alone does not store it).
 
-Prompts and policy rules come from `shared_control_t60_v9`, whose preserved BF16
-7×100 repeat reached mean final height -13.6276 at 54.97 tokens/action. The original
-Pool/Client were not copied: this port reuses the existing BlockHandle/Runner.
-World, engine adapter and telemetry are unchanged. Async transport and engine
-batching can change interleaving; that historical score is not a new quality result.
+`BlockHandle` still owns the prefix reference and private conversation. Both are
+released on completion or failure; there is no per-step freeing of the history.
+World still uses its subprocess/async IPC transport and Recorder keeps the same
+logs/media API. Position is evaluation-only; the model receives images, previous
+action and public reward/done feedback. Each repeat starts a fresh world/conversation.
 
 ## Telemetry and optional media
 
@@ -379,7 +363,7 @@ relative to reset. Packing never removes source results. Partial results require
 Metrics explicitly distinguish:
 
 * Generated TPS: sampled **role** tokens, including terminal tokens, divided by
-  full workload wall time, including the first action and background role drain.
+  full workload wall time, including the first action and conversation cleanup.
 * Tokens/action: the same role-token count / completed actions, an amortized cost.
 * Mean decode batch: active workers per actual decode-forward, excluding padding.
 * Mean prefill batch: both active requests and new token rows per prefill-forward.
@@ -405,50 +389,17 @@ to split their internal timings.
 
 ## Validation status
 
-CPU tests cover independent repeats, seed
-assignment, event-loop-safe recording, all media switches, feedback order and block
-cleanup, fail-fast, arithmetic of overlapping episodes, plotting data, result packing,
-and Setup ordering/download error handling.
-Run them with `python -m pytest tests -q` in a test environment with NumPy/Pillow.
-`tools.check_world` and `tools.small_check` retain the previous integration checks.
-On the previous Falsifier strategy, before the experiment-file layout refactor,
-they passed native reset/step and a real Qwen3.5-0.8B FP8 run on GB10:
-2 slots × 2 repeats × 2 actions, one engine load, all 8 actions completed, role
-and engine token counts reconciled, PNG/GIF switches exercised. Setup completed
-in an isolated venv with the pinned native Craftium build.
+Run `python -m pytest tests -q` with the test dependency group (CPU only).
+Policy tests verify exact Image → Observer → Planner → Falsifier → Executor →
+action order, one growing private block, retention of earlier images/answers,
+chosen action tokens and chat delimiters, planner cadence (also after empty answers), early EOS, failure cleanup, independent
+episode conversations and unchanged per-role budgets. Infrastructure tests cover
+Runner repeats/seeds, BlockHandle ownership, Recorder/media, Summary and packaging.
 
-Historical **previous Falsifier**, not this V9 port, measurement (including the old 2 GiB workspace override), with
-real Qwen3.6-35B-A3B FP8 on RTX PRO6000,15pipelines ×5actions:
-
-| Metric | New runner | Original portable control |
-| --- | ---: | ---: |
-| Actions completed |75|75|
-| Full workload seconds |42.507|48.263|
-| Role tokens/sec |222.03|198.70|
-| Tokens/sec including action readouts (old numerator) |223.80|200.26|
-| Mean decode batch |28.16|29.07|
-| Mean prefill requests |6.75|9.86|
-| Mean new prefill rows |422.08|511.10|
-
-Same engine commit70942c4, checkpoint revision, layout and assigned role seeds;
-no profiler and no first-action exclusion. This is a single paired experiment,
-not a statistical speed guarantee. The old control writes PNGs and steps worlds
-synchronously; new runner uses async World/Recorder with media disabled. Scheduling
-and initial-world readiness differ. Prompts and role/core logic are preserved,
-not bit-identical trajectories. Native imports passed; no OOM; all229result files
-were downloaded and SHA256-verified before releasing the GPU. Real multi-GPU
-execution was not available; GPU assignment/repeat scheduling are covered by CPU tests.
-
-The stock-workspace/coroutine path was subsequently measured with 07-cuda-graphs
-on RTX PRO6000, FP8 A3B weights, 15×10: 191.6 role tokens/s, 97.0 seconds, 150 actions.
-This is a separate single-run reference, not a matched ablation of the table above.
-
-Current V9 CPU tests control live one/four-token waits, planner spanning actions
-with an unchanged history snapshot, failure cleanup and independent episode RNGs.
-Golden prompt-payload hashes were computed from the preserved V9, not the prior
-Falsifier. A 100-action fake-model test checks budgets, planner starts (also for
-EOS-only plans), exact readout block order, and historical RNG mapping. No GPU
-throughput or inference-quality claim is made for this port before a GPU run.
+The sequential policy has not yet been benchmarked or quality-tested on a GPU.
+Historical async V9/Falsifier scores and TPS describe their old revisions, not
+this sequential strategy. `tools.check_world` and `tools.small_check` remain
+available for the next native/GPU integration check.
 
 ## Release tools
 

@@ -1,14 +1,15 @@
-"""Main + prefill split-KV opt-out; original 128MiB workspace, BF16 weights."""
+"""Same current policy on pre-FP8 main/01-infra; select code, not hidden patches."""
 import argparse
 from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT.parent
-p = argparse.ArgumentParser()
-p.add_argument('--pipelines', type=int, choices=[1, 5, 7, 15], required=True)
-args = p.parse_args()
-sys.path[:0] = [str(ROOT), str(DEPLOY/'engine-main-no-split'/'python')]
+parser = argparse.ArgumentParser()
+parser.add_argument('--revision', choices=['main', 'infra'], required=True)
+parser.add_argument('--pipelines', type=int, choices=[1, 7, 15], required=True)
+args = parser.parse_args()
+sys.path[:0] = [str(ROOT), str(DEPLOY / f'engine-{args.revision}' / 'python')]
 
 from experiment_runner import Runner, RepeatedPipeline, Recorder
 from pipelines.speleo import SpeleoPipeline, RoleParams
@@ -18,8 +19,8 @@ PARAMS = {'engine_config': {
     'model_path': '/home/lordvoldebug_2/models/Qwen3.6-35B-A3B',
     'dtype': 'bfloat16', 'max_running_req': 64, 'memory_ratio': .9,
     'page_size': 16, 'num_page_override': 8192, 'max_seq_len_override': 32768,
-    'attention_backend': 'fi', 'max_prefill_rows': 4096, 'cuda_graph_max_bs': 0,
-    'shared_prefill_disable_split_kv': True,
+    'attention_backend': 'fi', 'max_prefill_rows': 4096,
+    'cuda_graph_max_bs': 0,
     'generation_config': {'do_sample': True, 'temperature': .6, 'top_k': 20, 'top_p': .9},
 }, 'adapter_options': {'cpu_threads': 4}}
 
@@ -42,5 +43,5 @@ if __name__ == '__main__':
         .set_engine_params(PARAMS)
         .set_pipeline(RepeatedPipeline(make_pipeline, repeats=1))
         .set_concurrency(args.pipelines)
-        .set_results_directory(DEPLOY/f'main-no-split-{args.pipelines}x10_fast_falsifer')
+        .set_results_directory(DEPLOY / f'{args.revision}-{args.pipelines}x10_sequential')
         .run(gpus=[0]))

@@ -1,4 +1,4 @@
-"""RTX 15x10: current pipeline, cuda_graphs_minimal/07-cuda-graphs (FP32 GDN)."""
+"""RTX control: current role-owned pipeline, exact minimal engine 24d940f."""
 from pathlib import Path
 import sys
 
@@ -45,5 +45,5 @@ if __name__ == '__main__':
         .set_engine_params(PARAMS)
         .set_pipeline(RepeatedPipeline(make_pipeline, repeats=1))
         .set_concurrency(15)
-        .set_results_directory(DEPLOY / 'results-15x10_fast_falsifer')
+        .set_results_directory(DEPLOY / 'results-15x10_sequential')
         .run(gpus=[0]))
