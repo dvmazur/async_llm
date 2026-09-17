@@ -24,6 +24,8 @@ class Engine:
         on_token: Optional[Callable[[str], None]] = None,
     ) -> str:
         llm = self.llm
+        from generation_prompt import revision_prompt, revision_completion
+        prompt = revision_prompt(llm, prompt)
         input_ids = llm.tokenizer(prompt, return_tensors="pt", add_special_tokens=False).input_ids
         # llm.tokenizer.eos_token_id is often just one id, but the model's
         # real generation_config.eos_token_id can list several (this model
@@ -32,7 +34,7 @@ class Engine:
         # tokenizer's single id misses a real stop signal and lets decoding
         # run away past your own turn.
         eos_ids = {llm.tokenizer.eos_token_id}
-        gen_cfg = getattr(getattr(getattr(llm, "engine", None), "config", None), "generation_config", None)
+        gen_cfg = getattr(llm.config, "generation_config", None)
         gen_eos = getattr(gen_cfg, "eos_token_id", None)
         if isinstance(gen_eos, int):
             eos_ids.add(gen_eos)
@@ -50,7 +52,7 @@ class Engine:
                 if int(new_token_id) in eos_ids:
                     break
                 new_token_id = await llm.sample(await llm(new_token_id.view(1), cache_view=[block]))
-            return llm.tokenizer.decode(tokens, skip_special_tokens=True)
+            return revision_completion(prompt, llm.tokenizer.decode(tokens, skip_special_tokens=False))
         finally:
             await llm.free_block(block)
 

@@ -79,7 +79,7 @@ def eos_ids(llm: "AsyncLLM") -> set[int]:
     the latter can list several ids the former misses, letting decoding run
     away if only one is checked."""
     ids = {llm.tokenizer.eos_token_id}
-    gen_cfg = getattr(getattr(getattr(llm, "engine", None), "config", None), "generation_config", None)
+    gen_cfg = getattr(llm.config, "generation_config", None)
     gen_eos = getattr(gen_cfg, "eos_token_id", None)
     if isinstance(gen_eos, int):
         ids.add(gen_eos)
@@ -325,35 +325,20 @@ async def bootstrap_generate(
     reuse_prompt: Optional[str] = None,
     step: Optional[int] = None,
 ) -> str:
-    """Fixed fallback mirroring the seed engine.py's generate(), used when
-    the current engine.py won't construct or the previous round crashed/
-    repeated. With `history`, the cache block persists across calls so
-    reused calls only prefill `reuse_prompt` (see build_env_turn) against
-    the existing KV; growth capped by HISTORY_BLOCK_MAX_TOKENS (see
-    STUCK_NOTE for the regurgitation risk beyond that)."""
-    owns_block = history is None
-    reused = False
+    """Recover with a fresh, correctly framed chat turn and temporary cache.
+
+    Accept the legacy history argument to safely release any old recovery cache;
+    failed completions are never used as the prefix of another recovery attempt.
+    """
+    # Recovery must not append a new request to the failed assistant's cache:
+    # that repeatedly produced immediate EOS instead of a new response.
+    from generation_prompt import revision_prompt, revision_completion
     if history is not None and history.block is not None:
-        candidate_text = reuse_prompt if reuse_prompt is not None else prompt
-        candidate_ids = llm.tokenizer(
-            candidate_text, return_tensors="pt", add_special_tokens=False).input_ids
-        projected = history.block.num_tokens + candidate_ids.shape[-1] + max_new_tokens
-        if projected <= HISTORY_BLOCK_MAX_TOKENS:
-            reused = True
-            text = candidate_text
-        else:
-            logger.warning(
-                "history block reset: existing=%d + new=%d + budget=%d = %d tokens would exceed "
-                "%d -- freeing, this call starts fresh (step=%s)",
-                history.block.num_tokens, candidate_ids.shape[-1], max_new_tokens, projected,
-                HISTORY_BLOCK_MAX_TOKENS, step)
-            await llm.free_block(history.block)
-            history.block = None
-    if history is not None and history.block is None:
-        history.block = await llm.create_block()
-    if not reused:
-        text = prompt
-    block = history.block if history is not None else await llm.create_block()
+        await llm.free_block(history.block)
+        history.block = None
+    owns_block, reused = True, False
+    text = revision_prompt(llm, prompt)
+    block = await llm.create_block()
 
     input_ids = llm.tokenizer(text, return_tensors="pt", add_special_tokens=False).input_ids
     ids = eos_ids(llm)
@@ -374,7 +359,7 @@ async def bootstrap_generate(
             "bootstrap_generate step=%s stop=%s tokens=%d/%d block=%s(num_tokens=%d)",
             step, stop_reason, len(tokens), max_new_tokens,
             "reused" if reused else "fresh", block.num_tokens)
-        return llm.tokenizer.decode(tokens, skip_special_tokens=True)
+        return revision_completion(text, llm.tokenizer.decode(tokens, skip_special_tokens=False))
     finally:
         if owns_block:
             await llm.free_block(block)
@@ -445,7 +430,7 @@ class SelfEvolvingAgent:
             # keeps re-selecting itself with no working "brain" left to fix it.
             engine_generate = getattr(self.env.engine, "generate", None)
             use_fallback = not callable(engine_generate) or bool(
-                last_result and (last_result.get("crash") or last_result.get("repeated")))
+                last_result and (last_result.get("crash") or last_result.get("repeated") or last_result.get("empty_completion")))
             generate = (
                 partial(
                     bootstrap_generate, self.env.llm, history=self._history,
@@ -511,7 +496,7 @@ class SelfEvolvingAgent:
 
         result: dict[str, Any] = {
             "tool_results": [], "source": self.env.screen, "fatal": False, "repeated": repeated,
-            "near_budget": near_budget}
+            "near_budget": near_budget, "empty_completion": not strip_think(completion).strip()}
 
         def on_result(r: dict[str, Any]) -> None:
             # Fires as each tool call finishes, not after the round returns

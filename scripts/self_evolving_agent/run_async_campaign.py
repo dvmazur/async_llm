@@ -130,7 +130,7 @@ def baseline_worker(root, gpu, plans):
             raise RuntimeError(f"Incomplete baseline: {out}")
 
 
-def main(root, gpus, adoptions, baselines_only=False):
+def main(root, gpus, adoptions, baselines_only=False, evolution_only=False):
     root.mkdir(parents=True, exist_ok=True)
     with file_lock(root / "campaign.lock", blocking=False) as owner:
         if not owner:
@@ -138,6 +138,7 @@ def main(root, gpus, adoptions, baselines_only=False):
         state = dict(pid=os.getpid(), status="running", phase="baselines" if baselines_only else "minimal", gpus=[int(g) for g in gpus],
                      runs=10, episodes=5, valid_rounds=5, ticrate=35, action_policy="wait")
         atomic_json(root / "status.json", state)
+        from action_efficiency import report as efficiency_report
         try:
             if not baselines_only:
                 with ThreadPoolExecutor(max_workers=len(gpus)) as pool:
@@ -146,10 +147,15 @@ def main(root, gpus, adoptions, baselines_only=False):
                         for f in futures:
                             if f.done(): f.result()
                         evolution_report(root)
+                        efficiency_report(root)
                         state["updated"] = time.time(); atomic_json(root / "status.json", state)
                         time.sleep(30)
                     for f in futures: f.result()
                 evolution_report(root)
+                efficiency_report(root)
+            if evolution_only:
+                state.update(status="complete", phase="minimal_complete")
+                return
             state.update(phase="baselines", updated=time.time()); atomic_json(root / "status.json", state)
             from action_efficiency import report as efficiency_report
             plans = [[] for _ in gpus]
@@ -184,6 +190,7 @@ if __name__ == "__main__":
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--gpus", nargs="+", default=["5", "6"])
     p.add_argument("--adopt", type=Path, help="Explicit task/run -> live PID and GPU mapping")
+    p.add_argument("--evolution-only", action="store_true", help="Run minimal evolution only; do not queue baselines")
     p.add_argument("--baselines-only", action="store_true", help="Skip evolution and run the agreed seven baseline conditions")
     args = p.parse_args()
     if len(set(args.gpus)) != len(args.gpus):
@@ -191,6 +198,8 @@ if __name__ == "__main__":
     adoptions = json.loads(args.adopt.read_text()) if args.adopt else {}
     if any(a["gpu"] not in args.gpus for a in adoptions.values()):
         p.error("Every adopted worker must use an authorized GPU")
+    if args.baselines_only and args.evolution_only:
+        p.error("Choose only one phase")
     if args.baselines_only and adoptions:
         p.error("Cannot adopt evolution workers in baselines-only mode")
-    main(args.output.resolve(), args.gpus, adoptions, args.baselines_only)
+    main(args.output.resolve(), args.gpus, adoptions, args.baselines_only, args.evolution_only)

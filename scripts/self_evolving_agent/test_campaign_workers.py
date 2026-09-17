@@ -39,6 +39,21 @@ class WorkerTests(unittest.TestCase):
                 efficiency.assert_called()
             self.assertEqual(json.loads((root/'status.json').read_text())['status'], 'complete')
 
+    def test_evolution_only_does_not_queue_baselines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            campaign.STOP.clear()
+            with patch.object(campaign, 'evolution_worker') as evolution, \
+                 patch.object(campaign, 'baseline_worker') as baseline, \
+                 patch.object(campaign, 'evolution_report'), \
+                 patch('action_efficiency.report'), patch.object(campaign.time, 'sleep'):
+                campaign.main(root, ['1','3','6'], {}, evolution_only=True)
+                self.assertEqual(evolution.call_count, 3)
+                baseline.assert_not_called()
+            state=json.loads((root/'status.json').read_text())
+            self.assertEqual(state['phase'], 'minimal_complete')
+            self.assertEqual(state['status'], 'complete')
+
     def test_adoption_waits_without_relaunching_existing_run(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)

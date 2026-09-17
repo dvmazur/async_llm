@@ -120,3 +120,19 @@ python scripts/self_evolving_agent/action_efficiency.py \
 GPU workers claim entire evolution runs with file locks. The launcher can adopt
 existing worker PIDs during a supervisor handover, preserving live engines and
 in-progress generations. GPU 1 was added after the initial two-GPU launch.
+
+## September 17 minimal-only rerun
+
+Run in a new directory with `--evolution-only --gpus 1 3 6`. Baselines are
+being handed off separately and must not be queued by this launcher mode.
+Retain 10 independent runs per environment, five valid evolution rounds per
+run, and five episodes per round; retain the normal-speed/wait protocol.
+
+The seed and recovery generators now use the checkpoint's chat template with
+an open thinking segment. Completion parsing retains the opening marker, so
+examples inside reasoning cannot execute as tools. Recovery frees any failed
+history and starts with a fresh cache and full current-engine prompt. Empty
+completions trigger recovery on the next attempt. The stop-token union reads
+`llm.config.generation_config` directly. These changes address the prior
+immediate-EOS recovery loop; they do not guarantee successful agent revisions.
+Keep this rerun separate from the previous generation protocol's results.
