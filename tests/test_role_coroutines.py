@@ -14,8 +14,8 @@ class ControlledEngine(FakeEngine):
     def __init__(self):
         super().__init__()
         self.planner_release = asyncio.Event()
-        self.draft_started = asyncio.Event()
-        self.refine_started = asyncio.Event()
+        self.executor_started = asyncio.Event()
+        self.falsifier_started = asyncio.Event()
         self.tasks = {}
         self.live_reads = []
         self.snapshots = []
@@ -30,12 +30,12 @@ class ControlledEngine(FakeEngine):
         if len(parts) >= 4:
             phase = parts[2]
             self.tasks.setdefault(phase, set()).add(asyncio.current_task())
-            if phase in ('executor_draft', 'executor_refine'):
-                observed = 'observer' if phase == 'executor_draft' else 'falsifier'
+            if phase in ('executor', 'falsifier'):
+                observed = 'observer' if phase == 'executor' else 'executor'
                 live = [b.producer for b in deps if b.producer is not None and b.producer.phase == observed]
                 assert live
                 self.live_reads.append((phase, len(live[0].tokens), live[0].done))
-                (self.draft_started if phase == 'executor_draft' else self.refine_started).set()
+                (self.executor_started if phase == 'executor' else self.falsifier_started).set()
         return await super().prefill(text, deps, target)
 
     def sample(self, output, **kwargs):
@@ -46,11 +46,10 @@ class ControlledEngine(FakeEngine):
         phase = target.name.split('/')[2]
         if phase == 'planner':
             await self.planner_release.wait()
-        if target.raw.num_tokens == 4:
-            if phase == 'observer':
-                await self.draft_started.wait()
-            elif phase == 'falsifier':
-                await self.refine_started.wait()
+        if phase == 'observer' and target.raw.num_tokens == 1:
+            await self.executor_started.wait()
+        if phase == 'executor' and target.raw.num_tokens == 4:
+            await self.falsifier_started.wait()
         return await super().decode(token, deps, target)
 
 
@@ -66,18 +65,16 @@ def test_live_kv_communication_and_planner_across_actions(tmp_path):
                 return obs
         world = World()
         params = {name: replace(p, budget={'planner': 12, 'observer': 8,
-            'falsifier': 8, 'executor_draft': 3, 'executor_refine': 3}[name]) for name, p in ROLE_PARAMS.items()}
+            'falsifier': 8, 'executor': 8}[name]) for name, p in ROLE_PARAMS.items()}
         pipeline = SpeleoPipeline(world, Recorder(tmp_path), engine,
             context=EpisodeContext('live', 0, 0, tmp_path, 0, 0, 0), max_actions=2, role_params=params)
         await pipeline.run()
         assert not pipeline.jobs and all(t.done() for t in pipeline.actors)
         assert list(engine.live_blocks.values()) == [engine.common.raw]
-        assert all(len(tokens) == 1 for tokens in engine.tasks.values())
-        assert engine.tasks['executor_draft'] == engine.tasks['executor_refine']
-        assert len(set.union(*engine.tasks.values())) == 4
-        # First execution starts after four visible tokens, not producer completion.
-        assert engine.live_reads[0] == ('executor_draft', 4, False)
-        assert engine.live_reads[1] == ('executor_refine', 4, False)
+        assert all(len(engine.tasks[r]) == 1 for r in ('observer', 'planner', 'falsifier'))
+        assert len(engine.tasks['executor']) == 2  # one finite generation task per action
+        assert engine.live_reads[0] == ('executor', 1, False)
+        assert engine.live_reads[1] == ('falsifier', 4, False)
         assert len(engine.snapshots) == 1  # same planner remained live across both steps
         assert all(block.num_tokens == original for block, original in engine.snapshots)
         events = list(read_jsonl(tmp_path/'events.jsonl'))
@@ -86,7 +83,7 @@ def test_live_kv_communication_and_planner_across_actions(tmp_path):
         assert all(not e['live_inputs_at_action_submit']['planner_done'] for e in decisions)
         assert decisions[0]['new_planner_started'] and not decisions[1]['new_planner_started']
         assert {e['role']: e['temperature'] for e in events if e['kind'] == 'role_parameters'} == {
-            'observer': .35, 'planner': .65, 'executor_draft': .6, 'falsifier': .45, 'executor_refine': .45}
+            'observer': .35, 'planner': .65, 'executor': .45, 'falsifier': .45}
     asyncio.run(asyncio.wait_for(run(), 3))
 
 
@@ -180,13 +177,13 @@ def test_roles_own_perception_refresh_publication_and_review(tmp_path, replan):
         await pipeline.run()
         events = list(read_jsonl(tmp_path/'events.jsonl'))
         starts = [e['observation'] for e in events if e['kind'] == 'history_snapshot']
-        assert starts == ([0, 1, 2, 3] if replan else [0, 2])
+        assert starts == [0, 2]  # REPLAN does not bypass the start interval
         publications = [e for e in events if e['kind'] == 'plan_published']
         assert [(e['based_on'], e['current_observation']) for e in publications] == (
-            [(0, 1), (1, 2), (2, 3)] if replan else [(0, 1), (2, 3)])
+            [(0, 1), (2, 3)])
         reviews = [e['observation'] for e in events
                    if e['kind'] == 'stream' and e['role'] == 'falsifier']
-        assert reviews == starts
+        assert reviews == [0, 1, 2, 3]
         assert list(engine.live_blocks.values()) == [engine.common.raw]
     asyncio.run(asyncio.wait_for(run(), 3))
 

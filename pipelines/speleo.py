@@ -2,7 +2,7 @@
 
 Roles receive observations/decisions, not preassembled generation jobs. They choose
 their own prompts and KV inputs; Generation.blocks exposes live answers. The executor
-owns World interaction and has sequential draft/refine phases. Engine only batches
+owns World interaction and exposes its live intention to the falsifier. Engine only batches
 the resulting model requests. Prompts are text data in prompts.py.
 """
 import asyncio
@@ -26,11 +26,10 @@ class RoleParams:
 
 
 ROLE_PARAMS = {
-    'observer': RoleParams(48, .35, 1),
-    'planner': RoleParams(112, .65, 2),
-    'executor_draft': RoleParams(28, .6, 3),
-    'falsifier': RoleParams(40, .45, 4),
-    'executor_refine': RoleParams(28, .45, 5),
+    'observer': RoleParams(18, .35, 1),
+    'planner': RoleParams(60, .65, 2),
+    'executor': RoleParams(16, .45, 5),
+    'falsifier': RoleParams(18, .45, 4),
 }
 
 
@@ -99,7 +98,6 @@ class Review:
     observer: Generation
     plan: Generation | None
     draft: Generation
-    new_plan: bool
 
 
 def position_info(info):
@@ -112,7 +110,7 @@ def position_info(info):
 
 class SpeleoPipeline:
     def __init__(self, world, recorder, engine, *, context, max_actions=100,
-                 role_params=None, planner_interval=6):
+                 role_params=None, planner_interval=10):
         self.world, self.recorder, self.engine = world, recorder, engine
         self.context, self.max_actions = context, max_actions
         self.params = {**ROLE_PARAMS, **(role_params or {})}
@@ -166,6 +164,7 @@ class SpeleoPipeline:
         job = generating = None
         text, based_on = 'No published subgoal yet; use the overall task goal.', -1
         replan = False
+        last_started = -self.planner_interval
         try:
             while (request := await self.plans.get()) is not None:
                 message, reply = request
@@ -183,8 +182,9 @@ class SpeleoPipeline:
                             job = generating = None
                         reply.set_result((text, based_on, replan))
                     elif isinstance(message, PlanObservation):
-                        start = job is None and (based_on < 0 or replan
-                            or message.step-based_on >= self.planner_interval)
+                        # V9 budgets planner starts, even after empty answers.
+                        # REPLAN cannot add jobs inside a ten-action slot.
+                        start = job is None and message.step-last_started >= self.planner_interval
                         if start:
                             frozen = await self.history.snapshot(
                                 f'{self.context.world_seed}/{message.step}/history_snapshot')
@@ -198,6 +198,7 @@ class SpeleoPipeline:
                             generating = asyncio.create_task(
                                 self.generate_tokens(job, self.params['planner'], rng),
                                 name=f'{self.context.episode_id}/planner/tokens')
+                            last_started = message.step
                             replan = False
                         reply.set_result((job, start))
                     else:
@@ -212,13 +213,10 @@ class SpeleoPipeline:
                 await generating
 
     async def falsifier(self, rng):
-        """Decide whether a draft needs scrutiny and challenge its live evidence."""
+        """Challenge every action's growing executor intention."""
         while (request := await self.objections.get()) is not None:
             review, reply = request
             try:
-                if not (review.new_plan or 'REPLAN' in review.draft.text):
-                    reply.set_result(None)
-                    continue
                 reads = [self.common, review.recent, review.image, *review.observer.blocks,
                     *(review.plan.blocks if review.plan else []), *review.draft.blocks]
                 job = await self.request('falsifier', review.step, reads)
@@ -307,8 +305,8 @@ class SpeleoPipeline:
             await job.tail.aclose()
             self.jobs.discard(job)
 
-    async def executor(self, initial, draft_rng, refine_rng):
-        """Coordinate live role answers, generate draft/refine, and act in World."""
+    async def executor(self, initial, rng):
+        """Expose an intention, await its objection, then select the action (V9)."""
         previous = current = initial.image
         last_action, feedback = 'none', None
         request_replan = False
@@ -324,6 +322,7 @@ class SpeleoPipeline:
             plan_text, plan_step, request_replan = await self.ask(
                 self.plans, PlanBoundary(step, request_replan))
             owned, local = [], []
+            generating = None
             started = time.perf_counter()
             try:
                 recent = await BlockHandle.create(self.engine, f'{self.context.world_seed}/{step}/recent')
@@ -346,23 +345,19 @@ class SpeleoPipeline:
                 if new_plan:
                     request_replan = False
 
-                await observer.wait_tokens(4)
+                await observer.wait_tokens(1)
                 reads = [self.common, recent, image, *observer.blocks, *(plan.blocks if plan else [])]
-                draft = await self.request('executor_draft', step, reads)
+                draft = await self.request('executor', step, reads)
                 local.append(draft)
-                await self.generate_tokens(draft, self.params['executor_draft'], draft_rng)
-                await draft.finish()
+                generating = asyncio.create_task(self.generate_tokens(draft, self.params['executor'], rng),
+                    name=f'{self.context.episode_id}/executor/tokens')
+                await draft.wait_tokens(4)
 
                 counter = await self.ask(self.objections,
-                    Review(step, recent, image, observer, plan, draft, new_plan))
-                if counter is not None:
-                    local.append(counter)
-                    await counter.wait_tokens(4)
-                refined_reads = reads + draft.blocks + (counter.blocks if counter else [])
-                refined = await self.request('executor_refine', step, refined_reads)
-                local.append(refined)
-                await self.generate_tokens(refined, self.params['executor_refine'], refine_rng)
-                await refined.finish()
+                    Review(step, recent, image, observer, plan, draft))
+                local.append(counter)
+                await asyncio.gather(draft.finish(), counter.finish())
+                action_reads = reads + draft.blocks + counter.blocks
 
                 readout = await BlockHandle.create(self.engine, f'{self.context.world_seed}/{step}/action')
                 owned.append(readout)
@@ -370,15 +365,15 @@ class SpeleoPipeline:
                     planner_done=plan is None or plan.done, planner_based_on=plan.step if plan else None,
                     falsifier=counter.text if counter else None, falsifier_done=counter is None or counter.done)
                 output = await self.engine.prefill(action_request(SPELEO, step),
-                    refined_reads + refined.blocks, readout)
+                    action_reads, readout)
                 scores = self.engine.score_tokens(output, action_ids)
                 index = max(range(len(scores)), key=scores.__getitem__)
                 action = action_names[index]
                 latency = time.perf_counter() - started
-                request_replan = request_replan or 'REPLAN' in draft.text or 'REPLAN' in refined.text
+                request_replan = request_replan or 'REPLAN' in draft.text
                 self.recorder.log('decision', dict(observation=step, action_index=index, action=action,
                     action_probabilities=dict(zip(action_names, scores)), decision_seconds=latency,
-                    draft=draft.text, assessment=refined.text, published_plan=plan_text,
+                    draft='', assessment=draft.text, critique=counter.text, published_plan=plan_text,
                     published_plan_based_on=plan_step, new_planner_started=new_plan,
                     requested_replan=request_replan, live_inputs_at_action_submit=live_inputs))
 
@@ -405,6 +400,8 @@ class SpeleoPipeline:
                 if observation.done:
                     break
             finally:
+                if generating is not None:
+                    await generating
                 for job in local:
                     await self.close_generation(job)
                 for block in owned:
@@ -447,8 +444,7 @@ class SpeleoPipeline:
                                       [self.common], self.history)
             rngs = {}
             for phase, params in self.params.items():
-                seed = (1_000_000_007 * self.context.model_seed
-                        + 1_000_003 * (self.context.slot+1) + params.seed_offset)
+                seed = 1_000_003 * (self.context.model_seed+1) + params.seed_offset
                 rngs[phase] = self.engine.new_generator(seed)
                 self.recorder.log('role_parameters', dict(role=phase, seed=seed,
                     temperature=params.temperature, top_k=params.top_k, top_p=params.top_p, budget=params.budget))
@@ -457,7 +453,7 @@ class SpeleoPipeline:
                 asyncio.create_task(self.planner(rngs['planner']), name=f'{self.context.episode_id}/planner'),
                 asyncio.create_task(self.falsifier(rngs['falsifier']), name=f'{self.context.episode_id}/falsifier'),
             ]
-            executor = asyncio.create_task(self.executor(initial, rngs['executor_draft'], rngs['executor_refine']),
+            executor = asyncio.create_task(self.executor(initial, rngs['executor']),
                                            name=f'{self.context.episode_id}/executor')
             await executor
             status = 'stopped' if self.stop_requested() else 'completed'

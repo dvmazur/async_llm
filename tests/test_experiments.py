@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_experiment_settings_drive_the_runner(monkeypatch, tmp_path):
-    from experiments import speleo_15x5 as experiment
+    from experiments import speleo_15x5_fast_falsifer as experiment
     calls = []
     class Runner:
         def __init__(self, venv, **kwargs):
@@ -44,7 +44,7 @@ def test_plain_file_from_other_cwd_needs_no_installed_runner(tmp_path):
         shutil.copytree(ROOT/directory, checkout/directory, ignore=shutil.ignore_patterns('__pycache__'))
     unrelated = tmp_path/'elsewhere'
     unrelated.mkdir()
-    script = checkout/'experiments/speleo_15x5.py'
+    script = checkout/'experiments/speleo_15x5_fast_falsifer.py'
     # -I -S excludes installed packages and inherited PYTHONPATH. The source file
     # must import itself and reach the intentional missing-engine-venv guard.
     result = subprocess.run([sys.executable, '-I', '-S', str(script)], cwd=unrelated,
@@ -67,7 +67,7 @@ def test_dependencies_have_one_toml_source():
 
 
 def test_experiment_does_not_override_backend_workspace():
-    from experiments.speleo_15x5 import ENGINE_PARAMS
+    from experiments.speleo_15x5_fast_falsifer import ENGINE_PARAMS
     assert 'shared_attention_workspace_bytes' not in ENGINE_PARAMS['engine_config']
     assert 'attention_workspace_bytes' not in ENGINE_PARAMS['adapter_options']
     assert not (ROOT/'experiment_runner/workspace_config.py').exists()

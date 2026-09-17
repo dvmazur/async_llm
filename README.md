@@ -1,7 +1,11 @@
-# Speleo runner — установка и запуск
+# Speleo runner — fast_falsifer
 
 Одна модель на GPU, несколько параллельных pipeline. Подробное описание API,
 ролей, телеметрии и тестов — [DOCUMENTATION.md](DOCUMENTATION.md).
+
+Текущая стратегия — **V9**: короткие observer/executor/falsifier, без refine;
+planner запускается не чаще раза в 10 действий. Предыдущий Falsifier доступен
+в коммите `d1920dd`, а не через переключатель в текущем коде.
 
 ## 1. Выбрать движок
 
@@ -75,12 +79,12 @@ Setup не нужно запускать заново перед каждым э
 
 ## 3. Настроить и запустить эксперимент
 
-Откройте `experiments/speleo_15x10.py` и проверьте настройки в начале файла:
+Откройте `experiments/speleo_15x10_fast_falsifer.py` и проверьте настройки в начале файла:
 
 ```python
 VENV = REPOSITORY / '.venvs' / 'minisgl'  # папка venv, созданная setup
 MODEL = REPOSITORY / 'models' / 'Qwen3.6-35B-A3B-FP8'  # скачанные веса
-RESULTS = REPOSITORY / 'results' / 'speleo-15x10'  # новый каталог результатов
+RESULTS = REPOSITORY / 'results' / 'speleo_15x10_fast_falsifer'  # новый каталог результатов
 
 GPUS = [0]               # на каких GPU запускать
 PIPELINES_PER_GPU = 15    # сколько pipeline одновременно на каждой GPU
@@ -106,7 +110,7 @@ GIF_ON = False           # не сохранять GIF
 Сохраните файл и запустите на GPU-машине из папки запускалки:
 
 ```bash
-python3 experiments/speleo_15x10.py
+python3 experiments/speleo_15x10_fast_falsifer.py
 ```
 
 Активировать venv не нужно: Runner сам использует `VENV/bin/python`.
@@ -119,15 +123,12 @@ python3 experiments/speleo_15x10.py
 
 ## 4. Забрать результаты
 
-По умолчанию — `results/speleo-15x10/`. Summary печатается в терминале и записывается
+По умолчанию — `results/speleo_15x10_fast_falsifer/`. Summary печатается в терминале и записывается
 в `analysis/summary.json`: TPS, tokens/action, средние decode/prefill batches,
 выборочное среднее GPU util. Высота и действия сохраняются и без PNG/GIF.
 
 ```bash
-python3 -m experiment_runner.artifacts results/speleo-15x10 results/speleo-15x10.zip
+python3 -m experiment_runner.artifacts results/speleo_15x10_fast_falsifer results/speleo_15x10_fast_falsifer.zip
 ```
 
-Исторический ориентир: `07-cuda-graphs`, `bbe7abf`, RTX PRO6000 96 GB,
-FP8-веса A3B и **FP32 GDN**, 15×10 без профиля — 191,6 tok/s, 97,0 s,
-150/150 действий.
 BF16 GDN требует соответствующей ветки/флага, а не просто `dtype='bfloat16'`.

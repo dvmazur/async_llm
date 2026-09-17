@@ -67,12 +67,12 @@ class FakeEngine:
         return [[name for name, _ in SPELEO.actions].index(text)]
 
     def sample(self, output, *, generator, temperature, top_k, top_p):
-        role = {1: 'observer', 2: 'planner', 3: 'executor_draft', 4: 'falsifier', 5: 'executor_refine'}[(generator % 1_000_000_007) % 1_000_003]
+        role = {1: 'observer', 2: 'planner', 4: 'falsifier', 5: 'executor'}[generator % 1_000_003]
         self.calls.append(('sampling', role, temperature, top_k, top_p))
         self.role_counts[generator] = self.role_counts.get(generator, 0) + 1
         n = self.role_counts[generator]
         # Short real role streams; exercise EOS before wait_tokens(4).
-        return n, ' REPLAN' if role == 'executor_draft' else ' evidence', n % 3 == 0
+        return n, ' REPLAN' if role == 'executor' else ' evidence', n % 3 == 0
 
     def score_tokens(self, output, token_ids):
         return [float(i == 0) for i in range(len(token_ids))]
@@ -131,7 +131,7 @@ def test_policy_feedback_frames_drain_and_ownership(tmp_path, fail):
             ('images', 'Observation 1. Last action: wait. First image previous; second image current.', [0, 1])]
         assert any(c[0] == 'snapshot' for c in engine.calls)
         assert {e['role'] for e in events if e['kind'] == 'stream'} == {
-            'observer', 'planner', 'executor_draft', 'falsifier', 'executor_refine'}
+            'observer', 'planner', 'executor', 'falsifier'}
         for call in engine.calls:
             if call[0] == 'prefill':
                 assert 'player_pos' not in call[1]

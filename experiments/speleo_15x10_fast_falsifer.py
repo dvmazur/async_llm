@@ -12,7 +12,7 @@ from pipelines.world import SpeleoWorld
 
 VENV = REPOSITORY / '.venvs' / 'minisgl'
 MODEL = REPOSITORY / 'models' / 'Qwen3.6-35B-A3B-FP8'
-RESULTS = REPOSITORY / 'results' / 'speleo-15x10'
+RESULTS = REPOSITORY / 'results' / 'speleo_15x10_fast_falsifer'
 GPUS = [0]
 PIPELINES_PER_GPU = 15
 REPEATS = 1
@@ -22,11 +22,10 @@ WORLD_SEED_START = 0
 DUMP_IMAGES = False
 GIF_ON = False
 ROLE_PARAMETERS = {
-    'observer': RoleParams(budget=48, temperature=.35, seed_offset=1, top_k=20, top_p=.9),
-    'planner': RoleParams(budget=112, temperature=.65, seed_offset=2, top_k=20, top_p=.9),
-    'executor_draft': RoleParams(budget=28, temperature=.6, seed_offset=3, top_k=20, top_p=.9),
-    'falsifier': RoleParams(budget=40, temperature=.45, seed_offset=4, top_k=20, top_p=.9),
-    'executor_refine': RoleParams(budget=28, temperature=.45, seed_offset=5, top_k=20, top_p=.9),
+    'observer': RoleParams(budget=18, temperature=.35, seed_offset=1, top_k=20, top_p=.9),
+    'planner': RoleParams(budget=60, temperature=.65, seed_offset=2, top_k=20, top_p=.9),
+    'executor': RoleParams(budget=16, temperature=.45, seed_offset=5, top_k=20, top_p=.9),
+    'falsifier': RoleParams(budget=18, temperature=.45, seed_offset=4, top_k=20, top_p=.9),
 }
 
 ENGINE_PARAMS = {

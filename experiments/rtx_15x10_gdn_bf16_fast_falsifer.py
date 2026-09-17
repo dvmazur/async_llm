@@ -28,11 +28,10 @@ PARAMS = {
 }
 
 ROLE_PARAMETERS = {
-    'observer': RoleParams(budget=48, temperature=.35, seed_offset=1, top_k=20, top_p=.9),
-    'planner': RoleParams(budget=112, temperature=.65, seed_offset=2, top_k=20, top_p=.9),
-    'executor_draft': RoleParams(budget=28, temperature=.6, seed_offset=3, top_k=20, top_p=.9),
-    'falsifier': RoleParams(budget=40, temperature=.45, seed_offset=4, top_k=20, top_p=.9),
-    'executor_refine': RoleParams(budget=28, temperature=.45, seed_offset=5, top_k=20, top_p=.9),
+    'observer': RoleParams(budget=18, temperature=.35, seed_offset=1, top_k=20, top_p=.9),
+    'planner': RoleParams(budget=60, temperature=.65, seed_offset=2, top_k=20, top_p=.9),
+    'executor': RoleParams(budget=16, temperature=.45, seed_offset=5, top_k=20, top_p=.9),
+    'falsifier': RoleParams(budget=18, temperature=.45, seed_offset=4, top_k=20, top_p=.9),
 }
 
 
@@ -47,5 +46,5 @@ if __name__ == '__main__':
         .set_engine_params(PARAMS)
         .set_pipeline(RepeatedPipeline(make_pipeline, repeats=1))
         .set_concurrency(15)
-        .set_results_directory(DEPLOY / 'results-15x10')
+        .set_results_directory(DEPLOY / 'results-15x10_fast_falsifer')
         .run(gpus=[0]))
