@@ -1,0 +1,3378 @@
+{
+  "limit_usd": 10,
+  "scope": "New API calls for 40-50 total diverse pairs; excludes earlier completed pilots",
+  "requests": [
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560104-SkmEcu28RUs2wV8rMUbY",
+      "service_tier": "flex",
+      "cost": 0.0019335
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560109-9J2qtU9yA88rmLmoDaRO",
+      "service_tier": "flex",
+      "cost": 0.0021135
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560117-yYEQQuCR9M9ELu1MjXRG",
+      "service_tier": "flex",
+      "cost": 0.00161625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560122-1TXLCBlglg0bEEfUOri7",
+      "service_tier": "flex",
+      "cost": 0.00231
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560127-xIFbT0UuYka1K0BTMtSz",
+      "service_tier": "flex",
+      "cost": 0.0019185
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560135-OzmqEEHtVkskjITRYwj9",
+      "service_tier": "flex",
+      "cost": 0.0043545
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560145-Edwft3WgkaLij9nRlib0",
+      "service_tier": "flex",
+      "cost": 0.00139875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560151-QWYNlL4IsqfPCJyl4n2m",
+      "service_tier": "flex",
+      "cost": 0.002092125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560156-EZgTKOMtsl0HJfXCDIFO",
+      "service_tier": "flex",
+      "cost": 0.001914
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560160-LqSpuU5oK3O60nEyGy6S",
+      "service_tier": "flex",
+      "cost": 0.002724375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560169-IxmVPSYKvyTO6ROrqEiw",
+      "service_tier": "flex",
+      "cost": 0.0027855
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560177-POQDANpS3hJ9T2Wvz7Lq",
+      "service_tier": "flex",
+      "cost": 0.001674375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560182-zkKzNHLfg4FJZbPpdhwP",
+      "service_tier": "flex",
+      "cost": 0.00418425
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560191-eiz5kpqrevZXNNVmoLST",
+      "service_tier": "flex",
+      "cost": 0.001622625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560195-IDObZeBsyENISxaL3MQS",
+      "service_tier": "flex",
+      "cost": 0.002757375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560203-yu2JTQGfjx7A0YlkzmGd",
+      "service_tier": "flex",
+      "cost": 0.00199725
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560209-uNuCyKjjuea3UDtIL7fE",
+      "service_tier": "flex",
+      "cost": 0.0033735
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560217-BF8eONP50EbDaXs59Fg9",
+      "service_tier": "flex",
+      "cost": 0.00136425
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560223-y7Szrh6ZU9hALTv87wKI",
+      "service_tier": "flex",
+      "cost": 0.00325725
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560230-zqpmrvtcO1OYi7tCBhIy",
+      "service_tier": "flex",
+      "cost": 0.001587
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560235-cTdJq0MnZQUZW21u2Gc0",
+      "service_tier": "flex",
+      "cost": 0.001255125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560240-9Idmxb6ebs8CeN5qbovr",
+      "service_tier": "flex",
+      "cost": 0.00204525
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560245-gbQCqdbTkWy7sLStWx92",
+      "service_tier": "flex",
+      "cost": 0.001940625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560253-jGk0vKNNpfXqqC5Wl6F7",
+      "service_tier": "flex",
+      "cost": 0.002383875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560260-LHohaLJ2nvTalwvNcDvE",
+      "service_tier": "flex",
+      "cost": 0.00131175
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560263-2TEnn3ScnjgmDg7zrFpN",
+      "service_tier": "flex",
+      "cost": 0.001903875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560268-UjtQX6rpVpFbuJdispWy",
+      "service_tier": "flex",
+      "cost": 0.0057195
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560280-MDdgTRTAlQwTXxOQf70b",
+      "service_tier": "flex",
+      "cost": 0.002477625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560293-X4haao4G6xUu6DFfTMJ8",
+      "service_tier": "flex",
+      "cost": 0.0020505
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560299-2wTPhoHwHa4im4X9PrEZ",
+      "service_tier": "flex",
+      "cost": 0.0019065
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560306-IS2xLVQOge4CnxVCMF6Z",
+      "service_tier": "flex",
+      "cost": 0.00247725
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560313-sKCpsVKCeQgI8PMhB9ez",
+      "service_tier": "flex",
+      "cost": 0.0016455
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560317-tWjeB26QPAiCH3zqo4az",
+      "service_tier": "flex",
+      "cost": 0.00246375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560323-YMEuEnlMfhMCadnqvpBL",
+      "service_tier": "flex",
+      "cost": 0.002986875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560329-INZA3e9qI3XWIeMUHbgN",
+      "service_tier": "flex",
+      "cost": 0.002822625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560338-d37npxTdfpOsxdBn0Bpr",
+      "service_tier": "flex",
+      "cost": 0.001534875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560343-KgxKqobPRgWwLmdpco4K",
+      "service_tier": "flex",
+      "cost": 0.002317875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560349-Uk64B5QADcnw3t8oybfr",
+      "service_tier": "flex",
+      "cost": 0.004276875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560360-RVREm6iUOTjs01FqaVIC",
+      "service_tier": "flex",
+      "cost": 0.002355
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560365-ExA2xIkEon4SKGsURGLB",
+      "service_tier": "flex",
+      "cost": 0.0013935
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560375-9paikTNl1rhEHyuN2cKQ",
+      "service_tier": "flex",
+      "cost": 0.0017145
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560380-PEJmieetUkukDsRYitqY",
+      "service_tier": "flex",
+      "cost": 0.002293125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560387-jdOCdwX59zWvi9RiD4Oz",
+      "service_tier": "flex",
+      "cost": 0.00254925
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560393-id5ZvRdPXKnE6FpdQ7Pz",
+      "service_tier": "flex",
+      "cost": 0.004391625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560402-DYtsCT37sBXZzpUUZYKS",
+      "service_tier": "flex",
+      "cost": 0.002026125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560407-jSGrlApeqO2bNqhyj1CU",
+      "service_tier": "flex",
+      "cost": 0.001617
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560412-qe3VkYHgfSWLT2odrHV7",
+      "service_tier": "flex",
+      "cost": 0.002537625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560419-SF5tTjNcoZ1K1V6ghtJW",
+      "service_tier": "flex",
+      "cost": 0.003049875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560427-lU8FZhfSbzWkNzMvs717",
+      "service_tier": "flex",
+      "cost": 0.002041125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560433-pRsPE45Ehw7SBpAvb2NX",
+      "service_tier": "flex",
+      "cost": 0.002946375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "unknown_after_interruption",
+      "note": "Screening process ended without a saved response. Retain reservation; do not assume request was free."
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560447-ahrJpIlpoqFNCz2EiPfh",
+      "service_tier": "flex",
+      "cost": 0.00710325
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560447-oIoHRnZTOYuojcpYBxqu",
+      "service_tier": "flex",
+      "cost": 0.003369
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560447-DXPYG4eCChpxJTQiSMXo",
+      "service_tier": "flex",
+      "cost": 0.002893875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560447-edTruBjuRNwWNKKbR5rX",
+      "service_tier": "flex",
+      "cost": 0.002598375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560453-Uhs9Ktq8W2DimkpzCLVe",
+      "service_tier": "flex",
+      "cost": 0.00399375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560454-7f2niOdjqHFdcd1jl1nZ",
+      "service_tier": "flex",
+      "cost": 0.002971125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560460-3QhgspLR59y1AeVzFjCh",
+      "service_tier": "flex",
+      "cost": 0.00828375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560460-WfqVL1L4h6MDzIRFOHh0",
+      "service_tier": "flex",
+      "cost": 0.005338125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560464-56OP68gkJDi4Sso8kFnd",
+      "service_tier": "flex",
+      "cost": 0.0071235
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560475-AuwC3YyqWszpLtknvAIA",
+      "service_tier": "flex",
+      "cost": 0.0065385
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560478-jjHLYVCyhLppQu47kg4O",
+      "service_tier": "flex",
+      "cost": 0.003006375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560478-2xqkKBNlO4ifILzZfQYF",
+      "service_tier": "flex",
+      "cost": 0.003289125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560485-xca7z5DrJrA0p8qAnJPR",
+      "service_tier": "flex",
+      "cost": 0.005091
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560487-sbtMGDWZmUDpM5XGBbVi",
+      "service_tier": "flex",
+      "cost": 0.008142375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560488-i00KotDGSbd0tiAM1yiv",
+      "service_tier": "flex",
+      "cost": 0.00366225
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560489-rm36xKBHfF3OVas2jKkb",
+      "service_tier": "flex",
+      "cost": 0.0021615
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560494-jX4BkICADjnzFiPbl23H",
+      "service_tier": "flex",
+      "cost": 0.003208875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560496-PsKEz5wwAygGfE2dcf0p",
+      "service_tier": "flex",
+      "cost": 0.002738625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560500-ucYrvQEVlV2p2eAH398f",
+      "service_tier": "flex",
+      "cost": 0.0051795
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560503-vgywGsxi9C7dyfTR6wFo",
+      "service_tier": "flex",
+      "cost": 0.00189225
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560504-fUbh6RQ9eihfddo1TraP",
+      "service_tier": "flex",
+      "cost": 0.002860125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560504-MxRruPoZntNAHbCge5Ye",
+      "service_tier": "flex",
+      "cost": 0.003038625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560509-aq0reDdannOyzMaDQEuo",
+      "service_tier": "flex",
+      "cost": 0.0058095
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560526-2KtmJgI9WA0k0xmFrPd3",
+      "service_tier": "flex",
+      "cost": 0.005490375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560510-lxDeb1dQZQDeahyfDRR6",
+      "service_tier": "flex",
+      "cost": 0.0046215
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560513-SVQB6J9VS9hCQBsWxxSG",
+      "service_tier": "flex",
+      "cost": 0.006118125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560520-8dsT7LWhlo1c7PUD8pCB",
+      "service_tier": "flex",
+      "cost": 0.004652625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560521-EwjiVlRBzqS3vRSk2PIL",
+      "service_tier": "flex",
+      "cost": 0.008071125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560586-Hw4Z5XPwBxgmwBxdOlVk",
+      "service_tier": "flex",
+      "cost": 0.005045625
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560526-IklElq8uTChMKmXKL9Ta",
+      "service_tier": "default",
+      "cost": 0.068081
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560526-rjdSKTsy4ymXOIRJCT0e",
+      "service_tier": "default",
+      "cost": 0.0683615
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560526-6Qpw7UbPWGpfDEQLXXSn",
+      "service_tier": "default",
+      "cost": 0.068107
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560532-JPJ3sqwbJEcIbK3gMQG4",
+      "service_tier": "flex",
+      "cost": 0.004903125
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560536-tFr5iZCyAi5LVPXSjBgs",
+      "service_tier": "default",
+      "cost": 0.0685205
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560536-DJqyFCxw7BkZyhPEsYbb",
+      "service_tier": "flex",
+      "cost": 0.000931875
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560536-CSVJ1WZP6OXkXkW8KR1O",
+      "service_tier": "default",
+      "cost": 0.068
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560538-Rdq5RHfckPmEMUtirmK0",
+      "service_tier": "flex",
+      "cost": 0.004678125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560538-8NZb51Km0hvfx2mp91lT",
+      "service_tier": "flex",
+      "cost": 0.007069875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560538-u9DinotiRoq6uhdF1wsU",
+      "service_tier": "flex",
+      "cost": 0.000915
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560540-dh9qmSJmUsYZpg47SRL4",
+      "service_tier": "flex",
+      "cost": 0.0015975
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560543-z7xBVyc2vHasVpV16BmR",
+      "service_tier": "flex",
+      "cost": 0.0064845
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560544-EbU5bP42qFi52Lsckr7N",
+      "service_tier": "default",
+      "cost": 0.0682255
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560545-DtJk563tbFg3vyihBpYf",
+      "service_tier": "flex",
+      "cost": 0.000974625
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560546-jO8pwR9A1cGegaEtoOkh",
+      "service_tier": "default",
+      "cost": 0.068183
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560547-K2KEI4NMnCULtr95gVNo",
+      "service_tier": "flex",
+      "cost": 0.004978875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560549-Q7HlzZ2u9orHegpJ8ASL",
+      "service_tier": "flex",
+      "cost": 0.000997125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560552-a7s1RHZZeWU1k2YVvrvu",
+      "service_tier": "flex",
+      "cost": 0.001368375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560554-EhP74HzZgtjAlWnADcKt",
+      "service_tier": "flex",
+      "cost": 0.00092775
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560555-j3WCwoKYAzm477LkzU0U",
+      "service_tier": "flex",
+      "cost": 0.00107475
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560555-v08QOtm8ll6vQVsqbDbT",
+      "service_tier": "flex",
+      "cost": 0.001920375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560555-uumreHg6XN1ElpsFGc0R",
+      "service_tier": "flex",
+      "cost": 0.008081625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560556-3TQGvyejBdwVRjmlE5My",
+      "service_tier": "flex",
+      "cost": 0.00093525
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560557-wzxZyZn4m6qVNPme2TwP",
+      "service_tier": "flex",
+      "cost": 0.00397275
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560558-AjFXyWi7Z54UbDchvFyr",
+      "service_tier": "default",
+      "cost": 0.068084
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560559-uaAcy1VUmXN0h7H5lK2l",
+      "service_tier": "flex",
+      "cost": 0.002686125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560559-vpSbu46ARmhxTpe2wPEo",
+      "service_tier": "flex",
+      "cost": 0.001509375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560559-yR8qbZhtlZUA6iD87cw5",
+      "service_tier": "flex",
+      "cost": 0.001192875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560562-549FyjOfzfSOkAkvYqUQ",
+      "service_tier": "flex",
+      "cost": 0.001522875
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560564-ew2JJ9oj2bdMhKobjC5x",
+      "service_tier": "default",
+      "cost": 0.068466
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560565-JtEcUT0X0XcYigCupjp4",
+      "service_tier": "flex",
+      "cost": 0.004443375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560565-uWueHyMrqiE7HPGHUnKr",
+      "service_tier": "flex",
+      "cost": 0.002965125
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560566-jg6Va3cWERKXTnUHyOOE",
+      "service_tier": "default",
+      "cost": 0.06806
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560566-YTJaT5Echy3XlJRzJttK",
+      "service_tier": "default",
+      "cost": 0.068058
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560572-nlrLkxKsXtuAs8iPhEJc",
+      "service_tier": "flex",
+      "cost": 0.008263125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560572-aHAaQCj2Q2Db7UTcnD8M",
+      "service_tier": "flex",
+      "cost": 0.008153625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560575-v48P8btsjE6xzBdTb5Uh",
+      "service_tier": "flex",
+      "cost": 0.005214
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560575-3l4UVpHP57NruUhpZvwE",
+      "service_tier": "flex",
+      "cost": 0.001723125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560575-n6xkmcidBg1whFYqnTlS",
+      "service_tier": "flex",
+      "cost": 0.000988875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560578-9raY5qlIAOvVx5QHFzuy",
+      "service_tier": "flex",
+      "cost": 0.00114075
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560579-V4oIBIexlVpmMdB9jYdW",
+      "service_tier": "flex",
+      "cost": 0.001730625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560581-ggpbVbdieELiA8S5oGGd",
+      "service_tier": "flex",
+      "cost": 0.001524375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560583-kWoumJlLOeiVakkinSXF",
+      "service_tier": "flex",
+      "cost": 0.001724625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560587-yfxociUxcPnVqklAB2sp",
+      "service_tier": "flex",
+      "cost": 0.008096625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560589-Pmw1GurJqwHWGA2clWnF",
+      "service_tier": "flex",
+      "cost": 0.00224175
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560589-aBdzfvMHa6uiKV0KEBDr",
+      "service_tier": "flex",
+      "cost": 0.00339075
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560595-0ZyMWxas31AttA8K2dPq",
+      "service_tier": "flex",
+      "cost": 0.0033495
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560598-dNW15MrR0HkbyKEkdT4R",
+      "service_tier": "flex",
+      "cost": 0.0042525
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560598-LtouzlwNGS4xLXY9F8ep",
+      "service_tier": "flex",
+      "cost": 0.00333
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560603-aFVC7zSmy6X0WBmH5Wyh",
+      "service_tier": "flex",
+      "cost": 0.004295625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560605-9Nr6vEXKs3IV9X1GTj8e",
+      "service_tier": "flex",
+      "cost": 0.004241625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560609-1CM4iMvCjQoZqK1WTfMg",
+      "service_tier": "flex",
+      "cost": 0.003732375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560612-ytWSGMhwYxBgvJblqWHK",
+      "service_tier": "flex",
+      "cost": 0.004093125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560615-h1oD3MGTRR6H6yKi2NPZ",
+      "service_tier": "flex",
+      "cost": 0.00354225
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560616-EFnEnTJC8Cj4TMgSxUzZ",
+      "service_tier": "flex",
+      "cost": 0.0016155
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560621-Uaw5d92HjrXqRpVHDXUb",
+      "service_tier": "flex",
+      "cost": 0.004819125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560622-ydtmdG8pqEeWefIusJOD",
+      "service_tier": "flex",
+      "cost": 0.00183
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560622-k4IN5aH5xKN09DdwWtFS",
+      "service_tier": "flex",
+      "cost": 0.0019125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560626-ZbJvulyR2YLg5ImnOygU",
+      "service_tier": "flex",
+      "cost": 0.008262
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560627-k8MTTv7kYzlddqo2TxLR",
+      "service_tier": "flex",
+      "cost": 0.0050385
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560628-x9radZZQMzmzE08Prc2x",
+      "service_tier": "flex",
+      "cost": 0.00824775
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560633-kLIYdJFoaqzrokzD7q7f",
+      "service_tier": "flex",
+      "cost": 0.002386125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560639-yoDpraptzmuWh1wZG1ZX",
+      "service_tier": "flex",
+      "cost": 0.003448875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560639-4lslKWT94trjOXaCBt4c",
+      "service_tier": "flex",
+      "cost": 0.003791625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560641-3O1K7oJxpw1WZwDXCK1s",
+      "service_tier": "flex",
+      "cost": 0.008052
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560644-OZ92fIW8l3blUmmLMmpx",
+      "service_tier": "flex",
+      "cost": 0.008073375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560647-7d3GDu7Iknb4jOej4wbO",
+      "service_tier": "flex",
+      "cost": 0.008024625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560648-I5ZNZxb2ol1Ljp1WBqOu",
+      "service_tier": "flex",
+      "cost": 0.0068685
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560659-601gW6w4bEtPwdcVQ6TX",
+      "service_tier": "flex",
+      "cost": 0.0025545
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560660-RmIBgF2dV3YfJoElJRnN",
+      "service_tier": "flex",
+      "cost": 0.001840875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560665-7rifN7CVXOOlRCU6YQbw",
+      "service_tier": "flex",
+      "cost": 0.002885625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560666-8vpY3nKDQKpiHOkRBEx4",
+      "service_tier": "flex",
+      "cost": 0.0029115
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560665-RCRBqi2eEvgP9e1BJXKa",
+      "service_tier": "flex",
+      "cost": 0.002945625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560666-PmQnMsYbYNb51wo9uiWC",
+      "service_tier": "flex",
+      "cost": 0.003510375
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560665-rCzMf8IeImx9hc0VCOJc",
+      "service_tier": "default",
+      "cost": 0.068183
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560665-E88QQEyJIGeCRQ2DzmAU",
+      "service_tier": "default",
+      "cost": 0.068205
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560665-2rXeYXiWnbVDBgKo0jLc",
+      "service_tier": "default",
+      "cost": 0.068089
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560672-N5xjyxCt5OnN0L2NPwL7",
+      "service_tier": "flex",
+      "cost": 0.003264
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560673-n6hNTLY1wUjHOjhdiZWO",
+      "service_tier": "flex",
+      "cost": 0.002694375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560674-8bqgrIGzG2Hh97Wg80Q9",
+      "service_tier": "flex",
+      "cost": 0.00291225
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560674-x38T1yFaFkMDnR0A4WEA",
+      "service_tier": "flex",
+      "cost": 0.004435875
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560674-6BhW6odPnrNQ8Q0VUVeL",
+      "service_tier": "default",
+      "cost": 0.068293
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560675-MZrZCFlAdtsWhJqv7Ute",
+      "service_tier": "flex",
+      "cost": 0.006528
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560675-wxo84W7lch84PqJdSi8J",
+      "service_tier": "flex",
+      "cost": 0.0035505
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560679-ek1LgRMl9zvxgcATD8Ft",
+      "service_tier": "flex",
+      "cost": 0.0043905
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560679-ond4BpLqBoCnPWMPeeXT",
+      "service_tier": "flex",
+      "cost": 0.002313
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560682-01V08XWHGLQ6vrsnHJQt",
+      "service_tier": "flex",
+      "cost": 0.00302775
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560682-Xyz1nvhk7PKGijCyV0lQ",
+      "service_tier": "flex",
+      "cost": 0.00029625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560683-iNmzwwgQdhCw3FG5NfcK",
+      "service_tier": "flex",
+      "cost": 0.0024045
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560684-W4LwxzTUvxHf7CS0nEkE",
+      "service_tier": "flex",
+      "cost": 0.008074875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560685-ukly3J8ywgrrb9UQ5IQL",
+      "service_tier": "flex",
+      "cost": 0.001947
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560689-87BSnIm6N2oITKUYL7Qd",
+      "service_tier": "flex",
+      "cost": 0.003524625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560689-T0OMiWpZysJnrASNhmq9",
+      "service_tier": "flex",
+      "cost": 0.004521
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560689-ApDeyy3LeZEa9UT80H2r",
+      "service_tier": "flex",
+      "cost": 0.0024255
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560691-vw7lRe7S9xp0BmXZ3y4R",
+      "service_tier": "flex",
+      "cost": 0.002846625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560696-rshMMG9RdyiEodxYnTca",
+      "service_tier": "flex",
+      "cost": 0.002958
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560696-D65sIR4LHJB2rQKJozi1",
+      "service_tier": "flex",
+      "cost": 0.002452125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560696-MG2IM32OHIuTiN1ZOf7Z",
+      "service_tier": "flex",
+      "cost": 0.0038715
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560698-pfeJMl7oCi94X2PNQCPk",
+      "service_tier": "flex",
+      "cost": 0.001684875
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560699-IbYOqfXcHs3yRPJZvNna",
+      "service_tier": "default",
+      "cost": 0.0684205
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560700-5kasRQB5vHJLJH7g1Igk",
+      "service_tier": "flex",
+      "cost": 0.0016215
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560703-0GJxZlXY6ocZZz1xDpOk",
+      "service_tier": "flex",
+      "cost": 0.001183125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560703-q9BxR29aF6tiVxnRvasq",
+      "service_tier": "flex",
+      "cost": 0.002727
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560704-KKqtvnTvcPfZ05O8Ozoy",
+      "service_tier": "flex",
+      "cost": 0.001512375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560704-XFOpnNTZFIWMRt2AoxpK",
+      "service_tier": "flex",
+      "cost": 0.001172625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560705-x6LCrnpWRuMf2LVH8VBQ",
+      "service_tier": "flex",
+      "cost": 0.0024525
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560706-fES9i4Z9ykSEez8xdU0q",
+      "service_tier": "flex",
+      "cost": 0.00500925
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560708-NtJyeaphrslAnDUDs5KT",
+      "service_tier": "flex",
+      "cost": 0.002676375
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560708-xXDhWKpA8RrUFRDw6OXW",
+      "service_tier": "default",
+      "cost": 0.068107
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560710-AOiJdPs0DIWGuwFJky0r",
+      "service_tier": "flex",
+      "cost": 0.008076
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560708-GXAbovKMhT77sy4ueOKo",
+      "service_tier": "flex",
+      "cost": 0.000876
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560709-2uz5UUeEmTOAU0mzRxVO",
+      "service_tier": "flex",
+      "cost": 0.00217275
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560711-MVrvnhjTIoCAVNSiZmgl",
+      "service_tier": "flex",
+      "cost": 0.001917375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560711-XELd2knqbhuTUvI1qkI4",
+      "service_tier": "flex",
+      "cost": 0.005553375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560714-sCCS5mgcS690Qo4SQTgr",
+      "service_tier": "flex",
+      "cost": 0.002366625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560714-YW7Q3mCi8LtLQEEviqNA",
+      "service_tier": "flex",
+      "cost": 0.000956625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560715-adWshef2hQYMy1yCc7ec",
+      "service_tier": "flex",
+      "cost": 0.00297975
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560715-Hx9OKTyfzRatLGApGyfk",
+      "service_tier": "flex",
+      "cost": 0.00241275
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560716-Sf92EdQpPsyzkQzsAyTe",
+      "service_tier": "flex",
+      "cost": 0.00287325
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560720-G3Qo7VLPE7WaLxAL0gKA",
+      "service_tier": "flex",
+      "cost": 0.00114
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560719-amxVBz735WmYU6YOd6lI",
+      "service_tier": "flex",
+      "cost": 0.00165525
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560719-sjIyY5fUVnn9khpT6r0p",
+      "service_tier": "flex",
+      "cost": 0.001366125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560720-7WgxSflax3HcZAjcTWL3",
+      "service_tier": "flex",
+      "cost": 0.0012135
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560720-WYN2rxU3ZBBb8fJHUdUk",
+      "service_tier": "flex",
+      "cost": 0.0016215
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560722-szAeyFbQ9MHXR8lXinOx",
+      "service_tier": "flex",
+      "cost": 0.00284325
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560722-Of1mUXQO93U5oxBBSvqZ",
+      "service_tier": "flex",
+      "cost": 0.00147375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560722-rNhktQ2t7GMbb3b1sbfD",
+      "service_tier": "flex",
+      "cost": 0.001087125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560723-FZe3jkVRWYSc9kxcAx0f",
+      "service_tier": "flex",
+      "cost": 0.0070215
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560723-nT48BtIl5AZzBd0kLPkZ",
+      "service_tier": "flex",
+      "cost": 0.002815125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560724-SFuihuSBCjyVKD7EMAuB",
+      "service_tier": "flex",
+      "cost": 0.001100625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560725-RFbNAEtOytwQIHQGIjns",
+      "service_tier": "flex",
+      "cost": 0.00095025
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560727-teGSEvhxrFKVbghUlPmu",
+      "service_tier": "flex",
+      "cost": 0.0016035
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560727-630OzazB5IAPf0iwoZac",
+      "service_tier": "flex",
+      "cost": 0.00213675
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560728-w4ueHFX1oGvj7IYvdAF3",
+      "service_tier": "flex",
+      "cost": 0.00143775
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560728-L9FXwWeInXJ5SBBC8Psf",
+      "service_tier": "flex",
+      "cost": 0.00306225
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560730-uBCywJizLjZA988thRjp",
+      "service_tier": "flex",
+      "cost": 0.0031725
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560731-IdD0BVIuo8wMnXFkuzzQ",
+      "service_tier": "flex",
+      "cost": 0.001643625
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560731-uZeGDfFO2Xe8ORp9deVm",
+      "service_tier": "default",
+      "cost": 0.0681105
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560734-dcxJPN9ytGLYxlA65hui",
+      "service_tier": "flex",
+      "cost": 0.001847625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560736-nXLXqoghp9If5lC5jqzv",
+      "service_tier": "flex",
+      "cost": 0.004301625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560736-cj6mPGxheCOlzHxvui4s",
+      "service_tier": "flex",
+      "cost": 0.002774625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560736-TVVCkJki8ivesIyIfeNz",
+      "service_tier": "flex",
+      "cost": 0.00196575
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560738-CdqPDWwH8PX2or3khizS",
+      "service_tier": "flex",
+      "cost": 0.003522375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560739-219ZIdOfM6BJS7WWJF9Y",
+      "service_tier": "flex",
+      "cost": 0.00205575
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560741-Z8sB1CiluyrFwcn0gl1L",
+      "service_tier": "flex",
+      "cost": 0.00601725
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560741-9FwE75teddY8cWiPW17H",
+      "service_tier": "default",
+      "cost": 0.068277
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560742-fDuzHVXUK6v7lWQDcpO3",
+      "service_tier": "flex",
+      "cost": 0.00380475
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560744-lpZ6Kit9eY8AKVhQr2wL",
+      "service_tier": "flex",
+      "cost": 0.00393225
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560744-BxmiBPKGi8B0aEZ9ImvQ",
+      "service_tier": "flex",
+      "cost": 0.002490375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560746-o8rvxqPZLxJ0P8pgpDWK",
+      "service_tier": "flex",
+      "cost": 0.0043815
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560750-ejagECqY8FkIPBd1ni8M",
+      "service_tier": "flex",
+      "cost": 0.002658375
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560751-oDDwzVAWZOitS17nLJV4",
+      "service_tier": "default",
+      "cost": 0.0682335
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560752-bCHslVYlLAziBl6wQJnJ",
+      "service_tier": "flex",
+      "cost": 0.006892875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560752-rTfbT5kMzSgUbu0PXj9D",
+      "service_tier": "flex",
+      "cost": 0.003817875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560753-U2v0k6vz7B3IEZ3QvL1R",
+      "service_tier": "flex",
+      "cost": 0.00306825
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560754-sSVdM8qaPREGp38ucYO8",
+      "service_tier": "flex",
+      "cost": 0.001822875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560756-usWj5UvBXdhFp8gGtyhs",
+      "service_tier": "flex",
+      "cost": 0.001370625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560756-KtAX9K0oIsTkZ5ARFnfl",
+      "service_tier": "flex",
+      "cost": 0.002287875
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560759-LSdkmN9g8LKwmA1FV3x7",
+      "service_tier": "default",
+      "cost": 0.068188
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560760-FDICsswdYVoyG5dqgZMc",
+      "service_tier": "flex",
+      "cost": 0.002421
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560760-LGcVBKNdYXW249i0lWbQ",
+      "service_tier": "flex",
+      "cost": 0.00143775
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560760-psG9zrSht83UrgRS2DoK",
+      "service_tier": "flex",
+      "cost": 0.002012625
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560761-m7LnLGz82yQzkI8NRQL3",
+      "service_tier": "default",
+      "cost": 0.0680235
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560764-VbT3YgfRtVIsFRibuhXx",
+      "service_tier": "flex",
+      "cost": 0.00217125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560764-WfKakTaoh87lPN6cmsjD",
+      "service_tier": "flex",
+      "cost": 0.002791875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560765-FaomoO2AMJejKSMP0sf6",
+      "service_tier": "flex",
+      "cost": 0.006046875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560766-X6QA19P3qH6MNfspeTD1",
+      "service_tier": "flex",
+      "cost": 0.001539375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560766-NmwgULCgdgpNgWznUKM2",
+      "service_tier": "flex",
+      "cost": 0.001906125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560768-nAu3u3IYWQR7MAr2ktGj",
+      "service_tier": "flex",
+      "cost": 0.00146625
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560770-yTo6n6a6mTVMMVtTpNAS",
+      "service_tier": "default",
+      "cost": 0.0682495
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560783-vklXyNjAt2i2EhPw8Bux",
+      "service_tier": "flex",
+      "cost": 0.004808625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560772-KF6WvWM1GNDAi182KNmi",
+      "service_tier": "flex",
+      "cost": 0.001775625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560776-qw2N1wqsuUauls4I4k9c",
+      "service_tier": "flex",
+      "cost": 0.001633125
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560779-5BX5YdPJEz5D6LmcrUPr",
+      "service_tier": "default",
+      "cost": 0.0682025
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560781-HpTp7zIc5ce4MZFaAgFs",
+      "service_tier": "flex",
+      "cost": 0.00156975
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560785-vfBM1ncMkh66PD1dfPiy",
+      "service_tier": "flex",
+      "cost": 0.000332625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560788-Mym3c55Ck5MplobngHrJ",
+      "service_tier": "flex",
+      "cost": 0.002074125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560789-AuVYlKAP5I8dpdtcblEu",
+      "service_tier": "flex",
+      "cost": 0.0080715
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560792-KhsFNP7YAQXtRdFViq0K",
+      "service_tier": "flex",
+      "cost": 0.001496625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560799-uEw4lgGm3oPSZPSb5VFe",
+      "service_tier": "flex",
+      "cost": 0.00436425
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560813-j3COc7anJO3PVryxmLBZ",
+      "service_tier": "flex",
+      "cost": 0.001699125
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560857-w2unfxX57ZG62qtTxrwI",
+      "service_tier": "default",
+      "cost": 0.068628
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560857-1liQ3BoxNTPDuTX0JjFq",
+      "service_tier": "default",
+      "cost": 0.0682385
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560866-wG0MCCuJAis7VWJaFPIs",
+      "service_tier": "default",
+      "cost": 0.068345
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560980-L92mWXIsJT0xPcWyKPDP",
+      "service_tier": "flex",
+      "cost": 0.008068875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560867-7G0uaRuvKR6wRJlhctpx",
+      "service_tier": "flex",
+      "cost": 0.007986
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560881-A6RGBYqh5VyqNOFHNIdv",
+      "service_tier": "default",
+      "cost": 0.0683945
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560888-AynvWjnMxj1nhp95Y0ao",
+      "service_tier": "flex",
+      "cost": 0.00421275
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560892-l61ix4Qi4qD8K7mbwSZs",
+      "service_tier": "flex",
+      "cost": 0.0071565
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560899-SEMYAD7sEKnh0xOowQzm",
+      "service_tier": "flex",
+      "cost": 0.004049625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560906-ZMiV2jDIexzaYXNkINQv",
+      "service_tier": "flex",
+      "cost": 0.000298125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560961-5GRLrTR74aBQBoaM4nCh",
+      "service_tier": "flex",
+      "cost": 0.00200175
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560908-wCLfY2aBgythzTRoBZWN",
+      "service_tier": "flex",
+      "cost": 0.004518375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560916-WiZwdMOeOjZ1zzl82OdH",
+      "service_tier": "flex",
+      "cost": 0.004434
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560926-8sDCf6Q1hgigiYGhfGsL",
+      "service_tier": "default",
+      "cost": 0.0682925
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560936-p9W1ubapZNM59Yo16MkV",
+      "service_tier": "flex",
+      "cost": 0.002088375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560942-dbHjws5wIHWwJAvC57W8",
+      "service_tier": "flex",
+      "cost": 0.000247125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560944-240etvpRQVDca6XhqWxT",
+      "service_tier": "flex",
+      "cost": 0.002350875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560951-PFRyBrb9jSJhO73HgtIN",
+      "service_tier": "flex",
+      "cost": 0.00432075
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560960-vhrtSX3iV1li8L5x6FbW",
+      "service_tier": "default",
+      "cost": 0.0684265
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560965-p7ITafIqMMFvrQkfaRIK",
+      "service_tier": "default",
+      "cost": 0.0686265
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560970-r0qFdJU4pr2X4L8702cQ",
+      "service_tier": "default",
+      "cost": 0.068246
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560976-VWiw8PvjOoaU9R17Ox3l",
+      "service_tier": "flex",
+      "cost": 0.001931625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560981-NVvJniQBOxKGGANUjjgU",
+      "service_tier": "flex",
+      "cost": 0.001484625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560981-lVAWzJc400MIfuSsIE0J",
+      "service_tier": "flex",
+      "cost": 0.000346125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560984-ajiZCoLuaRl9OxEt0sx7",
+      "service_tier": "flex",
+      "cost": 0.002156625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560985-e5RrTsmhpcNYwUM9Zc4S",
+      "service_tier": "flex",
+      "cost": 0.00031725
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560987-Oto3ZUaaoZDX63vQZW3Q",
+      "service_tier": "flex",
+      "cost": 0.001529625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560990-1imLVYgQ2wLFrjT8u6lW",
+      "service_tier": "flex",
+      "cost": 0.002189625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560992-xWSGLubcN1wjLmBW6zzr",
+      "service_tier": "flex",
+      "cost": 0.000319125
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560994-5C5axS80j5gdoaPWZoBK",
+      "service_tier": "default",
+      "cost": 0.068436
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789560996-LWcADO6YgorjbceUqR9D",
+      "service_tier": "flex",
+      "cost": 0.00151425
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789560999-BLN9wPo5jZ6DKe3KkawG",
+      "service_tier": "default",
+      "cost": 0.0685695
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561002-63bqugK1TfeEy7ELT7AT",
+      "service_tier": "default",
+      "cost": 0.0683885
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561003-Ls8z6oWz1Biu9aVzW77q",
+      "service_tier": "flex",
+      "cost": 0.00804075
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561010-AToh0I3L8Vpn2MTM0sxS",
+      "service_tier": "flex",
+      "cost": 0.002199375
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561012-2dsIhU1la7MqDEnos23V",
+      "service_tier": "default",
+      "cost": 0.068756
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561018-HcBiIvgoxNMe3xV1PyI6",
+      "service_tier": "flex",
+      "cost": 0.002855625
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561020-MlNtIC2biTFZKVzB8r1t",
+      "service_tier": "default",
+      "cost": 0.06811
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561022-oRZn5RGsoiWNRMkCs9wZ",
+      "service_tier": "flex",
+      "cost": 0.00224475
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561024-vu8rZK4MDDcwM2yoCrYi",
+      "service_tier": "flex",
+      "cost": 0.001500375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561025-eeqUANL3mpMRcdB1a2pc",
+      "service_tier": "flex",
+      "cost": 0.015745875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561027-USpu9oAMToeD5fNWS0l4",
+      "service_tier": "flex",
+      "cost": 0.002291625
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561029-HJPvbKO6bQabV6vk4Qy4",
+      "service_tier": "default",
+      "cost": 0.0681395
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561029-XGO6h20g1aDVGxI8VMtN",
+      "service_tier": "default",
+      "cost": 0.068591
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561032-1xXlBFYwlPVpvC9szJWx",
+      "service_tier": "flex",
+      "cost": 0.002029125
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561038-07AYw239Czw4pUBmutDb",
+      "service_tier": "default",
+      "cost": 0.068181
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561039-1nigNUHaBFy6GaASXHTe",
+      "service_tier": "flex",
+      "cost": 0.0015645
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561039-fsJMtvGsbsp5CwOKHpjK",
+      "service_tier": "default",
+      "cost": 0.068704
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561048-LLm3wYgT2WIaUyPFVOaP",
+      "service_tier": "flex",
+      "cost": 0.003498375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561051-n1wSmX8ohgu8VhJchUao",
+      "service_tier": "flex",
+      "cost": 0.002522625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561055-n1AjWS3Ys9dxHiADLXxq",
+      "service_tier": "flex",
+      "cost": 0.005979
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561057-FJATozLz6wKtojfStPUA",
+      "service_tier": "flex",
+      "cost": 0.002196375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561057-D2SQc15eKg95K1kFUs7L",
+      "service_tier": "flex",
+      "cost": 0.015799875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561065-zLrxadQrLpEWXZ4xSrrS",
+      "service_tier": "flex",
+      "cost": 0.002287875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561068-WQburHO8IAqFMF6f5H7y",
+      "service_tier": "flex",
+      "cost": 0.00169425
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561070-8NPqylT9bJThwZxc9Pl7",
+      "service_tier": "flex",
+      "cost": 0.001279875
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561072-YOK2U498OB3TmGayhq8A",
+      "service_tier": "default",
+      "cost": 0.068331
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561078-9dk2bXRz7Zg9BdCCJAcw",
+      "service_tier": "flex",
+      "cost": 0.0032475
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561081-xM6Ic0jFlVGp0O6KDXPT",
+      "service_tier": "flex",
+      "cost": 0.0030825
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561087-OG6TMjsmIJHqtA1Ha8NO",
+      "service_tier": "flex",
+      "cost": 0.0033225
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561088-xW6pWkEkNHedmacgqstw",
+      "service_tier": "default",
+      "cost": 0.068333
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561088-jpdS8Fhm3J32slzTJuIi",
+      "service_tier": "default",
+      "cost": 0.0685385
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561088-nukKR4LIeXRQVTmy5YfP",
+      "service_tier": "default",
+      "cost": 0.0684955
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561090-chImynr1NLjxXXevsaNe",
+      "service_tier": "flex",
+      "cost": 0.002356125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561091-bc1oAvaZ4HSEUYR3nFdl",
+      "service_tier": "flex",
+      "cost": 0.001699875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561094-ARgwRB5VQ0uvDmZ2iuy5",
+      "service_tier": "flex",
+      "cost": 0.0009465
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561095-Mafa1ynmBFJzxwa5yrsS",
+      "service_tier": "flex",
+      "cost": 0.002251125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561098-J6KqpxBHXweMqytKl0NS",
+      "service_tier": "flex",
+      "cost": 0.001969875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561099-hHvwekHxHMycBIAPZ4OB",
+      "service_tier": "flex",
+      "cost": 0.0013905
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561099-StHksPNfpw2zDB1WvMw5",
+      "service_tier": "flex",
+      "cost": 0.002164875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561099-N6Er4gTErK7BbS2SQna1",
+      "service_tier": "flex",
+      "cost": 0.002209125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561101-k75YoNlZErkKOvbrlNqG",
+      "service_tier": "flex",
+      "cost": 0.001501125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561103-p5gIORb1O9fw1MljzFFi",
+      "service_tier": "flex",
+      "cost": 0.001573125
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561102-leVaklJ6UVaacOWrpTph",
+      "service_tier": "default",
+      "cost": 0.0684955
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561104-eISljNty4xjVhhhu41MZ",
+      "service_tier": "flex",
+      "cost": 0.000222
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561104-cKzUo8Bg92QK7mH4VTog",
+      "service_tier": "flex",
+      "cost": 0.00140925
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561104-qK9Jqcu13imRREjnanhW",
+      "service_tier": "default",
+      "cost": 0.0684875
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561104-GxZjL20dUDn0k4S803l5",
+      "service_tier": "default",
+      "cost": 0.0692285
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561104-06fCmV60wkK0XOl9Fzvz",
+      "service_tier": "default",
+      "cost": 0.0684855
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561106-kcFhrqrRkdiw5zaraGeG",
+      "service_tier": "flex",
+      "cost": 0.0018735
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561109-4nuPiLMyh5mZqSfUQgaX",
+      "service_tier": "flex",
+      "cost": 0.001829625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561110-OrPxn3bjWo1qm8Eadlcf",
+      "service_tier": "flex",
+      "cost": 0.002478375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561112-9fVBK62dJcok1CWcHK4z",
+      "service_tier": "flex",
+      "cost": 0.001684875
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561114-N7mPqgcbw7LvDKNpeU8b",
+      "service_tier": "default",
+      "cost": 0.0683245
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561114-STEbyghifgMYwcELnWyn",
+      "service_tier": "flex",
+      "cost": 0.00204825
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561116-8wGDAoh8W2ami74BNmVd",
+      "service_tier": "default",
+      "cost": 0.0684835
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561119-cIMxpDYADo10ujFyk7x9",
+      "service_tier": "flex",
+      "cost": 0.001463625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561120-mUGTuEVqZWbh7r4ZYRtd",
+      "service_tier": "flex",
+      "cost": 0.00165075
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561121-WBh8w42rAZhTXUPyuoTO",
+      "service_tier": "flex",
+      "cost": 0.007982625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561124-WriqhFXgiR0hFl2BGUt0",
+      "service_tier": "flex",
+      "cost": 0.00148725
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561124-oIkI0YKakOEXR3ix9yaZ",
+      "service_tier": "flex",
+      "cost": 0.001573875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561125-K1r3qUmOCvkvU5pRPxq3",
+      "service_tier": "flex",
+      "cost": 0.004366125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561126-KkaDiHr2go0UIstakC7h",
+      "service_tier": "flex",
+      "cost": 0.001353375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561134-iMFycsoseBFTbXNF8B33",
+      "service_tier": "flex",
+      "cost": 0.00239775
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561135-2U9tCA53PDwAKMfOOBtp",
+      "service_tier": "flex",
+      "cost": 0.002479875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561139-l9lX3vx8t3MajIqmbrzh",
+      "service_tier": "flex",
+      "cost": 0.00550725
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561148-26cnaWo3ZQitnmSshpe7",
+      "service_tier": "flex",
+      "cost": 0.002143125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561198-dQTB8vCmCuoJRcSvqtkr",
+      "service_tier": "flex",
+      "cost": 0.003105375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561198-01nPzSZ7iGtnXtpMrFOc",
+      "service_tier": "flex",
+      "cost": 0.00242175
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561198-8Z6rr2rIpmCI6QnA38vh",
+      "service_tier": "flex",
+      "cost": 0.0010815
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561218-ohGB80kbobnkqCwjv8HT",
+      "service_tier": "flex",
+      "cost": 0.0012465
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561203-irovfTeDrOUd87vf8pOt",
+      "service_tier": "flex",
+      "cost": 0.0029805
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561205-3z5V8etAPxaNHy0lMUDc",
+      "service_tier": "flex",
+      "cost": 0.001537875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561210-hj8c8ha817TGSVzxHEnL",
+      "service_tier": "flex",
+      "cost": 0.00189525
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561211-yQIxUAtJilXPFIGJecNy",
+      "service_tier": "flex",
+      "cost": 0.00221475
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561215-KOhQjzzN0cRqSjegufWt",
+      "service_tier": "flex",
+      "cost": 0.00175725
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561218-0DUV1RwcKL43ofsoAqMS",
+      "service_tier": "flex",
+      "cost": 0.00033225
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561221-6A5Hp6Tt8BRdXCn8HWiT",
+      "service_tier": "flex",
+      "cost": 0.00164475
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561222-8v47Q7r2QADnFPLfOYb2",
+      "service_tier": "flex",
+      "cost": 0.001568625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561225-y2IskKq5asxbYHY4ti7y",
+      "service_tier": "flex",
+      "cost": 0.0002535
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561227-78elO45qAp4Bj2n5qTnw",
+      "service_tier": "flex",
+      "cost": 0.001695
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561243-kWisDwTzwAmSB0jhr7ci",
+      "service_tier": "flex",
+      "cost": 0.003525375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561242-nhSfBzIdfASyQRtjkNCZ",
+      "service_tier": "flex",
+      "cost": 0.00575025
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561243-viu0gqxg6CUbTXXqDVCv",
+      "service_tier": "flex",
+      "cost": 0.001844625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561250-OSmtikzpF8QjRe3KdTqs",
+      "service_tier": "flex",
+      "cost": 0.003255375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561248-EsxZrNGjrLEfj7LyCM4q",
+      "service_tier": "flex",
+      "cost": 0.0037635
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561251-ZcNohqZfEw24oNF9pAvu",
+      "service_tier": "flex",
+      "cost": 0.004540125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561253-cFQ6cYXNbUxbcGJ4AZIV",
+      "service_tier": "flex",
+      "cost": 0.0019605
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561256-zX9YOViDp6VoXnnkMmB6",
+      "service_tier": "flex",
+      "cost": 0.00297825
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561257-B0wf3Q5GCL9oSJpYVJt1",
+      "service_tier": "flex",
+      "cost": 0.001828875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561258-CrCG9ZWmqb8aEv4N6qy4",
+      "service_tier": "flex",
+      "cost": 0.008253375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561260-0ck0dRAgFB2gbmATSccv",
+      "service_tier": "flex",
+      "cost": 0.007722
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561264-7L3uJ22JIwcaXlG2lPJK",
+      "service_tier": "flex",
+      "cost": 0.003004125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561264-1hqzyBsT8OLpMDE8Yuyz",
+      "service_tier": "flex",
+      "cost": 0.00470775
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561272-VvOytBbvL572DFeq0hKi",
+      "service_tier": "flex",
+      "cost": 0.0021075
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561273-fUKrEJMPHiukmGyT1Epc",
+      "service_tier": "flex",
+      "cost": 0.002206125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561274-6muEB9Nu88T7i6Sj6ZmO",
+      "service_tier": "flex",
+      "cost": 0.001948875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561278-9XfC7cmRxpqpPhsSLIcm",
+      "service_tier": "flex",
+      "cost": 0.008072625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561278-119BZmWBtu3PhTNCHiRZ",
+      "service_tier": "flex",
+      "cost": 0.00542175
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561279-oD9xP8vlJEWCkvV2RAXb",
+      "service_tier": "flex",
+      "cost": 0.00331275
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561279-JRpheivfSw1aqJ4zv78B",
+      "service_tier": "flex",
+      "cost": 0.003974625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561286-XSIzhtKKahdlQhIp6bW2",
+      "service_tier": "flex",
+      "cost": 0.002450625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561289-XI7esJ0QQWV2K5XRNsKY",
+      "service_tier": "flex",
+      "cost": 0.006027375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561291-I4J0xOWWox1I9AFtNCLm",
+      "service_tier": "flex",
+      "cost": 0.002675625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561292-4RGr0StMzboqvMnAEcYi",
+      "service_tier": "flex",
+      "cost": 0.004352625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561297-Eup6VwQajuenihmra3ja",
+      "service_tier": "flex",
+      "cost": 0.004131375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561297-CqjdxxXN6rNxRepMdBNr",
+      "service_tier": "flex",
+      "cost": 0.0010995
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561301-DhEuaeKvhXTmp6FjLfOY",
+      "service_tier": "flex",
+      "cost": 0.002568
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561301-itKPE1mXLQd8NdXKC3kj",
+      "service_tier": "flex",
+      "cost": 0.008244
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561302-pO1pgMkfJrpNU6nmnpOp",
+      "service_tier": "flex",
+      "cost": 0.001623375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "unknown_after_interruption",
+      "note": "Screening process ended without a saved response. Retain reservation; do not assume request was free."
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561402-7Xu4wYdRymiNHLfCOqVn",
+      "service_tier": "default",
+      "cost": 0.0682535
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561402-sCtiP3qyu04tGhweSPuI",
+      "service_tier": "default",
+      "cost": 0.067954
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561402-NJlJbgsgo59JYHaZ0kJN",
+      "service_tier": "default",
+      "cost": 0.068225
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561410-GtwYNzK2iu40f84P4DsO",
+      "service_tier": "default",
+      "cost": 0.0682025
+    },
+    {
+      "model": "google/gemini-3.1-flash-image",
+      "reservation": 0.6,
+      "status": "completed",
+      "response_id": "gen-1789561410-GRd0eauMZdexCEV7XMRw",
+      "service_tier": "default",
+      "cost": 0.0684005
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561413-QmImni21LaFFfPgg1d5l",
+      "service_tier": "flex",
+      "cost": 0.002386125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561418-SfhAUzPedX2T6wmPlx8d",
+      "service_tier": "flex",
+      "cost": 0.001096125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561419-eQRlZpEUTFTOJyRykFL0",
+      "service_tier": "flex",
+      "cost": 0.002258625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561422-dWqXmqY9pcJarM00kp6V",
+      "service_tier": "flex",
+      "cost": 0.001069875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561425-VllMeeiODlyepryp1Okd",
+      "service_tier": "flex",
+      "cost": 0.0014445
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561426-UERkqL7MeeroGByGliGC",
+      "service_tier": "flex",
+      "cost": 0.001452375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561512-hjQtut23Nsf8MIvUcdni",
+      "service_tier": "flex",
+      "cost": 0.001417875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561512-fe3tudHddjqYefi3RmBs",
+      "service_tier": "flex",
+      "cost": 0.007175625
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561512-RZQJGCTYB4K0ORIhqqiJ",
+      "service_tier": "flex",
+      "cost": 0.002017125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561517-zLh6e96GsuMlXVNm7dJe",
+      "service_tier": "flex",
+      "cost": 0.001074
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561517-5ovhjwZWTVxgaaetp6om",
+      "service_tier": "flex",
+      "cost": 0.000285375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561519-xDZWzvPmHJY1BuvrGOWX",
+      "service_tier": "flex",
+      "cost": 0.001207875
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561521-DjkSs7HSyut4d9tSHGoU",
+      "service_tier": "flex",
+      "cost": 0.002046375
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561523-G4q36Q7DaAjdhrFEMR0o",
+      "service_tier": "flex",
+      "cost": 0.00175125
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "reservation": 0.05,
+      "status": "completed",
+      "response_id": "gen-1789561527-tlYpCpWR4AdRjwNEmyMJ",
+      "service_tier": "flex",
+      "cost": 0.00809625
+    }
+  ]
+}

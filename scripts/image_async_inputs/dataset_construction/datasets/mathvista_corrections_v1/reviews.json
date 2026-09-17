@@ -1,0 +1,74 @@
+{
+  "88": {
+    "decision": "accept",
+    "reviewer": "Codex visual and arithmetic review",
+    "notes": "Square angle is 90 degrees: 2x=90 before, 3x=90 after. Diagram treated as schematic. Local research use; retain source attribution and upstream image rights.",
+    "isolated_edit": true,
+    "readable": true,
+    "both_solvable": true,
+    "visual_required": true,
+    "answers_distinct": true,
+    "source_terms_checked": true,
+    "same_dimensions": true
+  },
+  "926": {
+    "decision": "accept",
+    "reviewer": "Codex visual and arithmetic review",
+    "notes": "Radius 3, semicircle versus quarter circle: 14.14 versus 7.07. Shading changes; equation preserved. Local research use with upstream attribution.",
+    "isolated_edit": true,
+    "readable": true,
+    "both_solvable": true,
+    "visual_required": true,
+    "answers_distinct": true,
+    "source_terms_checked": true,
+    "same_dimensions": true
+  },
+  "45": {
+    "decision": "accept",
+    "reviewer": "Codex visual and arithmetic review",
+    "notes": "20-17=3 versus 14-17=-3. Easy calibration only. Local research use with upstream attribution.",
+    "isolated_edit": true,
+    "readable": true,
+    "both_solvable": true,
+    "visual_required": true,
+    "answers_distinct": true,
+    "source_terms_checked": true,
+    "same_dimensions": true
+  },
+  "331": {
+    "decision": "accept",
+    "reviewer": "Codex visual and arithmetic review",
+    "notes": "Inspected normalized pair: all eight rows preserved; only Kurt 60 versus 52 changes. 520/8=65 versus 512/8=64. Raw aspect difference 1.29% explicitly reviewed and normalized under pair-specific 1.5% allowance. Local research use with upstream attribution.",
+    "isolated_edit": true,
+    "readable": true,
+    "both_solvable": true,
+    "visual_required": true,
+    "answers_distinct": true,
+    "source_terms_checked": true,
+    "same_dimensions": true
+  },
+  "234": {
+    "decision": "accept",
+    "reviewer": "Codex visual and arithmetic review",
+    "notes": "Inspected normalized pair: only B angle label absent before. Insufficient information is an explicit answer choice; after two 60-degree angles imply equilateral AB=AC=6. Reveal control, not wrong-value reasoning sample. Local research use with upstream attribution.",
+    "isolated_edit": true,
+    "readable": true,
+    "both_solvable": true,
+    "visual_required": true,
+    "answers_distinct": true,
+    "source_terms_checked": true,
+    "same_dimensions": true
+  },
+  "206": {
+    "decision": "accept",
+    "reviewer": "Codex visual and arithmetic review",
+    "notes": "Inspected normalized pair: 10 versus 15 is sole semantic label change. Ratios 10/5=2 and 15/5=3. Drawing is schematic; before label does not match drawn scale. Keep as easy label-based calibration, not precise geometric measurement. Local research use with upstream attribution.",
+    "isolated_edit": true,
+    "readable": true,
+    "both_solvable": true,
+    "visual_required": true,
+    "answers_distinct": true,
+    "source_terms_checked": true,
+    "same_dimensions": true
+  }
+}

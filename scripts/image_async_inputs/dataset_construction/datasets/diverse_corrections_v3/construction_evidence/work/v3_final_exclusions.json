@@ -1,0 +1,9 @@
+{
+  "682351da7fd8b276": "Exact source-image duplicate of ChartQA 0055d6580f9409e9; retain native source only.",
+  "42f52c977ea24c1b": "Exact higher-than cannot be determined when after states share a color bin.",
+  "90944c639e8247fa": "Exact higher-than cannot be determined when after states share a color bin.",
+  "240200510d87d775": "Same bin does not establish equal exact values.",
+  "0e26f75d6cc6f598": "Same bin does not establish equal exact values.",
+  "4d5d74433918629e": "Swapped literal color names conflict with displayed mark colors.",
+  "0e690602c01d66da": "Swapped literal color names conflict with displayed mark colors."
+}

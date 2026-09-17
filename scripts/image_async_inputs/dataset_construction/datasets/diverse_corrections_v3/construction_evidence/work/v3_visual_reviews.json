@@ -1,0 +1,523 @@
+{
+  "0055d6580f9409e9": {"decision":"accept", "notes":"Viewed three bars. Slovenia10 versus12.6 with correspondingbar length;6+4.4=10.4 exceeds10 butnot12.6. Other bars retained."},
+  "19579cf91c7de253": {"decision":"accept", "difficulty_group":"calibration", "notes":"Viewed stackedbars. Good/Poor legend labels swap only. Brazil gray57% ismaximum, mapsGood versusPoor. Counts and segment geometry retained."},
+  "37971d3eeb8a2790": {"decision":"accept", "notes":"Viewed groupedbars. Gender legend colors swap only; blue higher acrossall three measures givesFemale before,Male after, robust to vague source frequency wording."},
+  "4344f9118b4e722a": {"decision":"accept", "notes":"Viewed yearly groupedbars. 2018total320 versus315, slightbarheight increase corresponds to5. Domestic280 unchanged; differences40 versus35."},
+  "4bf3a68a48c235dc": {"decision":"reject", "notes":"Viewed horizontalbars. Wisconsin label120694 versus150694, but editedbar looks roughly half rather than80% of originalwidth, too short against axis and Michigan196907. Reject unreliable redundant encoding."},
+  "4d0d018d9aeff1f5": {"decision":"accept", "notes":"Viewed scene. Small brown sphere rubber versusmetal only; originalunion contains largeblue/cyan balls plus smallbrownmetal leftofgreen, count2 versus3. Other objects retained."},
+  "5025ffdde5844cb0": {"decision":"accept", "notes":"Viewed scene. Rear-left large matte cube green versusblue only, behind small yellowball andleftofredcube. Other objects retained."},
+  "537fad82f7a0dda0": {"decision":"accept", "notes":"Viewed scene. Front cyan smallcylinder metal versusrubber only, infrontof smallmatteblock andrightof graycylinder. Anchors preserved."},
+  "539b37164f0bbaac": {"decision":"accept", "notes":"Viewed scene. Rear purple matte cylinder versuscube only; between yellow matte sphere and tinyblueblock in left/right relation. Others unchanged."},
+  "5490dc5a7c48f708": {"decision":"accept", "notes":"Viewed scene. Tinycylinder leftofsmall redmattecube blue versusgray only. Other colors/materials preserved."},
+  "5a769916b0354dc5": {"decision":"accept", "notes":"Viewed stackedbars. Animal-protection row too-little52/rightamount42 before versus62/32 after, matchingboundaryshift; total100 unchanged. Too-little averages303/5=60.6 versus313/5=62.6."},
+  "5c3b1e32e73f662d": {"decision":"accept", "notes":"Viewed cottonbars. US4000 versus4336 withcorrespondinglength; India6423 China5933 retained. Topthree mean5452 versus5564."},
+  "223558c1ca7f059e": {"decision":"accept", "notes":"Viewed five objects. Rear small shiny sphere green versusyellow only. Metallic balls right of tiny rubber ball contains gray sphere; yellow condition adds rear sphere only after, union1 versus2."},
+  "27e2b316c108c74a": {"decision":"accept", "notes":"Viewed scene. Blue metal cylinder small versuslarge only, right of tiny blue matte sphere; other sizes/positions preserved."},
+  "394d8b747adb204f": {"decision":"accept", "notes":"Viewed full scene. Large purple cylinder rubber versusmetal only; uniquely qualifies for large-metal union right of red cube/blue block after, count0 versus1."},
+  "399182a98e470135": {"decision":"accept", "notes":"Viewed seven objects. Small yellow cube versuscylinder between cyan metal cylinder and brown tiny matte cylinder. All anchors preserved."},
+  "3dd78e1d8da721f8": {"decision":"accept", "notes":"Viewed four-object scene. Large red matte cube versuscylinder behind gray shiny cube; gray matte sphere anchor retained. Intended shape-only edit."},
+  "41c14f6a34bed9b8": {"decision":"accept", "notes":"Viewed scene. Small blue metal sphere versuscylinder, same color as tiny matte blue cube. Other objects and materials retained."},
+  "4583b1561376ee5e": {"decision":"accept", "notes":"Viewed ten-object scene. Red matte rear-left cube versussphere only. It is uniquely both behind and left of purple sphere."},
+  "4f1d0eeb35fee730": {"decision":"accept", "notes":"Viewed all ten objects. Intended compound object replacement at far right: purple metal cylinder versusmatte cube. Other anchors retained; target green metal sphere has1 versus0 purple metal cylinders to its right."},
+  "540ef3bb5018a1fd": {"decision":"accept", "notes":"Viewed four polar maps. Top-right/bottom-left response patterns exchanged, headings retained. At90deg positive blue maximum maps to[1,0] before versus[0,1] after; other panels/colorbar retained."},
+  "545b72b6a45db382": {"decision":"accept", "notes":"Viewed both time plots. Green line highest throughApril2022; green/orange index labels swapDJBank versusS&P500. Curves and dates retained."},
+  "56f775e2999b4ce0": {"decision":"accept", "notes":"Viewed convergence traces. All begin near36, endpoint rankings blue31,magenta28,black27,red20; magenta second-smallest decrease. Black/magenta legend names swap, answerOnline-FedSGD versusPAO-Fed-U1."},
+  "57ea3cdb35362c46": {"decision":"accept", "notes":"Viewed arithmetic cycle. After timeszero, plus7 versusplus6 then times4 minus15 gives13 versus9. Other operations retained."},
+  "595063b2d3104645": {"decision":"accept", "notes":"Viewed relation table. Last x2 versus6 only; duplicate2 has20 and7 outputs before, distinctinputs after. Notfunction versusfunction."},
+  "5962f3794999d9ad": {"decision":"accept", "notes":"Viewed five counts. Chandler10 versus9 only. Sorted median10 versus9."},
+  "5a6aadb48d413527": {"decision":"accept", "notes":"Viewed seven-vertex graph. Bottom edge removed before; two four-cycles sharingcenter are bipartite. Restored bottomedge forms triangle requiring3 colors, achievable. No danglingstubs."},
+  "5b9e9f30bb5a219d": {"decision":"accept", "difficulty_group":"calibration", "notes":"Viewed five-year dog weights. 2010weight15 versus11 only; 2009weight7. One-year rate8 versus4."},
+  "0ca52b2f999ea67d": {"decision":"accept", "notes":"Viewed four-object scene. Large yellow cylinder metal versusrubber only. Green cubes and small brown cylinder anchors preserved; target left of foreground green cube."},
+  "1264e583a3c91808": {"decision":"accept", "notes":"Viewed three cylinders. Small gray cylinder rubber versusmetal only; uniquely tiny object left of red metallic cylinder. Anchors unchanged."},
+  "1545a2fd311b1ebf": {"decision":"accept", "notes":"Viewed three objects. Green cylinder left of sphere and in front of cube is rubber versusmetal. Shape, position, anchors preserved."},
+  "15e280daf556b288": {"decision":"accept", "notes":"Viewed two cyan cubes and brown cylinder. Cylinder moved fromleft foreground to right only. Objects in front of matte cube and left of cylinder count0 versus1 (metal cube)."},
+  "16c5a80e1b94a9b4": {"decision":"accept", "notes":"Viewed six-object scene. Rear shiny cube red versusblue only; it is behind cyan shiny cube and right of yellow metal sphere, other objects preserved."},
+  "177f73e8b6991776": {"decision":"accept", "notes":"Viewed scene. Small matte cube red versusgray only. It is left of large cyan matte ball behind purple cube; all anchor shapes preserved."},
+  "2152aa36f3f3fe8b": {"decision":"accept", "notes":"Viewed five objects. Tiny yellow cube rubber versusmetal only, right of rear red cube. Brown sphere and foreground red cube anchor chain unchanged."},
+  "41a6884068f6e933": {"decision":"accept", "notes":"Viewed supply table. At1020 supplied25700 versus5700 only, demand19500 retained, surplus versusshortage. BEFORE represents erroneous nonmonotonic supply entry, not a coherent fitted supply curve."},
+  "49694112a3b953fd": {"decision":"accept", "notes":"Viewed five days. Wednesday3 versus5 only, maximum8; ranges5 versus3."},
+  "4e52f9269d0e1d85": {"decision":"accept", "notes":"Viewed garden prices. Watering can5.13 versus7.13 only; sprinkler9.19+shovel8.63 give totals22.95 versus24.95."},
+  "509807277eac4c7f": {"decision":"accept", "notes":"Viewed two-way zoo table. Atlantic sun bears8 versus3 only. Atlantic totals13 versus8, Pacific9 fixed; minimumPacific versusAtlantic."},
+  "52230e95cb2590c6": {"decision":"reject", "notes":"Viewed both log panels. Intended legend swap present, but BEFORE left-axis .001 tick appears prefixed by an extra long minus stroke, potentially negative on a log axis. Reject changed axis readability."},
+  "5275a6a0e09a15b8": {"decision":"accept", "notes":"Viewed heatmap. FreeSolv/Tox21 row labels swap only. Strong-red second-last row has most entries above.025 and maps toTox21 before,FreeSolv after; cells retained."},
+  "52893471578a8aca": {"decision":"accept", "notes":"Viewed function table. Last y5 versus6 only; differences-5,-6 before versus-5,-5 after, nonlinear versuslinear."},
+  "52f0df9b97fb6b9e": {"decision":"accept", "notes":"Viewed seven paired boxplots. Orange CS median lowered to.55 before from.79 after; onlyPHY remains>.7 before versusCS+PHY after. Other medians preserved; small erase artifact at original CS median is visible."},
+  "53d3ddd61e80e740": {"decision":"accept", "notes":"Viewed journey graph. Naomi endpoint15 versus10 minutes, Maya30 retained; speeds24 versus36 and Maya12 give differences12 versus24. Dashed endpoint segment changed consistently."},
+  "0bf3f7868c780545": {"decision":"accept", "notes":"Viewed fruit counts. Apples21 versus23 only; oranges100 unchanged, totals240 versus242 yield5/12 versus50/121."},
+  "0ebff6c730878d69": {"decision":"accept", "notes":"Viewed jewelry prices. Emerald4419 versus5419 only. Three rings plus seven7084 pendants gives62845 versus65845."},
+  "0f07c827adb8e3d2": {"decision":"accept", "notes":"Viewed stem-leaf plot. Leaf5 in stem5 removed before; below70 counts5 versus6. All other leaves retained."},
+  "0fa36ade3f913dc4": {"decision":"accept", "notes":"Viewed six contributions. Jayden200 versus270 only, other total1880. 200/2080=5/52 versus270/2150=27/215."},
+  "16301283cff7c5ca": {"decision":"accept", "notes":"Viewed survey. Stretching420 versus820 only; other total1580. Fractions420/2000=21/100 versus820/2400=41/120."},
+  "19d86b36976fd818": {"decision":"accept", "notes":"Viewed three coordinates. Last y5 versus0 only; differences-10,-5 before versus-10,-10 after, nonlinear versuslinear."},
+  "1addbe42d1568342": {"decision":"accept", "notes":"Viewed spinner frequencies. Number4 frequency7 versus1 only; frequencies1-3 sum39, giving46 versus40 below5."},
+  "2216706cd687dc13": {"decision":"accept", "notes":"Viewed all frequencies. One-pair count10 versus20 only; sums38 versus48. BEFORE has alternating row tint absent from source, a nonsemantic rendering artifact."},
+  "287408352886d75a": {"decision":"accept", "notes":"Viewed books table. Math7.84 versus6.84 only; mystery3.74. Totals11.58 versus10.58 straddle10.73."},
+  "2bedffb90ad2bd79": {"decision":"accept", "difficulty_group":"calibration", "notes":"Viewed yearly counts. 2011value29 versus27; 2010value24 unchanged. One-year difference5 versus3."},
+  "2e3fca7a149f75da": {"decision":"accept", "notes":"Viewed runs-frequency table. Frequency at2runs10 versus20 only; at least2 sums43 versus53."},
+  "3634a61d22d1283e": {"decision":"accept", "notes":"Viewed five running counts. Ed7 versus3 only; sorted middle7 versus6. BEFORE alternating row tint changes appearance but not data."},
+  "3fcf096d2c62f70c": {"decision":"accept", "notes":"Viewed eight scores. Laura8 versus6 only, minimum2 unchanged; ranges6 versus4."},
+  "438ec73d1fdeaf24": {"decision":"accept", "notes":"Viewed two-way table. Young-knee2 versus1, others7,7,4. Joint probabilities2/20=1/10 versus1/19."},
+  "48f759b65f19c1de": {"decision":"accept", "notes":"Viewed eight months. February1 versus9 only, other sum31. Means32/8=4 versus40/8=5."},
+  "490c01b64d4f0286": {"decision":"reject", "notes":"Viewed price table. Numeric popcorn4 versus3 is correct but unrelated row backgrounds turn purple across nearly whole image. Reject prominent nonlocal style edit to limit shortcut artifacts."},
+  "00c5b1940db0a54b": {"decision":"accept", "difficulty_group":"calibration", "notes":"Viewed shells table. Saturday4 versus0 only, Friday0 retained; one-day difference4 versus0."},
+  "019f6852d047888c": {"decision":"accept", "notes":"Viewed price table: sweater3.17 versus4.17 only. 9*sweater+7*7.24 gives79.21 versus88.21."},
+  "0377fb31e31028f5": {"decision":"accept", "notes":"Viewed jewelry table: pendant2164 versus2064, bracelet7697 retained. Totals9861 versus9761 straddle9788; no versusyes."},
+  "06a5633bcb21939c": {"decision":"accept", "notes":"Viewed six dogs. Cocoa30 versus41; other rows sum102 in both. Fractions30/132=5/22 versus41/143."},
+  "07eb65836b9abb59": {"decision":"accept", "notes":"Viewed five prices. Trampoline72 versus62 only; game44 retained. Totals116 versus106 straddle109."},
+  "081a289c1a897912": {"decision":"accept", "difficulty_group":"calibration", "notes":"Viewed yearly table. 2012time28 versus30 only; 2011time25. One-year rate3 versus5; yearly records need not be cumulative records."},
+  "083876ea9e3cd7bb": {"decision":"accept", "notes":"Viewed postal price table. Airplane stamp.30 versus.36 only; box.66. Totals.96 versus1.02 straddle1.00."},
+  "08d41e52072d3289": {"decision":"accept", "notes":"Viewed salad table. Fruit unit price8 versus4 only; 3.75 pounds gives30 versus15."},
+  "0adf8515d83bbe5b": {"decision":"accept", "notes":"Viewed all eight counts. Neil7 versus10 only, unique modal value7 before and10 after, each occurs three times."},
+  "415e34ebbb02fd67": {"decision":"accept", "notes":"Viewed square schematic. Both middle-square side labels consistently2 versus3, corner sides1 unchanged; shaded L area(s+1)^2-s^2 gives5 versus7."},
+  "419743bf48a285e1": {"decision":"accept", "notes":"Viewed six shapes. Large square white versusgray only. Both circles required; before requires gray triangle plus another large shape, four; after gray large square completes constraints with three."},
+  "41fb1c76cbdc0b41": {"decision":"accept", "notes":"Viewed nested squares. Bottom-right area1 versus4, top-left9 retained. Outer side9 leaves middle side5 versus4; gray81-9-1-25=46 versus81-9-4-16=52."},
+  "4c149111b52e7148": {"decision":"accept", "notes":"Viewed time/accuracy scatter. DenseNet201 moves horizontally from6 to4.8 before, stays92% accuracy. Second-slowest model becomesDenseNet92 versusXception94. Others retained."},
+  "4fd3d25cea9d224e": {"decision":"accept", "notes":"Viewed return plot. Orange has lowest slope between1000 and3000 (slightly negative); orange/blue legend values swap0 versus.25. Curves intact."},
+  "506f2f36249f5060": {"decision":"accept", "notes":"Viewed two isosceles triangles. ApexQ20 versus40 only. Upper base angle80 versus70 equals lower apex; lower base50 versus55."},
+  "5150ff208e049273": {"decision":"accept", "difficulty_group":"calibration", "notes":"Viewed symbol equations. Triangle3 from first; second RHS8 versus9 only gives square5 versus6. Easy two-step arithmetic."},
+  "011c584da74e14b7": {"decision":"accept", "notes":"Viewed map and legend. Texas lowest bin versushighest; Alabama second bin retained, comparisonNo versusYes. Other state classifications preserved; global rasterization differs slightly."},
+  "08de24ae141d945a": {"decision":"accept", "notes":"Viewed western states and legend. Utah second versus third bin only; no other western state exceeds second bin. Western maximum1473-2546 versus2547-3532."},
+  "0e26f75d6cc6f598": {"decision":"accept", "notes":"Viewed map. Kentucky second versuslowest bin; Iowa lowest unchanged. Same-bin answerNo versusYes. Legend retained."},
+  "242566a5bdfe0529": {"decision":"accept", "notes":"Viewed northeastern states and inset labels. NewYork lowest versushighest bin, Massachusetts third and NewHampshire lowest retained. Among Vermont neighbors maximumMA versusNY."},
+  "25c1ef53fec6de78": {"decision":"accept", "notes":"Viewed map. Oregon second versushighest bin only; California third. Higher-than comparisonNo versusYes, legend and other states preserved."},
+  "3524b153ec4a274b": {"decision":"accept", "notes":"Viewed Virginia neighboring states. WestVirginia lowest versussecond bin only. Other neighbors second or higher, so minimum500-6620 versus6670-16770."},
+  "2fede98627031fec": {"decision":"accept", "notes":"Viewed five cubes and choices. Upper gray cube middle versusright; five-cube count retained. Top colors dark-gray,gray,white versusdark-gray,white,gray selectE versusB."},
+  "31e272053bda2998": {"decision":"accept", "notes":"Viewed triangle. XY6 versus8, hypotenuse10 retained. Pythagorean opposite leg8 versus6 gives sine4/5 versus3/5."},
+  "34e897f6e80ceeab": {"decision":"accept", "notes":"Viewed country scatter. UnitedStates moves from bottom-left before to bottom-right after, leaving English-speaking split versusall in quadrantIV. Protestant,Confucian,Baltic remain single-quadrant groups. Other dots retained."},
+  "357ec7cebda9e9dd": {"decision":"accept", "notes":"Viewed pyramid: bottom-right2015 versus2017 only. Middle-left19, bottom-middle5 versus3, bottom-left14 versus16."},
+  "3c8af6fcd25e0562": {"decision":"accept", "notes":"Viewed three panels. Alpha dots spread broadly before versusclosely on line after; beta1 remains tight with small residuals, beta2 broad. Best fit beta1 versusalpha."},
+  "3cef0311027e732c": {"decision":"accept", "notes":"Viewed log-log graph. Blue tail flattened near1e-5 before versusnear1e-6 after at1e3; starts near1e-2 at10. Approximately3 versus4 orders, red curve/axes retained."},
+  "083faf01df9de181": {"decision":"accept", "notes":"Viewed both panels. Light80% curve lifted near50% at round361 before, flatnear10 after; other curves and energy bars preserved. Closest80% versus20%."},
+  "120b249315dff09a": {"decision":"accept", "notes":"Viewed log-scale convergence plot. Red curve tracks green MaSEGM most closely over range; red/purple legend names swapped only, TVEGM versusMaTEGM."},
+  "13aae5ba7844c954": {"decision":"accept", "notes":"Viewed full grid and five pieces. Cell above gap2 versus3 excludes D versusE; other options violate bottom/side neighbors. Unique E before,D after."},
+  "1667e73a85503bde": {"decision":"accept", "notes":"Viewed four plots. Orange FS1 series varies less than blue across coverage bins. Binary/Ternary legend names swap, bars and other names preserved."},
+  "16e3a7149bff71c8": {"decision":"accept", "notes":"Viewed split schematic. SeenScenes-NovelObj count5400 versus7200, all four comparison counts1800 unchanged. Ratios3 versus4; schematic regions are categories, not quantitative areas."},
+  "1c37f83fc8afc230": {"decision":"reject", "notes":"Viewed all bars. Intended Thursday22 to20 edit also shortens unrelated Tuesday26 to24. Answer still flips but violates localized edit; reject."},
+  "1fe9b34c9dcb6acb": {"decision":"accept", "notes":"Viewed pumping and demand bars. Only May pumping decreases180 to160 before; June120 and August150 remain smaller, making May third before versusJuly175 after. Demand preserved."},
+  "21d9e800744226cb": {"decision":"accept", "notes":"Viewed multiplication tables. Lower-left product40 versus30 only; missing product scales by63/35 giving72 versus54. Reference table retained."},
+  "21e36c9d36a54e64": {"decision":"accept", "notes":"Viewed recipe: flour4kg versus5kg for100 pancakes only. Available400g yields10 versus8; egg24,milk12.5,butter20 capacities all larger."},
+  "273135a743394152": {"decision":"accept", "notes":"Viewed all composite image panels. Final equation RHS eye versuscomb only; sun1,atom2,fish4 force RHS5, leaving other symbol3: D versusA."},
+  "27fdf96890230844": {"decision":"accept", "notes":"Viewed wheel and all choices. Ben upper-left versus top; Jim lower-left unchanged. Shared rotation sends Jim bottom(E) versuslower-right(C)."},
+  "2b427daee4235299": {"decision":"reject", "notes":"Question says index has its highest value on July12, but every curve has a greater historical peak around December. Could mean highest among indices on date, but source phrasing ambiguous; reject."},
+  "00c5592e77b2fb17": {"decision":"accept", "notes":"Viewed pool pair: length100 versus50 only. Speed relation 10(L+W)=18L gives W=.8L, hence80 versus40. Schematic geometry preserved."},
+  "00fb56e2cdfc5cc2": {"decision":"accept", "notes":"Viewed alphametic: second-row OO versus KO only. Distinct nonzero leading digits yield W1,O9,K2 before; W1,O0,K9 after. All other symbols retained."},
+  "015a5401b1b10d85": {"decision":"accept", "difficulty_group":"calibration", "notes":"Viewed shirt and all mirror choices. Shirt1202 versus2021, choices unchanged. Reversed mirrored digits matchB versusA. Font/color changes confined to edited shirt digits."},
+  "0aa813eeffc28b3c": {"decision":"accept", "notes":"Viewed die: top3 versus10, other faces15 and5. Minimal common opposite product15 versus30 gives sums23+9=32 and30+11=41."},
+  "0aae1740a3b46f60": {"decision":"accept", "notes":"Viewed trapezoid: upper triangle4 versus5; left10 and geometry preserved. Opposite side triangle10, lower area100/upper yields total49 versus45."},
+  "0caac02b0bbb53bd": {"decision":"accept", "notes":"Viewed nested rectangles: right gap2 versus4 only. Perimeter difference twice sum of four gaps gives20 versus24."},
+  "0fcf5942ab05ef1b": {"decision":"reject", "notes":"Viewed bolted strips: A bolts move far apart without corresponding change to outer endpoints and hole positions; rendered before conflicts with identical-strip physical geometry. Reject ambiguous schematic."},
+  "1348ac1b15bb7276": {"decision":"accept", "notes":"Viewed five card boxes: H absent versus present in first box, all other cards retained. WithoutH only four distinct labels for five boxes, impossible; withH forced chain M,T,K,P leavesH first."},
+  "1c69cf5b4b10b454": {"decision":"accept", "notes":"Viewed three-object scene. Yellow matte sphere large versus small; blue sphere left and red cube unchanged. Relational chain identifies yellow sphere in both states."},
+  "28a4976d5fe98f0f": {"decision":"accept", "notes":"Viewed full scene: foreground cylinder blue versusyellow only. Union of green objects and large yellow objects in front of green sphere gains cylinder, count2 versus3; other objects unchanged."},
+  "36db6b266bb22adc": {"decision":"accept", "notes":"Viewed five objects. Brown matte foreground target cube versus sphere; spatial anchors green cylinder and small matte purple cube unchanged, uniquely identify target."},
+  "4210c41f83891a16": {"decision":"accept", "notes":"Viewed scene. Small foreground sphere brown versusblue only. Brown matte objects left of specified green cube count2 versus1; background brown sphere is on its right."},
+  "4361f77a2df0693c": {"decision":"accept", "notes":"Viewed three-object scene. Target sphere green versusbrown only, behind tiny shiny purple cylinder and right of gray matte cube. Anchors unchanged."},
+  "539753f028823a59": {"decision":"accept", "notes":"Viewed partly occluded small blue target sphere versuscylinder; visible curved sphere silhouette and flat cylinder top distinguish shapes. Same-color small shiny blue block and other objects retained."},
+  "045c53a342c7a793": {"decision":"accept", "notes":"Viewed five bars and numeric labels. Ireland39 becomes10 with matching height; sorted middle country changes Ireland to Israel25. Other bars and labels retained."},
+  "1462b0e2fb166abe": {"decision":"reject", "notes":"Landline somewhat-secure label51 becomes31 but segment width stays51, and headline still asserts landline most secure. Redundant visual encodings contradict BEFORE label; reject despite arithmetic checks."},
+  "33a60709b7580e17": {"decision":"reject", "notes":"2012 industry label36.28 becomes34.28 but stacked segment geometry remains at original height. Inconsistent label versus bar; no clean coherent altered chart."},
+  "52f287f86b06e204": {"decision":"reject", "notes":"Second-row gray label108 becomes118 but segment boundaries stay unchanged against numeric axis. Reject inconsistent visual encodings."},
+  "55a71df71d6cb469": {"decision":"accept", "notes":"Viewed five pentagon angle labels. F expression x+20 becomesx-5 only. Interior sum540 gives x107 before,x102 after; H=x-5 gives102 versus97."},
+  "5629394777a392ef": {"decision":"accept", "notes":"Viewed printed triangle question and choices. Right base angle70 becomes30. Before exterior e150 dominates b120,d90; after d130 dominates b120,e110. Other labels unchanged; schematic."},
+  "57add048d7cd5035": {"decision":"accept", "notes":"Viewed grouped jewelry bars. January Rings increases from about55 to70; other January values about57,20,43 preserved. Share70/190 about37% before versus55/175 about31% after."},
+  "5bece234e242cadb": {"decision":"accept", "notes":"Viewed annual bars and labels. 2013 Total market36 becomes38 with matching height. Domestic maximum30 stays fixed; sum68 before versus66 after."},
+  "5de489badd05c461": {"decision":"accept", "notes":"Viewed annual budget table. 2013 value23 becomes21 only; 2012 remains14. Rate over one year7 before versus9 after."},
+  "62730dbca00d2b31": {"decision":"accept", "notes":"Viewed isosceles trapezoid marks and legs. M80 becomes120 only. Equal legs imply equal base angles and parallel bases supplementary adjacent angles; K60 before versus100 after. Printed angles govern schematic."},
+  "682351da7fd8b276": {"decision":"accept", "notes":"Viewed three bars and numeric labels. Nauru6 becomes9 with matching bar extension. Smallest-two sum13.4 exceeds12.6 before, whereas10.4 does not after."},
+  "6abf96306a3c1171": {"decision":"accept", "notes":"Viewed all monthly values. April1937 becomes1037 only; January5936 fixed. Sum6973 before versus7873 after."},
+  "6dbd19f38bb28c65": {"decision":"accept", "notes":"Viewed six prices. Black jacket26 becomes20; shorts11 fixed. Total31 fits budget35 before, total37 exceeds it after."},
+  "76e6884c9a88a19d": {"decision":"accept", "notes":"Viewed shape counts and all options. Upper triangle removed only. Before4 circles,2 squares,1 triangle makes only squares>triangles true; after2 triangles makes circles twice triangles the sole true option."},
+  "384ca0cb23d5660f": {"decision":"accept", "notes":"Viewed right-triangle altitude diagram. Hypotenuse subsegment12 becomes9 only. z squared is9*(3+9)=108 before versus12*(3+12)=180 after, yielding6sqrt3 versus6sqrt5. Schematic drawing."},
+  "3b1547b912d65841": {"decision":"accept", "notes":"Viewed rectangle diagonal labels. Labels2 and4 swap. Angle2 is then alternate-interior to given angle1=38 before, versus complementary52 after. Other labels retained."},
+  "3c44e88022991389": {"decision":"accept", "notes":"Viewed ten horizontal bars. Slate increases from about48 to60 before, moving above Dark Khaki50. Upper median is6th sorted value: Dark Khaki before, Slate after. Preserve source convention high median=upper middle value."},
+  "3e2069ae57844393": {"decision":"reject", "notes":"Viewed both PSNR method rows. Lego DMTet is raised33 before but Lego FlexiCubes remains28.8, below Mic30.8. Question does not specify method or aggregation; BEFORE best object becomes interpretation-dependent. Exclude ambiguity."},
+  "4090a1996faa6dfd": {"decision":"accept", "notes":"Viewed triangle exterior angles. Only left expression120-k becomes120+k. Left interior60-k plus right interior60 gives x60+k before, versus x60-k after. Explicit not-to-scale source."},
+  "45bf2de5c6d1ac67": {"decision":"accept", "notes":"Viewed full table. Tuesday1 becomes5 only; Monday7 unchanged. One-day rate (5-7)/1=-2 before and(1-7)/1=-6 after."},
+  "480cadf7d3d662c0": {"decision":"accept", "difficulty_group":"calibration", "notes":"Viewed bars. Warm10 becomes40; liver30 and shaft90 unchanged. Minimum changes from warm10 after to liver30 before. Simple extremum-reading control."},
+  "48a016687a77f305": {"decision":"accept", "notes":"Viewed all five curves. Legend labels Dark Periwinkle/Medium Turquoise swap; only top dark curve exhibits irregular fluctuations. Dark Periwinkle maps to smooth cyan before and irregular dark after."},
+  "48bccc29040b1cf9": {"decision":"accept", "notes":"Viewed full supply-demand table. Headers swap without changing values. At790, supply5100<demand14700 before, reversed after; shortage versus surplus. Erroneous first table need not follow usual monotonic economic curves."},
+  "4a7e850d4bbea7c0": {"decision":"accept", "notes":"Viewed altitude diagram. Left hypotenuse portion8 becomes16 only; altitude16 unchanged. Geometric mean gives x16 before,x32 after; right subtriangle gives y16sqrt2 versus16sqrt5. Schematic drawing."},
+  "4d5d74433918629e": {"decision":"accept", "notes":"Viewed all scatter points and legend. Web Purple/Chartreuse names swap. Green series has greater integrated area than nearly flat purple over common domain; named Web Purple yes before,no after."},
+  "4f87c9f1db4518d3": {"decision":"accept", "notes":"Viewed arithmetic flow. First transition+8 becomes+4 only. Chain10+6+4-6+8-10=12 before versus16 after; other operations preserved."},
+  "4fb24135820f8b53": {"decision":"accept", "notes":"Viewed eight table entries. Devin17 becomes9 only; total88 becomes80, divided by8 yields11 after versus10 before."},
+  "50996dece10f0627": {"decision":"reject", "notes":"Viewed pie and labels. Only17% label changes15%; slice remains visually same and four percentages now sum98. BEFORE has inconsistent redundant encodings; reject rather than treating blind arithmetic agreement as sufficient."},
+  "083c7be08c03e6f3": {"decision":"accept", "notes":"Viewed intersecting-chord diagram. Only lower-right segment17 becomes8.1 before. Chord products give x=10.3 before and10.3*17/8.1=21.6 after. Diagram schematic; use printed segment lengths."},
+  "0e690602c01d66da": {"decision":"accept", "notes":"Viewed all scatter series and legend. Periwinkle/Dark Salmon legend colors swap, making Periwinkle the bottom curve before rather than top after; top curve dominates area on common x range. Other marks retained."},
+  "0fb9830674bb55a4": {"decision":"accept", "notes":"Viewed all seven table rows. Only Friday8 becomes7. Before7 occurs3 times versus8 twice; after8 occurs3 times versus7 twice. Unique modes7 and8; other entries preserved."},
+  "13e61a0b5d0705fc": {"decision":"accept", "notes":"Viewed complete table. Adele5 becomes3 only. Frequency comparison yields unique mode3 before and5 after."},
+  "163ca3e726ce39b8": {"decision":"accept", "difficulty_group":"calibration", "notes":"Viewed all bars and labels. Lake nerve bar90 becomes30 only; maximum is then split drawn50 instead of lake nerve90. Simple extremum lookup; calibration rather than substantive multi-step reasoning."},
+  "1b5a6e812b50d999": {"decision":"reject", "notes":"Source question asks number of algorithms below8 in at least one dataset. Legend contains only two algorithms, both below8 somewhere in both states. Source answer3 appears to count datasets instead; reject despite model checks agreeing with flawed key."},
+  "1fbf149a2fd929a6": {"decision":"accept", "notes":"Viewed all table cells. At price600 only supply13,900 becomes18,900; demand16,300 unchanged. Supply-demand sign gives surplus before and shortage after. Treat erroneous first table as supplied observations, not a monotonic supply law."},
+  "22c2aedaef48fc91": {"decision":"accept", "notes":"Viewed three x/y pairs. Only last y9 becomes13. Equal x increments1 produce y increments6,6 before versus6,2 after, so linear/nonlinear flip."},
+  "233151d7d6c16b71": {"decision":"accept", "notes":"Viewed 2x2 oar count table. Spruce2010 count3 becomes5 only; totals change18 to20, so requested joint probability is5/20=1/4 before and3/18=1/6 after."},
+  "266fb2db079776b9": {"decision":"accept", "notes":"Viewed full domain table and caption. Science S2ORC BY token entry70.3 becomes7.3. Summing rows per domain yields Code58.9 largest before and Science71.5 largest after; other numeric cells preserved."},
+  "26c5a8bd07405490": {"decision":"accept", "difficulty_group":"calibration", "notes":"Viewed trapezoid. Only angleR45 becomes60. Parallel-base supplementary relation gives S120 before and135 after. One-step geometry; calibration. Printed angles govern schematic drawing."},
+  "26c9d57cfe38c434": {"decision":"accept", "notes":"Viewed right triangle. Only top angle60 becomes30, adjacent leg4 and right-angle marker preserved. h=4/cos(angle) gives4.62 before and8 after; diagram not to scale."},
+  "30a9503055a8d140": {"decision":"accept", "notes":"Viewed relation table. Last x7 becomes18 only. Before input18 has outputs6 and3, violating function definition; after all inputs distinct."},
+  "346b83b433849b9a": {"decision":"accept", "difficulty_group":"calibration", "notes":"Viewed sinusoid. All nonzero y-axis tick values double in BEFORE with same trace; extrema +/-2 versus+/-1 give amplitudes2 versus1. Easier scale-reading control."},
+  "23a9282f4c8a4c64": {"decision":"accept", "notes":"Viewed all eight place settings from each seated person's orientation. Only bottom-center knife/fork swap; correct-place-setting count drops from five after to four before."},
+  "37ab15049006bd20": {"decision":"accept", "notes":"Viewed arithmetic symbols. Top square becomes circle only. Before 12*circle+square=111*triangle forces triangle 1,circle 9,square 3; after 11*circle+2*square=111 forces square 6."},
+  "388e26ad91031d4e": {"decision":"accept", "notes":"Viewed number cards. Only 5 becomes 1. Ascending concatenation order gives 1,2,309,41,68,7 before and 2,309,41,5,68,7 after. Other card values preserved."},
+  "3907efdf82049278": {"decision":"accept", "notes":"Viewed composite source image including star reference. Only bottom row sum 16 becomes 14. Circle=4; star+heart=11; star+2*heart=14 before gives star8, versus16 after gives star6. Image2 reference is present within the composite image."},
+  "3dfd1b713124b8aa": {"decision":"accept", "notes":"Viewed all five shapes. Gray fill transfers from triangle B to circle D; geometry and letters unchanged. Gray, non-square, round-or-three-sided conjunction selects D before and B after. Noticeable sharpening of entire BEFORE image, recorded as rendering-style caveat."},
+  "55774c7ca0829989": {"decision":"accept", "notes":"Viewed cumulative-return curves and legend. Yellow highest-growth line keeps trajectory; its legend label changes from (CR, SVI) before to (CR, SVI, GI) after, swapped with blue entry. Other curves remain intact."},
+  "5a9162816cd6d8c2": {"decision":"accept", "notes":"Viewed all horizontal segments. y=10 segment extends from x=.5 to2 before, length1.5; y=2 length1 stays unchanged. Source y=10 length about.45 leaves y=2 longest. Other segment coordinates preserved. This is an easier comparison item."},
+  "6c7bca9ea07dd5c8": {"decision":"accept", "notes":"Viewed density curves and legend. Blue has greatest density at60GWh; Full/Half legend names swap while BAU and all curves remain intact. Maps to Half before, Full after."},
+  "0a3253666d79cd74": {"decision":"accept", "notes":"Viewed normalized pair. KE3 starts near zero in both; endpoint changes from above 70 before to about 40 after, reversing comparison with 60. PE3 and axes unchanged. Interpret as plotted erroneous data, not a physically consistent energy-conservation model."},
+  "0bb5d14d25ac75ee": {"decision":"accept", "notes":"Viewed normalized pair. Only legend names swap. Cyan curve spans a smaller vertical range than red in both states; maps to MLSC before and MLNN after."},
+  "0e7c9b2bd93672f5": {"decision":"accept", "notes":"Viewed normalized pair. Left-panel case 1/case 2 legend labels swap, right legend unchanged. At risk 0.3e5 the red curve is lowest; case 2 before, case 1 after. Numeric tick formatting changes without changing values."},
+  "17c1c9df4224fa96": {"decision":"accept", "notes":"Viewed all four panels. AMPERE++ blue curve in AbstRCT begins near 60 before instead of about 35 after. Essays then has largest blue increase before; AbstRCT after. Other curves and panel labels preserved."},
+  "246fb5801d8b081e": {"decision":"accept", "notes":"Viewed normalized confusion matrices and accompanying distributions. UC Irvine true-negative cell becomes 21,692,594 before versus 1,692,594 after; POK remains 12,685,511. Compare true-label 0/predicted-label 0 cells. Other matrix cells unchanged."},
+  "34694bbe394fa8f9": {"decision":"accept", "notes":"Viewed all panels. Only bottom RBM panel algorithm titles swap. At log ARL 6.5 the left P2 brown curve is lower than right on actual y-axis scales; Non-robust SCUSUM before, RSCUSUM after."},
+  "3d30aaf469a07ecb": {"decision":"accept", "notes":"Viewed stacked bars and legend. Only dotp Control/Synchronization boundary shifts to about 85 before versus 74 after. Control width about 67 before beats axpy about 57; after about 56 is slightly below axpy. Source comparison has a narrow approximately 1 percentage-point margin."},
+  "4b37c95a9874acc5": {"decision":"accept", "notes":"Viewed all four plots and x-axis scales. Bottom HF-SZO/HLF-SZO legend labels swap; bottom-right trajectory drops fastest on actual query scale, mapping to HF-SZO before and HLF-SZO after. Curves preserved."},
+  "4e3f669e0092c1ac": {"decision":"accept", "notes":"Viewed four phase plots. Top-left dashed Zero trace is changed to a closed loop before; source trace is open. Top-right retains its dashed loop and bottom traces stay open, giving two before versus one after."},
+  "5544fa0332300e2c": {"decision":"accept", "notes":"Viewed all four panels. Top black A(t) MFL concentration peaks rise to about 45 before versus about 36 after; blue A(t) IT-MFL stays near 41. Highest concentration signal flips; other plotted signals retained."},
+  "0654ee75d8ab5479": {"decision":"accept", "notes":"Inspected original and normalized edited grid: only center 2 changes to 4. Summing opposite 2x2 constraints gives 12 after versus 8 before; other givens and grid remain intact."},
+  "080903cc8ec35705": {"decision":"accept", "notes":"Inspected both coin grids. Only fourth-column coin moves from row 2 to row 3 in BEFORE. Row/column deficits intersect at C before and D after. Labels and other coins preserved."},
+  "276bad0fdf250d3e": {"decision":"accept", "notes":"Inspected both painted-face grids: only central square fills gray in BEFORE. Painted unit cubes are 8 corners plus 6*9 face interiors before, versus 8+6*8 after, so unpainted fractions 63/125 and 69/125."},
+  "1fd4220c2754a5d4": {"decision":"accept", "notes":"Inspected original and normalized edited chart. Adaptive Memory bar extends to about 1050 in BEFORE, closer to Full at 1200 than Linked List at 220; source about 255 reverses that comparison. Other bars, axes and labels preserved semantically; global rasterization differs."},
+  "3f89a58e26c99b3a": {"decision":"reject", "notes":"Visual review: edit moved epoch 1 from about 16.5 down to 10 in addition to intended epoch 2 change. Unrelated semantic modification; exclude even if the largest-drop answer changes as intended."},
+  "0651b257a549529f": {"decision":"reject", "notes":"Pair audit identifies dangling road stubs from incomplete edge removal. Model checks fail; exclude rather than weakening isolated-edit requirements."}
+  ,"14cda42cc0ef1af6":{"decision":"accept","notes":"Viewed bars: slip at logic changes zero to one; count below one changes 1 to 0, other bars retained."}
+  ,"5c4b38a8a99d76f3":{"decision":"accept","notes":"Viewed scene: rear matte sphere gray before/yellow after. Two qualifying tiny brown objects retained; union count 3 to 2."}
+  ,"5d1e1690e2cdf5f5":{"decision":"accept","notes":"Viewed table: red -15 to -40 only; green25 unchanged. Smaller absolute effect red to green."}
+  ,"5d6b181e9d49b191":{"decision":"accept","notes":"Viewed frequency table: three visits frequency10 to14; other eligible counts sum39, giving49 to53."}
+  ,"5f1078f7fdd4c790":{"decision":"accept","notes":"Viewed scene: small purple foreground cube to cylinder; size-reference red metallic cube and other objects retained."}
+  ,"5f8466ddc1b83e75":{"decision":"accept","notes":"Viewed scene: yellow foreground cube to cylinder, purple and cyan spatial anchors retained."}
+  ,"5ff6421d9c912fef":{"decision":"accept","notes":"Viewed chart: KLA/Lam Research legend swap only; maximum year changes2018 to2019, all bars retained."}
+  ,"600a7d26051fc2be":{"decision":"accept","notes":"Viewed scene: large blue foreground cube matte to metallic, other objects retained; union count5 to6."}
+  ,"609d5a5dac06930a":{"decision":"accept","notes":"Viewed table: Jansen9 to8 only; minimum5, range4 to3."}
+  ,"63ed774252e75097":{"decision":"accept","notes":"Viewed scene: small front sphere green to brown only; gray ball and large yellow spatial anchors unchanged."}
+  ,"63f79758a1dec69b":{"decision":"accept","notes":"Viewed L polygon: bottom width3 to4 only. Area30+4*width gives42 to46."}
+  ,"646c58ed0f8bdec5":{"decision":"accept","notes":"Viewed clock discs: holes1,4,7 to1,5,7, with numeral and hole moved consistently. Cyclic gaps yield3,6,9 before versus4,6,12 after."}
+  ,"64d2492ba6dc9239":{"decision":"accept","notes":"Viewed grouped bars: low/high income legend swap only. Low-income leads at more-than75-percent before, data-not-reported after; bar values preserved."}
+  ,"65115b58bc728bea":{"decision":"accept","notes":"Viewed scatter plots: male/female legend swap only, slower red trajectory maps Male before/Female after; all points and errors retained."}
+  ,"65bc306b2b6333d2":{"decision":"accept","notes":"Viewed temperatures: Tuesday6 to4 only, unique mode6 to4; preexisting encoding artifact retained."}
+  ,"67852194c3144ee7":{"decision":"accept","notes":"Viewed price list: wheat rolls6 to7 perkg only; 2.5kg costs15 to17.50."}
+  ,"21bca343fddfc368":{"decision":"accept","notes":"Viewed scatter: Canada2007 0.60 to0.82 only; means about0.74 and0.795, one versus two years above mean."}
+  ,"23d15e680b41f4ee":{"decision":"accept","notes":"Viewed curves: Aqua/Medium Seafoam legend swap; flat lowest curve gives yes before/no after, curves preserved."}
+  ,"2426faf6cdab8bbe":{"decision":"accept","notes":"Viewed scatter: Dark Violet/Dark Cyan legend swap; lowest purple series maps to Dark Violet after only."}
+  ,"2502b7f1f760ae47":{"decision":"accept","notes":"Viewed grouped bars: junk niece4 to9 only; overall maximum7 to9."}
+  ,"28ca7af08fa79868":{"decision":"accept","notes":"Viewed scatter: last electricity point80 to100 only; mean95 to100."}
+  ,"2b3dbeffafd77c50":{"decision":"accept","notes":"Viewed bars: ruling tin4 to3 only; ace9 unchanged gives13 to12."}
+  ,"2cce718993be3a3a":{"decision":"accept","notes":"Viewed stacked bars: poison boundary shifts2 to1, with total10 retained; smallest component2 to1. Coupled adjacent segment change, not unrelated bar corruption."}
+  ,"2d8203266eef9015":{"decision":"accept","notes":"Viewed grouped bars: mill cook6 to3 only; below-five item count1 to2."}
+  ,"324782a5e02b1e51":{"decision":"accept","notes":"Viewed labels: magic/fifty swapped, bars preserved; magic plus secure7 to5."}
+  ,"38846fced4b57fb5":{"decision":"accept","notes":"Viewed US map: New Jersey dark before/light after, Georgia unchanged; interval comparison yes to no."}
+  ,"3a91c364dfc04332":{"decision":"accept","notes":"Viewed bars: par60 to80 only, min10 unchanged gives range50 to70."}
+  ,"429548d1b85daf5b":{"decision":"accept","notes":"Viewed bars: rabbit50 to10 only, minimum30 to10. Percentages are nonexclusive preferences in source."}
+  ,"53617e260d293de5":{"decision":"accept","notes":"Viewed bars: nurse9 to6 only, pupil7 retained; maximum9 to7."}
+  ,"53ed15fca884401b":{"decision":"accept","notes":"Viewed scatter: male2000 8 to6.6 only; above-mean count2 to1, female points intact."}
+  ,"5cb3af658fed2fb0":{"decision":"accept","notes":"Viewed bars: Web Maroon/Dark Olive names swapped, numerical median about35 maps to Web Maroon only after."}
+  ,"64165c37286a939b":{"decision":"accept","notes":"Viewed grouped bars: liver desert4 to2 only; remaining5+3+7+7 unchanged, sums26 to24."}
+  ,"15a2be915db1a8fe":{"decision":"accept","notes":"Viewed map: Florida lightest to darkest class only, Virginia midblue unchanged; comparison yes to no."}
+  ,"67c4baacf65c08cd":{"decision":"accept","notes":"Viewed chart: medium predictive bar height and label18479 to19479, small16932 unchanged; difference1547 to2547."}
+  ,"69efe7977e988b8d":{"decision":"accept","notes":"Viewed price list: wrench21.14 to11.14 only; eight hammers147.76, totals168.90 to158.90."}
+  ,"6a54ca1b56a5caa5":{"decision":"accept","notes":"Viewed scene: small metallic red cube moves left to right of cyan rubber cylinder; brown rubber reference retained, counts1 to0."}
+  ,"6b18217ce3fea99b":{"decision":"accept","difficulty_group":"calibration","notes":"Viewed pie: Navy Blue/Tan legend swap only; largest blue sector maps Navy Blue after."}
+  ,"6cbfbb3efcb6e914":{"decision":"accept","notes":"Viewed prices: picnic table59 to69 only; plus rosebush32 gives91 to101 across94 budget."}
+  ,"6cea3d9fb5bfaffb":{"decision":"accept","notes":"Viewed scatter: Dark Cyan/Lawn Green legend swap only, highest cyan trajectory maps Dark Cyan after."}
+  ,"6dca1db102609ac7":{"decision":"accept","notes":"Viewed scene: yellow shiny front sphere small to large, cylinder and gray reference unchanged."}
+  ,"6eb61b7467d8524a":{"decision":"accept","notes":"Viewed bowls: Z triangle-circle-circle to triangle-circle-square only. Q<R implies triangle<circle; R<S implies2circle<triangle+square, so Z<Q before, Q<Z<R after."}
+  ,"6f53096141158af5":{"decision":"accept","notes":"Viewed stem-leaf: extra42 before removed after, range30..49 has5 versus4 entries."}
+  ,"6f5b4d483d34e818":{"decision":"accept","notes":"Viewed grid: finish moves(2,2) to(4,2), label follows, grid unchanged; shortest2sqrt2 to2+2sqrt2."}
+  ,"6fabf2e7a88e383a":{"decision":"accept","notes":"Viewed scene: rear yellow matte cube to cylinder; cyan and brown relation anchors retained."}
+  ,"7042f31cf09b992c":{"decision":"accept","notes":"Viewed stem-leaf:12 to17 only; at least13 count11 to12."}
+  ,"7085e3e3009520dc":{"decision":"accept","notes":"Viewed scene: rear green ball to brown only, cyan and purple unchanged; qualifying brown count0 to1."}
+  ,"7150b5d57675adfc":{"decision":"reject","notes":"Viewed table: edited8 is conspicuously green unlike all other black numerals, revealing edit location through styling; exclude despite correct numeric answer flip."}
+  ,"7288aad0d0f4adbb":{"decision":"accept","difficulty_group":"calibration","notes":"Viewed bars: sigh8 to9 only, remains unique maximum; simple visual extraction calibration."}
+  ,"19253b1df2764f57":{"decision":"reject","notes":"Viewed map: intended Oklahoma change works, but source lowest legend interval reads1.0%-<1.0%, internally invalid. Exclude ambiguous source."}
+  ,"1b6ea5a266472459":{"decision":"accept","notes":"Viewed map: Iowa medium to light only; Nebraska-neighbor lowest set gains Iowa, Kansas/South Dakota/Wyoming preserved."}
+  ,"240200510d87d775":{"decision":"accept","notes":"Viewed map: Missouri darkest to medium only, Maine darkest unchanged; same-bin comparison yes to no."}
+  ,"244d481be697b2bf":{"decision":"accept","notes":"Viewed map: Minnesota medium to light only; Midwest minimum changes35.7-38.6 to30.9-35.6."}
+  ,"2db12cfc4457a4d9":{"decision":"accept","notes":"Viewed map: Montana darkest to light only, Minnesota medium and South Dakota light; neighbor maximum yes to no."}
+  ,"384b920595018b88":{"decision":"accept","notes":"Viewed map: Arizona darkest to medium only, Maine higher-medium preserved; comparison yes to no."}
+  ,"3a2c0b88befd5aed":{"decision":"accept","notes":"Viewed map: North Dakota light to darkest only, New Jersey medium unchanged; comparison yes to no."}
+  ,"421782ec7ae173e1":{"decision":"accept","notes":"Viewed map: Idaho light to darkest only, Utah neighbors unchanged; lowest-neighbor answer yes to no."}
+  ,"42f52c977ea24c1b":{"decision":"accept","notes":"Viewed map: Pennsylvania third to fourth class only, Texas fourth retained; higher comparison yes to no under chart-bin semantics."}
+  ,"5f2d56f5d91cdfd2":{"decision":"accept","notes":"Viewed map: Colorado darkest to middle only; highest Wyoming-neighbor set Colorado before, Colorado/Idaho/Montana after."}
+  ,"73a743480b19a94a":{"decision":"accept","notes":"Viewed angle diagram:2x to x only, text/radius18 preserved. Arc length32pi/5 to16pi/5; diagram not to scale in source."}
+  ,"748f3429c810f8ae":{"decision":"accept","notes":"Viewed trapezoid: height24 to48 only; bases41,53 retained, area1128 to2256."}
+  ,"750febafec833fcd":{"decision":"accept","notes":"Viewed stem-leaf: extra64 before removed after; requested60..80 count3 to2."}
+  ,"759ec0d4019aebd4":{"decision":"accept","notes":"Viewed bars: ditch30 to10 only; maximum90 unchanged, range60 to80."}
+  ,"766f3da5f9a29349":{"decision":"accept","notes":"Viewed prism: depth6 to5 only; face-center octahedron volume abc/6 gives12 to10."}
+  ,"78bf861348873d0f":{"decision":"accept","notes":"Viewed distance-time scatter: Evelyn point/label moved consistently, other points retained. Greatest slope from origin Carla before/Evelyn after."}
+  ,"03e798fc1e2f6be0":{"decision":"accept","notes":"Viewed bars: third-smallest handwashing62065 to68467, bar and label consistent;13135+48930=62065, yes to no."}
+  ,"0d4aa36cc98b7f4c":{"decision":"accept","notes":"Viewed bars: MLB/NHL category labels swapped only; means(62.18+55.88)/2=59.03 versus(31+55.88)/2=43.44."}
+  ,"13d3f6d9047552ea":{"decision":"accept","notes":"Viewed bars: Botswana0.50 to0.58 with matching length; Denmark0.81 unchanged, range0.31 to0.23."}
+  ,"1b8afbaf986df386":{"decision":"accept","notes":"Viewed bars: Africa/Europe labels swap only. Sum549.33+176.6+113.77 exceeds227.79 before,227.79+176.6+113.77 below549.33 after."}
+  ,"24fb3455b72db9b3":{"decision":"accept","notes":"Viewed stacks: upper/lower income legend swap only. Six blue labels average53.6 versus gray34.9833; all components retained."}
+  ,"25ea863a8761db61":{"decision":"accept","notes":"Viewed bars: tall sanitizer500 to623 with matching height; short100 preserved, ratios5 to6.23."}
+  ,"2dfeeb7a8eb01017":{"decision":"accept","notes":"Viewed grouped bars: WhatsApp/Facebook Messenger labels swapped; Finland blue64 stays maximum, maps Facebook before/WhatsApp after."}
+  ,"6128301969929c5a":{"decision":"accept","notes":"Viewed map: Vermont darkest to light including callout, other Northeast states retained; maximum yes to no."}
+  ,"63e5ff2ed6c1fcf7":{"decision":"accept","notes":"Viewed map: Wyoming medium to light only; Western minimum set Utah before, Utah/Wyoming after."}
+  ,"77805c8f7edd5b80":{"decision":"accept","notes":"Viewed map: Illinois darkest to light only; Midwest maximum yes to no, Indiana higher after."}
+  ,"78ee3a5ea37c6875":{"decision":"accept","notes":"Viewed curves: orange-square/black-circle legend markers swap, curves unchanged. Second highest at3.5 orange maps LoRa before/SSK-ICS-LoRa after."}
+  ,"7922a1f98e8d62d2":{"decision":"accept","notes":"Viewed bars: UK94.0 to91.5 and length change; US92.9 unchanged, second highest US before/UK after, caption remains consistent."}
+  ,"7956dd72549c920b":{"decision":"accept","notes":"Viewed number pyramid: bottom-right7 to6 only. Solved bases2,5,4,8,7 before and2,5,3,9,6 after, binomial sum85 to82."}
+  ,"79a0492ca54e0601":{"decision":"accept","notes":"Viewed elevations: lake-250 to-350 only, peak325 fixed; absolute-distance comparison flips."}
+  ,"7a0e5378ac7e8c1b":{"decision":"accept","notes":"Viewed map: Idaho medium to darkest only; Oregon-neighbor maximum California before/Idaho after."}
+  ,"7b0501ec77d8951d":{"decision":"accept","notes":"Viewed scene: foreground metallic cube green to red only, reflections updated consistently; brown cylinder/sphere anchors retained."}
+  ,"2e2e5c091a7dafb9":{"decision":"accept","notes":"Viewed grouped bars: yes/no category labels swap; sums58 versus46 reverse, all bars retained."}
+  ,"30169e9ac6943744":{"decision":"accept","notes":"Viewed grouped bars: first two year labels swap; maximum blue42 maps January2009 before/November2007 after."}
+  ,"35a85ab6462043bc":{"decision":"accept","notes":"Viewed stacks: apparel/home products legend swap only; means6.35 versus5.45 for2014-15."}
+  ,"38e072d8323b2c53":{"decision":"reject","notes":"Viewed chart: changed malaria share without reconciling age-group totals; source already has rounded displayed components inconsistent with53-percent caption. Exclude total ambiguity."}
+  ,"3b40e4e3e2eb5344":{"decision":"reject","notes":"Viewed chart: pneumonia label28.5 before but bar remains approximately32.5, visibly longer than27.1 by too much. Label/geometry inconsistency."}
+  ,"3bc9720a7e4a9403":{"decision":"accept","notes":"Viewed chart: New Zealand14.6 to16.6, bar height consistent, Estonia17.5 unchanged; mean16.05 to17.05."}
+  ,"3d3bb4c50044bd51":{"decision":"accept","notes":"Viewed bars: all-ages30.85 to29.74 with matching length; equality with age-standardized30.85 disappears."}
+  ,"434573daa7a4c218":{"decision":"accept","notes":"Viewed lines: too-many/right-number legend swap; curves and values retained despite blue tint shift. Oct17 right-number34 versus60, dont-know3, sums37 to63."}
+  ,"43d0ea4bf70533e1":{"decision":"accept","notes":"Viewed bars: Norway23770.5 to24688.3 with matching length, Austria24770.5 fixed; difference1000 to82.2."}
+  ,"7c3a934978b7236a":{"decision":"accept","notes":"Viewed grain chart: rye16.34 to12.17 with small corresponding length change; corn1116.34 fixed, range1100 to1104.17."}
+  ,"7c54bebec7ef937c":{"decision":"reject","notes":"Visually identical source chart and question to accepted ChartQA5ff6421d9c912fef, including same legend-swap intervention. Exclude cross-source duplicate."}
+  ,"7c6da223c724d184":{"decision":"accept","notes":"Viewed table: Saturday18 to25 only, Friday48 fixed; daily change-30 to-23."}
+  ,"7c97593212e64aff":{"decision":"accept","notes":"Viewed scene: small left cube yellow to red only; cyan-sphere relational anchors retained."}
+  ,"7ca110cf3c676512":{"decision":"accept","difficulty_group":"calibration","notes":"Viewed pie: first two legend swatches swap; smaller maroon sector maps Sky Blue before, larger cyan after."}
+  ,"7f6be67953a9e3ac":{"decision":"accept","notes":"Viewed bars: Brown40 to65 only; sorted middle switches Orange Red to Brown, no to yes."}
+  ,"7fd976332c040322":{"decision":"accept","notes":"Viewed scene: brown foreground matte sphere small to large only, small cylinder/yellow cube retained."}
+  ,"4a1ce813e47bb398":{"decision":"accept","notes":"Viewed bars:2013 value/height38 to48 only; sum158 to168 across5, means31.6 to33.6."}
+  ,"4ba5e23ebe551e49":{"decision":"accept","notes":"Viewed bars: Eswatini70 to90 with geometry, others97,95,95 unchanged; mean89.25 to94.25 across90 threshold."}
+  ,"4c1485e8d772b147":{"decision":"accept","notes":"Viewed bars:2015 1.16 to4.16 with height; plus2016 4.16 yields5.32 to8.32 across2020 5.99."}
+  ,"4e2b734dfb014d30":{"decision":"accept","notes":"Viewed bars: Peru3.9 to4.9 with matching length; plus Suriname5.3 yields9.2 to10.2."}
+  ,"57358c65b4c6bc70":{"decision":"accept","notes":"Viewed trajectories: Benin/Sudan endpoint labels swapped only; lowest curve below80 in last5 years, maps Benin before/Sudan after."}
+  ,"578a36a871299139":{"decision":"accept","notes":"Viewed bars: Mauritius/Colombia labels swap only; UK0.3 divided0.1 versus0.06 gives3 versus5."}
+  ,"5c4403ebc67246a5":{"decision":"accept","notes":"Viewed pie: gray/navy sector colors exchanged, labels and areas unchanged; blue+navy50.4+13 versus50.4+36.6."}
+  ,"63c9e21d6bbc89b0":{"decision":"accept","notes":"Viewed bars: seventh48.13 to52.13 with height; selected mean52.23 to53.23."}
+  ,"6719c374dbc0262e":{"decision":"accept","notes":"Viewed pie: definitely-yes/rather-so category labels swap; displayed other shares sum86.9 before/18.3 after, original0.1 rounding excess retained."}
+  ,"6ad3d1c9498ee917":{"decision":"accept","notes":"Viewed bars: Continental/Goodyear labels swap only;27.23 minus14.75 versus12.9 gives12.48 versus14.33."}
+  ,"749d7a86f4d95bae":{"decision":"accept","notes":"Viewed bars: Somalia10 to8 with length, Togo30 unchanged; sum40 to38."}
+  ,"75c57356544e84f0":{"decision":"accept","notes":"Viewed bars: Celgene2.8 to4.8 with length, all five below15 remain eligible; mean7.36 to7.76."}
+  ,"813fcbe83957c3c8":{"decision":"accept","notes":"Viewed scene: small rear matte sphere purple to gray only, same-size yellow sphere retained."}
+  ,"8219035815a2a23f":{"decision":"accept","notes":"Viewed map: Florida darkest to medium only, all Georgia-neighbor bins retained; minimum no to yes."}
+  ,"823b4117345e8d90":{"decision":"accept","notes":"Viewed scene: small matte cylinder yellow to cyan only, gray/red anchors retained."}
+  ,"82628768ac3732a5":{"decision":"accept","notes":"Viewed contingency table: mini/one prize3 to5 only; totals8 to10, probabilities3/8 to1/2."}
+  ,"82f74ff7ac1b0844":{"decision":"accept","notes":"Viewed triangle: angle30 to60 only, base6 retained; x=6cot(angle),6sqrt3 to2sqrt3. Diagram interpreted by labels, not scale."}
+  ,"83495f218b267e63":{"decision":"accept","notes":"Viewed pie: UK/Italy labels swap only; US23.7 plus UK10.63 versus15.57 gives34.33 to39.27."}
+  ,"83a3191e7d10aaf4":{"decision":"accept","notes":"Viewed table: Gupta29 to32 only; sorted median31 to32."}
+  ,"83d2dc2f3458ab87":{"decision":"accept","notes":"Viewed heatmap: location cells for kw_avg_avg and kw_min_max swap intensity, scale cells unchanged zero; largest difference reverses."}
+  ,"83d5b11e6ab2cdfa":{"decision":"accept","notes":"Viewed map: West Virginia medium to light only; Virginia-neighbor minimum2110-5100 to100-2040."}
+  ,"8473983ea542b2c2":{"decision":"accept","difficulty_group":"calibration","notes":"Viewed two bars: category labels swap only; upper-median convention means larger of two, Light Sky Blue only after."}
+  ,"85857deeebe2f8da":{"decision":"accept","notes":"Viewed bars: squad2 to3 only; warm4 fixed, sum6 to7."}
+  ,"85db326d0caea8a6":{"decision":"accept","notes":"Viewed prices: speaker687 to587 only, phone386 fixed; difference301 to201."}
+  ,"874d64ab407ec663":{"decision":"accept","notes":"Viewed prices: blue desktop8038 to9038 only; plus1552 gives9590 to10590 across10260 budget."}
+  ,"87a6ad57d9ef0790":{"decision":"accept","notes":"Viewed frequency table: orange10 to12 only; table totals56 to58 plus second bag56 gives112 to114."}
+  ,"88d8d3e216c761ef":{"decision":"accept","notes":"Viewed grouped bars: candy offer3 to1 only;7+5+5 remaining, sum20 to18."}
+  ,"88eaa53bb92e430d":{"decision":"accept","notes":"Viewed paired plots: Computer Science exponent-3 to-4 only; negative values become greater than Physics in all3 categories after, none before."}
+  ,"89240e63a10cb10c":{"decision":"accept","notes":"Viewed line:2009 point/label1.48 to1.45 only; min1.25 unchanged, range0.23 to0.20."}
+  ,"896f66ce6d1a36a3":{"decision":"accept","notes":"Viewed table: Lucia99 to97 only; min93 unchanged, range6 to4."}
+  ,"89ed1fd8642ae704":{"decision":"accept","difficulty_group":"calibration","notes":"Viewed pie: legend labels swap only; upper-median convention for two sectors means larger cyan, Cadet Blue after."}
+  ,"89f9043b55892d98":{"decision":"accept","notes":"Viewed table: Sophia3 to5 only, max9 unchanged, range6 to4."}
+  ,"8af807e1b00c0307":{"decision":"accept","notes":"Viewed table: Chesterton9 to2 only, unique mode9 to2."}
+  ,"8bb70d53831baaf7":{"decision":"accept","notes":"Viewed grouped bars: used2015 3377 to2993 with height; smallest gap2014 181 before versus2015 116 after."}
+  ,"8cc510954c7f3df6":{"decision":"accept","notes":"Viewed prices: canoe462 to562 only; plus998 gives1460 to1560 across1525 budget."}
+  ,"8ee10604afa9c075":{"decision":"accept","notes":"Viewed bars: clergy niece10 to9 only; strict above9 count1 to0."}
+  ,"8eed5bfdebad96f0":{"decision":"accept","notes":"Viewed map: Wisconsin medium to light only; lowest Midwest set gains Wisconsin."}
+  ,"8fc992df9fcbbc99":{"decision":"reject","notes":"Viewed survey bars: exhaustive-looking response shares originally total100, edited total70 with no missing-response category. Exclude unresolved total semantics."}
+  ,"9080617e64a8174c":{"decision":"accept","notes":"Viewed relation table: last x15 to17 only; unique inputs before, conflicting17 outputs after."}
+  ,"90944c639e8247fa":{"decision":"accept","notes":"Viewed map: West Virginia light to darkest only; Mississippi darkest retained, higher comparison yes to no using bins."}
+  ,"9270d21c2d0cbdb4":{"decision":"accept","notes":"Viewed stacks: consumer/wireless legend swap only; computing105.4 plus53.9 before versus91.9 after gives159.3 to197.3."}
+  ,"92ab69f37a178b54":{"decision":"accept","notes":"Viewed map: New Mexico N/A to light only; minimum Alaska before, Alaska/New Mexico after, N/A excluded."}
+  ,"92eb90ddb1c18915":{"decision":"accept","notes":"Viewed map: California third to fourth class only; West maximum bin156273-255137 to261869-1310759."}
+  ,"930ae51c0576a640":{"decision":"accept","notes":"Viewed prices: shark book22 to19 only; plus18 gives40 to37 across39 budget."}
+  ,"93c8c406c3ac75bf":{"decision":"accept","notes":"Viewed scene: small brown shiny sphere to cube only, large brown cylinder and small cyan sphere retained."}
+  ,"9410d8e29a6c5497":{"decision":"accept","notes":"Viewed bars: beef2.0 to3.8 with matching length; pork8.5 and lamb6.3 fixed, means5.6 to6.2."}
+  ,"94a14403948627dc":{"decision":"accept","difficulty_group":"calibration","notes":"Viewed two pies:1/3 expert legend labels swap only, ACL18 blue30.5 greater than pink2.5, answer3 to1."}
+  ,"94a4fb941d8b6467":{"decision":"accept","notes":"Viewed table: Friday5 to10 only; sum35 to40 across5, mean7 to8."}
+  ,"951ae84f93fa30c6":{"decision":"accept","notes":"Viewed table: frequency1 changes4 to8, qualifying sum12 to16."}
+  ,"951cff569b39e7a1":{"decision":"accept","notes":"Viewed table: Sunday4 to10 only, sorted middle8 to10."}
+  ,"9615b31beac3d349":{"decision":"accept","notes":"Viewed scene: tiny red cylinder metallic to rubber, union count0 to1."}
+  ,"962d3fac0d191959":{"decision":"accept","notes":"Viewed addition table: bottom-right12 to10 only; header difference5 gives unknown17 to15."}
+  ,"9719a7d717895735":{"decision":"reject","notes":"Viewed colorbar: endpoint changes -20.6 to -20.1 while equally spaced intermediate ticks unchanged; inconsistent scale before."}
+  ,"97865201358d20d9":{"decision":"accept","notes":"Viewed bars: calf6 to4, ivory9 unchanged, sum15 to13."}
+  ,"98071f2f13171341":{"decision":"accept","notes":"Viewed stem-leaf:66 absent before and present after, threshold count8 to9."}
+  ,"98606e5302e5e2e8":{"decision":"accept","notes":"Viewed scene: rear large rubber cube red to cyan only, relational referent retained."}
+  ,"98ba178e6cddffcf":{"decision":"accept","notes":"Viewed arrow graph: last terminal8 to6 only, one of eight paths restored,7 to8."}
+  ,"993958ae9b18227c":{"decision":"accept","notes":"Viewed number flower:6 to8 only; qualifying38 before,38+8 after."}
+  ,"99b087c0200451cc":{"decision":"accept","notes":"Viewed bars: age and affordability labels swap only;47 closest to50."}
+  ,"99ccc068ac0d3c23":{"decision":"accept","notes":"Viewed PnL: B3/B4 legend swap only; green has greatest range and variance among bases."}
+  ,"9a5e7d15f7e1ded5":{"decision":"accept","notes":"Viewed table: Saturday1 to2, max9 retained; range8 to7."}
+  ,"9a67340a7408dd3b":{"decision":"accept","notes":"Viewed scene: foreground small metal cube red to gray only, green cube retained."}
+  ,"9aa3163c1beea335":{"decision":"accept","difficulty_group":"calibration","notes":"Viewed lines: Chile2002 endpoint180 to125 with label moved; Botswana143 becomes maximum."}
+  ,"9b84b962331b66fe":{"decision":"reject","notes":"Source caption claims threshold color encoding red/yellow/blue but bars use contradictory colors; exclude semantically inconsistent source."}
+  ,"9c0aa42818bd5438":{"decision":"accept","notes":"Viewed Saturday45 to41 only; subtract Friday40 gives5 to1."}
+  ,"9c4589a22f1d61e0":{"decision":"accept","notes":"Viewed right-panel legend swap only; orange consistently higher FPR, left panel unchanged."}
+  ,"9c4f43435f76a8fb":{"decision":"accept","notes":"Viewed demand4700 to10700 at850, supply5800 fixed; surplus becomes shortage."}
+  ,"9f0f74da563499a6":{"decision":"accept","notes":"Viewed upper-left triangle unshaded to shaded only; consecutive Pythagorean3,4,5 gives three6-unit triangles to four,18 to24."}
+  ,"9fcc876dd9af2da1":{"decision":"reject","notes":"Legend swaps literal color names against actual mark colors, creating ambiguous color-versus-label interpretation."}
+  ,"a04220b1227e423f":{"decision":"accept","notes":"Viewed Brazil bar .21 to.29 with matching length; four-extreme mean .455 to.475."}
+  ,"a133d5d65cf7667d":{"decision":"accept","notes":"Viewed pepperoni5 to4 only,5*3+5*p+6 yields46 to41."}
+  ,"a18d1dc61ce9d087":{"decision":"accept","notes":"Viewed Europe/Asia-Oceania label swap only;2+1.8 compared with19.3 then1.4 flips answer."}
+  ,"a1bbb8f29e3b2ac8":{"decision":"accept","notes":"Viewed x moved from AC to AB, geometry unchanged; sine rule yields14.2 versus5.8."}
+  ,"a232409f2669af94":{"decision":"accept","notes":"Viewed gray short bar151 to131, height consistent; average with415 gives283 to273."}
+  ,"a261706499fdeed3":{"decision":"accept","notes":"Viewed final multiplication3 to2; one initial triple divisible by3 plus fourth and optionally sixth gives3 to2."}
+  ,"a2f40100ff64b88d":{"decision":"accept","notes":"Viewed Ethiopia1977 point10 to20.7 only, raises above-mean count3 to4."}
+  ,"a3d8a27899a50f95":{"decision":"accept","notes":"Viewed blue/black method legend labels swap, black lowest at100, curves unchanged."}
+  ,"a47448c9a1c6dd6b":{"decision":"accept","notes":"Viewed largest bar282507 to262507 and matching height; halves141253.5 to131253.5."}
+  ,"a4e0d2bbd307c5ff":{"decision":"accept","notes":"Viewed last x8 to6 only; conflicting duplicate input removed, relation becomes function."}
+  ,"a4fa170bb512ab27":{"decision":"accept","notes":"Viewed import2012 point5 to6 only; minimum2 unchanged, range3 to4."}
+  ,"a5a97ea3b8847159":{"decision":"reject","notes":"Moved yellow sphere appears floating against cylinder without ground contact; conspicuous compositing artifact."}
+  ,"a75deb9e5f4f8981":{"decision":"accept","notes":"Viewed Snapchat/Instagram label swap; increases10 versus13, legend unchanged."}
+  ,"a8dbd1337de103a7":{"decision":"accept","notes":"Viewed2016 time39 to41; minus35 yields4 to6."}
+  ,"a8e76b9c8dba7e61":{"decision":"accept","notes":"Viewed Google4 to8 bar and label, Instagram16 fixed, ratio4 to2."}
+  ,"a91b4b9f701c26d6":{"decision":"accept","notes":"Viewed Wetness colorbar reversed only; dominant dark values move from top to bottom interval, Dryness unchanged."}
+  ,"a94b1d3e8ed16f5d":{"decision":"accept","notes":"Viewed grid top row second square added only; dihedral closure16 cells minus2 before,24 minus3 after yields14 to21."}
+  ,"a96b9defb9965176":{"decision":"accept","notes":"Viewed maximum78 to80, minimum71 retained, range7 to9."}
+  ,"ab50acfd5546ebfb":{"decision":"accept","notes":"Viewed EBEN lowest outlier15 to38 only; distance from Q3 shrinks below Streaming SEANet low outlier20 versus Q3~71."}
+  ,"ab6284bb5abf72a1":{"decision":"accept","notes":"Viewed2018 value49 to47,2017=41, rate8 to6."}
+  ,"ab872c3097f3e4d5":{"decision":"accept","notes":"Viewed spray bar1 to3, max8 unchanged, range7 to5."}
+  ,"ab9d5b6758ed68b9":{"decision":"accept","notes":"Viewed first cell3 to1, second column forces4 in first row; missing first-row value1 to3."}
+  ,"ada3f208a503d219":{"decision":"accept","notes":"Viewed Jenny1 to10 only; totals36 to45 imply4 versus5 uncounted votes, eligible winners2 to3."}
+  ,"add776dbcc4c4735":{"decision":"accept","notes":"Viewed2015 value44 to34; minus39 yields5 to-5."}
+  ,"aea030134c1366f7":{"decision":"accept","difficulty_group":"calibration","notes":"Viewed top two film labels swap; highest North America423.32 stable."}
+  ,"aebe514793d982c4":{"decision":"reject","notes":"Before image has conspicuous cyan rectangular overlay across entire energy strip, not a natural chart correction."}
+  ,"afd558536a2e37fd":{"decision":"reject","notes":"GB1 model ensemble mean-of-top1-percent square disappears in edited image; unintended semantic deletion."}
+  ,"b00e7c30d7a833e6":{"decision":"accept","notes":"Viewed kurtosis2/10 legend swap, curve peaks unchanged; visual trend lower to higher."}
+  ,"b05778b72e076200":{"decision":"accept","notes":"Viewed rear red rubber sphere small to large only, reference cubes unchanged."}
+  ,"b09ef95803b72a2d":{"decision":"accept","notes":"Viewed cocaine14 to24 with proportional bar; plus36 yields50 to60."}
+  ,"b0f3c878b114df4d":{"decision":"accept","notes":"Viewed Monday3 to10, sum49 to56 across7, mean7 to8."}
+  ,"b2b6f50152f8ee7f":{"decision":"accept","notes":"Viewed spinach5 to3; plus3+7 yields15 to13."}
+  ,"b2c5d3ba04382e89":{"decision":"accept","notes":"Viewed first stem0 to1 only, weight8 becomes18, threshold count5 to6."}
+  ,"b2f1d23a99f7daa7":{"decision":"accept","notes":"Viewed far arc4x+90 to4x+50 only; external secant formula6x=4x+constant-30 gives30 to10; diagram not to scale."}
+  ,"b37c26bbc5945db5":{"decision":"accept","notes":"Viewed Meg5 to8 only, unique mode5 to8."}
+  ,"b3a75d4e79b28073":{"decision":"accept","notes":"Viewed Friday3 to5 only; sorted middle4 to5."}
+  ,"b3aa64e6725d07c1":{"decision":"accept","notes":"Viewed rainforest matches1 to2, desired cell5 unchanged, total15 to16 yields1/3 to5/16."}
+  ,"b3de6e7fff3b4a14":{"decision":"accept","notes":"Viewed Japan2014 value25 to35 with matching point; median2013-15 changes27 to35."}
+  ,"b4946f71fdc5d06b":{"decision":"accept","notes":"Viewed leaf67 added, qualifying leaves10 to11."}
+  ,"b52b913d2bdf74cd":{"decision":"accept","notes":"Viewed Vivian350 to450, total3120 to3220, Harry390 fixed yields1/8 to39/322."}
+  ,"b5468247c0188afb":{"decision":"accept","notes":"Viewed3 orange to unhighlighted,7 blue unchanged; prime73 to79 uniquely meets constraints."}
+  ,"b5ed38a7d2e72d9d":{"decision":"accept","notes":"Viewed small green cube to sphere only, union of purple and left blocks2 to1."}
+  ,"b61fc285f2ac582b":{"decision":"accept","notes":"Viewed Connecticut light to darkest including callout, Illinois third bin fixed; lower yes to no."}
+  ,"b703bf25d1be5617":{"decision":"accept","notes":"Viewed large blue cylinder rubber to metal only, relational objects unchanged."}
+  ,"b709986edcf86a5a":{"decision":"accept","notes":"Viewed left(a) box distribution shifts from median1.001 to just below1; b now highest; other left boxes preserved."}
+  ,"b75a49d46427d274":{"decision":"accept","notes":"Viewed WhatsApp2250 to2000 with matching bar, add1300 yields3550 to3300."}
+  ,"b7ff5aa87ae2ca01":{"decision":"accept","notes":"Viewed Friday2 to0, Thursday7 retained, difference-5 to-7."}
+  ,"b819ec1c0fa92c9e":{"decision":"accept","notes":"Viewed last y8 to12; constant first differences3 become3,7."}
+  ,"b9dd4a2bbf1424a1":{"decision":"accept","notes":"Viewed soccer shirt3275 to2275 only;19822-9569-price yields6978 to7978."}
+  ,"bb54a7445ba4300f":{"decision":"accept","notes":"Viewed red age25-34 bar74 to68, matching height,71 at35-44 becomes maximum."}
+  ,"bb5909da841f112d":{"decision":"accept","difficulty_group":"calibration","notes":"Viewed male22-29 bar11.99 to12.99, height consistent, max12.82 to12.99."}
+  ,"bbb9c3beaffb77f5":{"decision":"accept","notes":"Viewed Watson11 to6, modal count3 transfers11 to6."}
+  ,"bc30a3cb83225a64":{"decision":"accept","notes":"Viewed olive bar25 to39; blue31 median before but below median after."}
+  ,"bc9c6785d3cf0013":{"decision":"accept","notes":"Viewed supply18500 to21700 at405, demand19100 fixed; shortage to surplus."}
+  ,"bced05ec849a4429":{"decision":"accept","notes":"Viewed cookbook5 to8, plus3+9 gives17 to20."}
+  ,"bd27095c12495f1d":{"decision":"accept","notes":"Viewed left rubber cylinder green to blue only, purple reference cube unchanged."}
+  ,"bd44a57a12540835":{"decision":"reject","notes":"Edited pie label30 while wedge geometry unchanged and percentages sum102; internally inconsistent."}
+  ,"bda5859c6b0959d9":{"decision":"accept","notes":"Viewed dashed Bad curves exchanged between panels, solid Good curves unchanged;1-to2 slope steeper first before, second after."}
+  ,"be2ff49bc8f0f305":{"decision":"accept","notes":"Viewed frequency1=12 to15 only; plus16 yields28 to31."}
+  ,"be537e87454519f4":{"decision":"accept","notes":"Viewed small cylinder green to brown only; union count2 to1, green sphere preserved."}
+  ,"be634a88b3ed4bc6":{"decision":"accept","notes":"Viewed Irving8 to9, minimum2 fixed, range6 to7."}
+  ,"bf0682b6d11b7e7d":{"decision":"accept","notes":"Viewed yellow sphere moved from right to left of brown cube, grounded shadows, count1 to2."}
+  ,"c02621dfdf7c8543":{"decision":"accept","notes":"Viewed rear yellow metal cube to sphere, small ball and red cylinder unchanged."}
+  ,"c13664e16725c791":{"decision":"accept","notes":"Viewed Africa/MiddleEast labels swap only; least both years0.5 retained."}
+  ,"c17e055de3994ffd":{"decision":"accept","notes":"Viewed chord expression2x+8 to2x+10; equality with4x gives4 to5."}
+  ,"c29f2517d8038c0d":{"decision":"accept","notes":"Viewed Texas third to fourth bin only; South maximum interval changes accordingly."}
+  ,"c29ffa729255a5c9":{"decision":"accept","difficulty_group":"calibration","notes":"Viewed globe4 to1 bar only, minimum desert2 toglobe1."}
+  ,"c2d480a2fb22c7d6":{"decision":"accept","notes":"Viewed9 moved adjacent to opposite leg relativeJ, hypotenuse14 fixed; acos toasin gives50 to40 degrees."}
+  ,"c30e4c3d87c01dd5":{"decision":"accept","notes":"Viewed highest/lowestROI legend swap; SEO lowest+medium32+41 to15+41."}
+  ,"c456450c1566b67c":{"decision":"accept","notes":"Viewed frequency5 poems5 to11, sum qualifying14 to20."}
+  ,"c468e2a5087eb7c5":{"decision":"reject","notes":"Single proportion-histogram bin inflated without compensating normalization; before distribution mass potentially exceeds1."}
+  ,"c4b4abd67bf548d4":{"decision":"accept","notes":"Viewed2020 dark stack .27 to.17 with matching height, plus.29 gives.56 to.46."}
+  ,"c4b8bf7ee8339003":{"decision":"accept","notes":"Viewed supply17900 to17100 at525, demand17500 fixed, surplus toshortage."}
+  ,"c4ff23cd7854a6f5":{"decision":"reject","notes":"After Washington and Oregon share same interval; exact lower-than relation cannot be determined from binned map."}
+  ,"c5c3af946964b6af":{"decision":"accept","notes":"Viewed coarse gravel4 to3 perlb only, times1.1 gives4.4 to3.3."}
+  ,"c6c489e9a48e484d":{"decision":"accept","notes":"Viewed women2000 minimum700 to756.59 with point shifted; add587.16 yields1287.16 to1343.75."}
+  ,"c76cbf26eb643944":{"decision":"reject","notes":"Spending/tax titles swap but spending-minus-tax panel unchanged, inconsistent derived panel."}
+  ,"c845cafa352a50d5":{"decision":"accept","notes":"Viewed dark2002 bar10.1 to20.1 with matching height, sum43.8 to53.8."}
+  ,"c87658781c0384a2":{"decision":"accept","notes":"Viewed Alexandra10 to9 only, mode10 to9."}
+  ,"c8bc670a9a9a9512":{"decision":"accept","notes":"Viewed equal-side expression5x-1.5 to5x-.5, x2.5 to1.5, AC11 to7; triangle inequalities hold."}
+  ,"c9a0275c36a995eb":{"decision":"accept","notes":"Viewed large brown matte right cube to cylinder only, red relation references unchanged."}
+  ,"c9b8f7a5da38f22b":{"decision":"accept","notes":"Viewed Friday14 to11 only, unique mode14 to11."}
+  ,"c9ec44d2269ae719":{"decision":"accept","notes":"Viewed notebook.70 to.77,8 notebooks plus9*.9 yields13.70 to14.26."}
+  ,"ca527e805018a189":{"decision":"accept","notes":"Viewed dark/gray legend labels swap only, means35 versus13 swap category interpretation."}
+  ,"ca7e8c769ca5e0f1":{"decision":"reject","notes":"Before2020 mutually exclusive survey responses83+20 exceed100; line endpoint geometry also unchanged."}
+  ,"cbf53e69790f2762":{"decision":"accept","notes":"Viewed large right rubber cylinder green to blue only, small rubber sphere unchanged."}
+  ,"cc24b6509fe1f607":{"decision":"accept","notes":"Viewed sparse/dense legend swap only, orange second largest increase remains."}
+  ,"cc26aeee6e13981c":{"decision":"accept","notes":"Viewed2018 rounds5 to7, minus8 yields-3 to-1."}
+  ,"cc6583e4725d8510":{"decision":"accept","notes":"Viewed business4716 to3716, plus4*9581 yields43040 to42040."}
+  ,"cc99f7a290a3960a":{"decision":"accept","notes":"Viewed Td10/100 legend swap, dotted lower peak becomes lowerTd after, both variables positive after versus one negative before."}
+  ,"cd2a21fc3cd55d29":{"decision":"accept","notes":"Viewed2014 used-car15.1 to45.1 with proportional stack; total58.5 to88.5 exceeds2013 total79.4."}
+  ,"cd71cf418f95087c":{"decision":"accept","notes":"Viewed small gray rubber cylinder to cube only, cyan rubber reference retained."}
+  ,"cdaf515ad5832dae":{"decision":"accept","notes":"Viewed diversified/apparel labels swap, ratio10/5 to5/10, wedges unchanged."}
+  ,"ce46291a56848c0c":{"decision":"accept","notes":"Viewed Florida third tohighest bin only, Texas remains highest bin; answer lists states in highest displayed class."}
+  ,"ced116fdbc470e69":{"decision":"reject","notes":"Edited52 bar extends beyond unchanged59 bar; numeric label and geometry disagree."}
+  ,"cfea5919ff523a27":{"decision":"accept","notes":"Viewed silk8.08 to9.08,4*(silk+8.17) gives65 to69."}
+  ,"d01fd0e4970f1913":{"decision":"accept","notes":"Viewed2018 revenue2076 to3276 matchingheight; dominant adjacent increase moves2019 to2018."}
+  ,"d0f600235772fb56":{"decision":"accept","notes":"Viewed Saturday4 to6, seven-value median5 to6."}
+  ,"d1034e0ff110962d":{"decision":"accept","notes":"Viewed upper strip14728 to15728; sums with22204 and20331 before or19331 after give57263, hidden digits022 to129."}
+  ,"d143504a7a1ac417":{"decision":"reject","notes":"Literal color names swapped against actual colors, ambiguous green-line versus legend-name interpretation."}
+  ,"d1736051da5b06e8":{"decision":"accept","notes":"Viewed right segment4 to5 only; inscribed square area3²+4² to3²+5²,25 to34."}
+  ,"d28d4aa07f2d64a5":{"decision":"accept","notes":"Viewed RT15 to9 only, equal-angle opposite sides2z-15=RT gives15 to12."}
+  ,"d2a8a764724cf1bb":{"decision":"accept","notes":"Viewed Tyrone10 to5 only, unique mode10 to5."}
+  ,"d4bb2a6edba02562":{"decision":"accept","notes":"Viewed Asia/Africa labels swap, largest age gap41-3 retained."}
+  ,"d4ce6883cea99df5":{"decision":"accept","notes":"Viewed Monday9 to3 only, seven-value median8 to7."}
+  ,"d52d073636d433c8":{"decision":"accept","notes":"Viewed last rectangle area17 to22, commonheight(12+18)/6=5 gives CD7 to8, diagram not to scale."}
+  ,"d5552461d5fe014d":{"decision":"reject","notes":"Rear cylinder changes both gray tored and matte tometal; unintended material change."}
+  ,"d58bd5b2b4edaad9":{"decision":"accept","notes":"Viewed leaf31 to35 only;17<=n<33 count5 to4."}
+  ,"d67018a153f32c2d":{"decision":"accept","notes":"Viewed Reddit lightbar.17 to.27 matchingheight, max1.16 fixed,range.99 to.89."}
+  ,"d673eb2b6158db77":{"decision":"accept","notes":"Viewed y coefficient2/3 to3/5 only, equal-segment equationy=ay+2 gives6 to5."}
+  ,"d74675ea21cfbed4":{"decision":"accept","notes":"Viewed last y15 to18, differences7,7 become7,10."}
+  ,"d762f384cedbe044":{"decision":"reject","notes":"Literal color labels swapped against mark colors, ambiguous target identification."}
+  ,"d7ecf48fb63b41b9":{"decision":"accept","notes":"Viewed Massachusetts highest to lowest bin includingcallout; NY neighborsVermont middle, answer flipsyes tono."}
+  ,"d822f6e1be478d96":{"decision":"accept","notes":"Viewed partiallyoccluded right cube gray toblue only, countsbluecubes0 to1 infrontoftinyrear matte cylinder."}
+  ,"d88b4d040c303be3":{"decision":"accept","notes":"Viewed NewYork class1 toclass2-5 only; Connecticut neighboring highest class Massachusetts gainsNewYork."}
+  ,"d88cc203f7b5dbcd":{"decision":"accept","notes":"Viewed1989 concessional20M to42M, threshold32M count1 to2."}
+  ,"d910b08dead22490":{"decision":"accept","notes":"Viewed Germanygray84 to94 matchingheight, minimumItaly42,range42 to52."}
+  ,"d9cd6dd586e64d54":{"decision":"accept","notes":"Viewed90 to70 degree labelonly; x²+x=90 or110 givesy81 or100."}
+  ,"dbb14f2a7f576c14":{"decision":"accept","notes":"Viewed Illinois highest tothird bin, Midwest maximum interval23.3-46.4 to12.1-21.3."}
+  ,"dc164ae62abba737":{"decision":"accept","notes":"Viewed Rogerrectanglebase7 to4 only; area14 to8, Art12 becomeslargest; othercookiepanels preserved."}
+  ,"dd624b4eef5b8c05":{"decision":"accept","notes":"Viewed with/without treatment legend exchanged for allthreebetas,solidcurveslowest unchanged."}
+  ,"de4e059da0195c2c":{"decision":"accept","notes":"Viewed sigmoidgreen curve and uncertainty raised before, crossblue; otherthreepanels unchanged,intersections3 to2."}
+  ,"df0bd2e833b02674":{"decision":"reject","notes":"Source centroid constraints inconsistent: DK16,KF12 imply CD>=20 by vector triangle inequality, but DG9 impliesCD18; editedCD12 also impossible."}
+,"e03dce3d383f8fba":{"decision":"accept","notes":"Viewed peanut flour4 to2, white6 unchanged; total26 to22."}
+,"e092b9bab7e067cb":{"decision":"reject","notes":"Nigeria2005 point also shifts; intended only2006 change."}
+,"e09ba01f8f2f9aaf":{"decision":"reject","notes":"Both TN and NC change bins; proposed NC only."}
+,"e0af320fe7ca9f15":{"decision":"accept","notes":"Viewed Indiana second tofirst bin; neighboring maximum changes."}
+,"e0ca46f13a04d961":{"decision":"accept","notes":"Viewed Sunday8 to6 only; median7 to6."}
+,"e14125497f4fc3a0":{"decision":"accept","notes":"Viewed12th grade annotation87.5 to85.5; densitycurves preserved."}
+,"e1e9efbf8eb5c22e":{"decision":"accept","notes":"Viewed bottomleft7 to6, equal row/column sums give x3 to4."}
+,"e25b59a7f11a5bc8":{"decision":"reject","notes":"Shape edit also increases object size substantially."}
+,"e26a07a8395fc0dd":{"decision":"accept","notes":"Viewed skyscraper250 to275, mine-260 fixed; closest absolute elevation switches."}
+,"e341caeed20f7db3":{"decision":"accept","notes":"Viewed public/private forprofit category swap; bar values stable."}
+,"e41132e4bd81afec":{"decision":"accept","notes":"Viewed sketch bar6 to4, minimum5 to4.","difficulty_group":"calibration"}
+,"e427d194d48281be":{"decision":"accept","notes":"Viewed industry/agriculture legend swap, segments and totals stable."}
+,"e56c2616d5288bc3":{"decision":"accept","notes":"Viewed Louis6 to10 only; range7 to9."}
+,"e5712e5312db393a":{"decision":"accept","notes":"Viewed male/female legend swap only; range1.8 to1.98."}
+,"e651c9ed25f41893":{"decision":"accept","notes":"Viewed small metallic sphere blue to brown, shape/size/relations preserved."}
+,"e66a7b04b129168f":{"decision":"accept","notes":"Viewed top-left cash transfer middle point .02 to .045, other panels stable."}
+,"e67d870b4df83f99":{"decision":"accept","notes":"Viewed Cylinder relocated behind gray cube with perspective scale/shadow; intersection count0 to1."}
+,"e7688317cbc1fad6":{"decision":"accept","notes":"Viewed Colorado lowest tosecond bin only; lowest-bin set losesColorado."}
+,"e8782c8a29547ca3":{"decision":"accept","notes":"Viewed Norma13 to15; median14 to15."}
+,"e89899396a45a248":{"decision":"accept","notes":"Viewed Final segment endpoint5h to7h at35mi; average7 to5."}
+,"e8b8965d019bf8e3":{"decision":"accept","notes":"Viewed Shredded wheat4 to3 perlb; 3.5lb cost14 to10.5."}
+,"e931fc352afb7a71":{"decision":"accept","notes":"Viewed Back metallic sphere green tored only; spatial chain preserved."}
+,"eac25affa9302913":{"decision":"accept","notes":"Viewed Thursday39 to33, Wednesday35; change4 to-2."}
+,"eacc43462051badd":{"decision":"accept","notes":"Viewed Fremont25 to21; median23 to22."}
+,"ebdcc08c12dda4ac":{"decision":"accept","notes":"Viewed 840 supply14000 to13200, demand13600; surplus toshortage."}
+,"ec09b4a7eff91b64":{"decision":"accept","notes":"Viewed Iowa first tosecond bin; Midwest lowest-bin set expands."}
+,"eced557b3fbe61a0":{"decision":"accept","notes":"Viewed Methadone bar andlabel5000 to3194; top47600 stable; mean26300 to25397."}
+,"ed2519512097c012":{"decision":"accept","notes":"Viewed Frequency7 to17 only; sum28 to38."}
+,"ed932182a8dd52a1":{"decision":"accept","notes":"Viewed Male2011 point80 to66 withlabel andsegments; steepestincrease2011 to2020."}
+,"ee42d2e20109202d":{"decision":"accept","notes":"Viewed Sixbox frequency10 to20; >=3 total37 to47."}
+,"efea7a80875ad066":{"decision":"accept","notes":"Viewed Finaly1 to0; differences-4,-3 become-4,-4."}
+,"f0e47376c0a944b6":{"decision":"accept","notes":"Viewed Topsubscript2 to1 only; true/estimate paths stable."}
+,"f16103ca655535b0":{"decision":"accept","notes":"Viewed initialshape positions cycled;120degree position permutationC toB."}
+,"f1a536f05f6a53f9":{"decision":"accept","notes":"Viewed Missouri first tosecond bin; joinsTexas in highest neighborbin."}
+,"f2a3417eb9b2b1cd":{"decision":"accept","notes":"Viewed JeVois legendfrequency swap; redpoints lowest average unchanged."}
+,"f2c1d3efeaa39611":{"decision":"accept","notes":"Viewed largegreen cylinder matte tometal, otherobjects stable; unioncount1 to2."}
+,"f3343620289d84c4":{"decision":"accept","notes":"Viewed butterscotch.08 to.13; sum.32 to.37 crosses.34."}
+,"f463d08e13818fe4":{"decision":"accept","notes":"Viewed rocklowplays2 to7; denominator15 to20,numerator3."}
+,"f50715e1ad86df40":{"decision":"accept","notes":"Viewed Austin4 to2 only; median4 to3."}
+,"f535e24a374255ca":{"decision":"reject","notes":"Redcurve endpointatYear10 also changes1.38 to1.23; intendedlocaltrough edit fails preservation."}
+,"f56a4795d386062b":{"decision":"accept","notes":"Viewed detourdepth5 to3; extra twice depth10 to6."}
+,"f62ddd9badb578d8":{"decision":"reject","notes":"Regression slope label.64 disagrees with unchanged plottedline steeperthan.71."}
+,"f6cc55bef2e292b9":{"decision":"accept","notes":"Viewed IndiaLinkedIn bar+label2.9 to3.9; sum5.7 to6.7."}
+,"f70283667d619918":{"decision":"accept","notes":"Viewed allxticks offset-100; unchanged curves intersectat100 before200 after."}
+,"f89d272e76aa1928":{"decision":"reject","notes":"AfterNV andARsamebin; exacthigher comparison indeterminate."}
+,"f8dc587ffdc9f65e":{"decision":"accept","notes":"Viewed Utah lowest tosecondbin; West lowest-bin set expands."}
+,"f922c1ef9f2fc3c7":{"decision":"accept","notes":"Viewed leaf9 addedtostem1 only; count12 to13."}
+,"f9ed6c40772b8249":{"decision":"accept","notes":"Viewed Fiji/Madagascar categoryswap; .38 vs.21 comparison reverses.","difficulty_group":"calibration"}
+,"fad8c5b8700c98d9":{"decision":"accept","notes":"Viewed Horizontal foldline absent before presentafter; validshown symmetryaxes1 to2."}
+,"faef5594c556eb11":{"decision":"accept","notes":"Viewed Thursday8 to5; median7 to6."}
+,"faf6965a6791ae71":{"decision":"accept","notes":"Viewed Sunday9 to7; range7 to5."}
+,"fd6aec46b17275e1":{"decision":"accept","notes":"Viewed Smallmetal cylinder gray toyellow; otherattributes stable; relationalcount0 to1."}
+,"ffc81c579ce9d919":{"decision":"accept","notes":"Viewed Legend2013/2014 swapped; average75 to56."}
+}

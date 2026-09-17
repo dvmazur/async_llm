@@ -1,0 +1,2071 @@
+{
+  "samples": [
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "0d47e4c378e9c9d0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "0f6c4193c4c4860c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "10be37e09bfc3ea2"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "1e4b2cb25315d3ed"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "1f04767ddef7b285"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "24276e201dfd64db"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "27d8131ccfea60c3"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "28e661ff8679c832"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "2a8bf498dcf14d92"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "2cfc68128ac7b51d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "2e557ece46179103"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "3625463720959fd0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "3b29a39b18f62071"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "3d7ec1844824f43a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "3e9d31ca156f29e9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "472184f316b5b06b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "512ba2f4a8ada618"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "594c8cee89f28b56"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "5a1986cb45b3214a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "61f10d38c9943fe0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "65bf61315731138d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "65cec6a33482955b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "65d8996a943cbf18"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "7672a9a692f63d3e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "86a368de4df0d97e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "87eedc48e054f4b9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "98ac3d08f1d828ec"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "9938bf6f5afb5cf1"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "a1971b5e5d8b87dd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "aab014dfde11d15f"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "ab59a556e4adafc6"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "b61874c23f711686"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "b65e2a18a1f93fb9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "c317805cb1ed72a4"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "cca6215bb2b1ecf3"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "d2a63ec0009f3bd1"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "d3caa5864c660841"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "de402fdc6c89968e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "e760893acc879d7a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "f8ee03eeec0be1ef"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v2_assembled",
+      "id": "fed26522a1d0cd38"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0055d6580f9409e9",
+      "id": "0055d6580f9409e9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/00c5592e77b2fb17",
+      "id": "00c5592e77b2fb17"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/00c5b1940db0a54b",
+      "id": "00c5b1940db0a54b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/00fb56e2cdfc5cc2",
+      "id": "00fb56e2cdfc5cc2"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/011c584da74e14b7",
+      "id": "011c584da74e14b7"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/015a5401b1b10d85",
+      "id": "015a5401b1b10d85"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/019f6852d047888c",
+      "id": "019f6852d047888c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0377fb31e31028f5",
+      "id": "0377fb31e31028f5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/03e798fc1e2f6be0",
+      "id": "03e798fc1e2f6be0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/045c53a342c7a793",
+      "id": "045c53a342c7a793"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/06a5633bcb21939c",
+      "id": "06a5633bcb21939c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/07eb65836b9abb59",
+      "id": "07eb65836b9abb59"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/081a289c1a897912",
+      "id": "081a289c1a897912"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/083876ea9e3cd7bb",
+      "id": "083876ea9e3cd7bb"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/083c7be08c03e6f3",
+      "id": "083c7be08c03e6f3"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/083faf01df9de181",
+      "id": "083faf01df9de181"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/08d41e52072d3289",
+      "id": "08d41e52072d3289"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/08de24ae141d945a",
+      "id": "08de24ae141d945a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0a3253666d79cd74",
+      "id": "0a3253666d79cd74"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0aa813eeffc28b3c",
+      "id": "0aa813eeffc28b3c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0aae1740a3b46f60",
+      "id": "0aae1740a3b46f60"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0adf8515d83bbe5b",
+      "id": "0adf8515d83bbe5b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0bb5d14d25ac75ee",
+      "id": "0bb5d14d25ac75ee"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0bf3f7868c780545",
+      "id": "0bf3f7868c780545"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0ca52b2f999ea67d",
+      "id": "0ca52b2f999ea67d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0caac02b0bbb53bd",
+      "id": "0caac02b0bbb53bd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0d4aa36cc98b7f4c",
+      "id": "0d4aa36cc98b7f4c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0e7c9b2bd93672f5",
+      "id": "0e7c9b2bd93672f5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0ebff6c730878d69",
+      "id": "0ebff6c730878d69"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0f07c827adb8e3d2",
+      "id": "0f07c827adb8e3d2"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0fa36ade3f913dc4",
+      "id": "0fa36ade3f913dc4"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/0fb9830674bb55a4",
+      "id": "0fb9830674bb55a4"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/120b249315dff09a",
+      "id": "120b249315dff09a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/1264e583a3c91808",
+      "id": "1264e583a3c91808"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/1348ac1b15bb7276",
+      "id": "1348ac1b15bb7276"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/13aae5ba7844c954",
+      "id": "13aae5ba7844c954"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/13d3f6d9047552ea",
+      "id": "13d3f6d9047552ea"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/13e61a0b5d0705fc",
+      "id": "13e61a0b5d0705fc"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/14cda42cc0ef1af6",
+      "id": "14cda42cc0ef1af6"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/1545a2fd311b1ebf",
+      "id": "1545a2fd311b1ebf"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/15a2be915db1a8fe",
+      "id": "15a2be915db1a8fe"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/15e280daf556b288",
+      "id": "15e280daf556b288"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/16301283cff7c5ca",
+      "id": "16301283cff7c5ca"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/163ca3e726ce39b8",
+      "id": "163ca3e726ce39b8"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/1667e73a85503bde",
+      "id": "1667e73a85503bde"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/16c5a80e1b94a9b4",
+      "id": "16c5a80e1b94a9b4"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/16e3a7149bff71c8",
+      "id": "16e3a7149bff71c8"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/177f73e8b6991776",
+      "id": "177f73e8b6991776"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/17c1c9df4224fa96",
+      "id": "17c1c9df4224fa96"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/19579cf91c7de253",
+      "id": "19579cf91c7de253"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/19d86b36976fd818",
+      "id": "19d86b36976fd818"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/1addbe42d1568342",
+      "id": "1addbe42d1568342"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/1b6ea5a266472459",
+      "id": "1b6ea5a266472459"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/1b8afbaf986df386",
+      "id": "1b8afbaf986df386"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/1c69cf5b4b10b454",
+      "id": "1c69cf5b4b10b454"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/1fbf149a2fd929a6",
+      "id": "1fbf149a2fd929a6"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/1fe9b34c9dcb6acb",
+      "id": "1fe9b34c9dcb6acb"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/2152aa36f3f3fe8b",
+      "id": "2152aa36f3f3fe8b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/21bca343fddfc368",
+      "id": "21bca343fddfc368"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/21d9e800744226cb",
+      "id": "21d9e800744226cb"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/21e36c9d36a54e64",
+      "id": "21e36c9d36a54e64"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/2216706cd687dc13",
+      "id": "2216706cd687dc13"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/223558c1ca7f059e",
+      "id": "223558c1ca7f059e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/22c2aedaef48fc91",
+      "id": "22c2aedaef48fc91"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/233151d7d6c16b71",
+      "id": "233151d7d6c16b71"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/23a9282f4c8a4c64",
+      "id": "23a9282f4c8a4c64"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/23d15e680b41f4ee",
+      "id": "23d15e680b41f4ee"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/242566a5bdfe0529",
+      "id": "242566a5bdfe0529"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/2426faf6cdab8bbe",
+      "id": "2426faf6cdab8bbe"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/244d481be697b2bf",
+      "id": "244d481be697b2bf"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/246fb5801d8b081e",
+      "id": "246fb5801d8b081e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/24fb3455b72db9b3",
+      "id": "24fb3455b72db9b3"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/2502b7f1f760ae47",
+      "id": "2502b7f1f760ae47"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/25c1ef53fec6de78",
+      "id": "25c1ef53fec6de78"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/25ea863a8761db61",
+      "id": "25ea863a8761db61"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/266fb2db079776b9",
+      "id": "266fb2db079776b9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/26c5a8bd07405490",
+      "id": "26c5a8bd07405490"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/26c9d57cfe38c434",
+      "id": "26c9d57cfe38c434"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/273135a743394152",
+      "id": "273135a743394152"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/27e2b316c108c74a",
+      "id": "27e2b316c108c74a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/27fdf96890230844",
+      "id": "27fdf96890230844"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/287408352886d75a",
+      "id": "287408352886d75a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/28a4976d5fe98f0f",
+      "id": "28a4976d5fe98f0f"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/28ca7af08fa79868",
+      "id": "28ca7af08fa79868"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/2b3dbeffafd77c50",
+      "id": "2b3dbeffafd77c50"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/2bedffb90ad2bd79",
+      "id": "2bedffb90ad2bd79"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/2cce718993be3a3a",
+      "id": "2cce718993be3a3a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/2d8203266eef9015",
+      "id": "2d8203266eef9015"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/2db12cfc4457a4d9",
+      "id": "2db12cfc4457a4d9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/2dfeeb7a8eb01017",
+      "id": "2dfeeb7a8eb01017"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/2e2e5c091a7dafb9",
+      "id": "2e2e5c091a7dafb9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/2e3fca7a149f75da",
+      "id": "2e3fca7a149f75da"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/2fede98627031fec",
+      "id": "2fede98627031fec"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/30169e9ac6943744",
+      "id": "30169e9ac6943744"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/30a9503055a8d140",
+      "id": "30a9503055a8d140"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/31e272053bda2998",
+      "id": "31e272053bda2998"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/324782a5e02b1e51",
+      "id": "324782a5e02b1e51"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/34694bbe394fa8f9",
+      "id": "34694bbe394fa8f9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/346b83b433849b9a",
+      "id": "346b83b433849b9a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/34e897f6e80ceeab",
+      "id": "34e897f6e80ceeab"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3524b153ec4a274b",
+      "id": "3524b153ec4a274b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/357ec7cebda9e9dd",
+      "id": "357ec7cebda9e9dd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/35a85ab6462043bc",
+      "id": "35a85ab6462043bc"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3634a61d22d1283e",
+      "id": "3634a61d22d1283e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/36db6b266bb22adc",
+      "id": "36db6b266bb22adc"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/37971d3eeb8a2790",
+      "id": "37971d3eeb8a2790"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/37ab15049006bd20",
+      "id": "37ab15049006bd20"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/384b920595018b88",
+      "id": "384b920595018b88"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/384ca0cb23d5660f",
+      "id": "384ca0cb23d5660f"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/38846fced4b57fb5",
+      "id": "38846fced4b57fb5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/388e26ad91031d4e",
+      "id": "388e26ad91031d4e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3907efdf82049278",
+      "id": "3907efdf82049278"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/394d8b747adb204f",
+      "id": "394d8b747adb204f"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/399182a98e470135",
+      "id": "399182a98e470135"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3a2c0b88befd5aed",
+      "id": "3a2c0b88befd5aed"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3a91c364dfc04332",
+      "id": "3a91c364dfc04332"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3b1547b912d65841",
+      "id": "3b1547b912d65841"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3bc9720a7e4a9403",
+      "id": "3bc9720a7e4a9403"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3c44e88022991389",
+      "id": "3c44e88022991389"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3c8af6fcd25e0562",
+      "id": "3c8af6fcd25e0562"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3cef0311027e732c",
+      "id": "3cef0311027e732c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3d30aaf469a07ecb",
+      "id": "3d30aaf469a07ecb"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3d3bb4c50044bd51",
+      "id": "3d3bb4c50044bd51"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3dd78e1d8da721f8",
+      "id": "3dd78e1d8da721f8"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3dfd1b713124b8aa",
+      "id": "3dfd1b713124b8aa"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/3fcf096d2c62f70c",
+      "id": "3fcf096d2c62f70c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4090a1996faa6dfd",
+      "id": "4090a1996faa6dfd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/415e34ebbb02fd67",
+      "id": "415e34ebbb02fd67"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/419743bf48a285e1",
+      "id": "419743bf48a285e1"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/41a6884068f6e933",
+      "id": "41a6884068f6e933"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/41c14f6a34bed9b8",
+      "id": "41c14f6a34bed9b8"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/41fb1c76cbdc0b41",
+      "id": "41fb1c76cbdc0b41"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4210c41f83891a16",
+      "id": "4210c41f83891a16"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/421782ec7ae173e1",
+      "id": "421782ec7ae173e1"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/429548d1b85daf5b",
+      "id": "429548d1b85daf5b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4344f9118b4e722a",
+      "id": "4344f9118b4e722a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/434573daa7a4c218",
+      "id": "434573daa7a4c218"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4361f77a2df0693c",
+      "id": "4361f77a2df0693c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/438ec73d1fdeaf24",
+      "id": "438ec73d1fdeaf24"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/43d0ea4bf70533e1",
+      "id": "43d0ea4bf70533e1"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4583b1561376ee5e",
+      "id": "4583b1561376ee5e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/45bf2de5c6d1ac67",
+      "id": "45bf2de5c6d1ac67"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/480cadf7d3d662c0",
+      "id": "480cadf7d3d662c0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/48a016687a77f305",
+      "id": "48a016687a77f305"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/48bccc29040b1cf9",
+      "id": "48bccc29040b1cf9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/48f759b65f19c1de",
+      "id": "48f759b65f19c1de"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/49694112a3b953fd",
+      "id": "49694112a3b953fd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4a1ce813e47bb398",
+      "id": "4a1ce813e47bb398"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4a7e850d4bbea7c0",
+      "id": "4a7e850d4bbea7c0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4b37c95a9874acc5",
+      "id": "4b37c95a9874acc5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4ba5e23ebe551e49",
+      "id": "4ba5e23ebe551e49"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4c1485e8d772b147",
+      "id": "4c1485e8d772b147"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4c149111b52e7148",
+      "id": "4c149111b52e7148"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4d0d018d9aeff1f5",
+      "id": "4d0d018d9aeff1f5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4e2b734dfb014d30",
+      "id": "4e2b734dfb014d30"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4e3f669e0092c1ac",
+      "id": "4e3f669e0092c1ac"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4e52f9269d0e1d85",
+      "id": "4e52f9269d0e1d85"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4f1d0eeb35fee730",
+      "id": "4f1d0eeb35fee730"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4f87c9f1db4518d3",
+      "id": "4f87c9f1db4518d3"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4fb24135820f8b53",
+      "id": "4fb24135820f8b53"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/4fd3d25cea9d224e",
+      "id": "4fd3d25cea9d224e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5025ffdde5844cb0",
+      "id": "5025ffdde5844cb0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/506f2f36249f5060",
+      "id": "506f2f36249f5060"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/509807277eac4c7f",
+      "id": "509807277eac4c7f"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5150ff208e049273",
+      "id": "5150ff208e049273"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5275a6a0e09a15b8",
+      "id": "5275a6a0e09a15b8"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/52893471578a8aca",
+      "id": "52893471578a8aca"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/52f0df9b97fb6b9e",
+      "id": "52f0df9b97fb6b9e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/53617e260d293de5",
+      "id": "53617e260d293de5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/537fad82f7a0dda0",
+      "id": "537fad82f7a0dda0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/539753f028823a59",
+      "id": "539753f028823a59"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/539b37164f0bbaac",
+      "id": "539b37164f0bbaac"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/53d3ddd61e80e740",
+      "id": "53d3ddd61e80e740"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/53ed15fca884401b",
+      "id": "53ed15fca884401b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/540ef3bb5018a1fd",
+      "id": "540ef3bb5018a1fd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/545b72b6a45db382",
+      "id": "545b72b6a45db382"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5490dc5a7c48f708",
+      "id": "5490dc5a7c48f708"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5544fa0332300e2c",
+      "id": "5544fa0332300e2c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/55774c7ca0829989",
+      "id": "55774c7ca0829989"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/55a71df71d6cb469",
+      "id": "55a71df71d6cb469"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5629394777a392ef",
+      "id": "5629394777a392ef"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/56f775e2999b4ce0",
+      "id": "56f775e2999b4ce0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/57358c65b4c6bc70",
+      "id": "57358c65b4c6bc70"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/578a36a871299139",
+      "id": "578a36a871299139"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/57add048d7cd5035",
+      "id": "57add048d7cd5035"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/57ea3cdb35362c46",
+      "id": "57ea3cdb35362c46"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/595063b2d3104645",
+      "id": "595063b2d3104645"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5962f3794999d9ad",
+      "id": "5962f3794999d9ad"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5a6aadb48d413527",
+      "id": "5a6aadb48d413527"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5a769916b0354dc5",
+      "id": "5a769916b0354dc5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5a9162816cd6d8c2",
+      "id": "5a9162816cd6d8c2"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5b9e9f30bb5a219d",
+      "id": "5b9e9f30bb5a219d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5bece234e242cadb",
+      "id": "5bece234e242cadb"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5c3b1e32e73f662d",
+      "id": "5c3b1e32e73f662d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5c4403ebc67246a5",
+      "id": "5c4403ebc67246a5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5c4b38a8a99d76f3",
+      "id": "5c4b38a8a99d76f3"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5cb3af658fed2fb0",
+      "id": "5cb3af658fed2fb0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5d1e1690e2cdf5f5",
+      "id": "5d1e1690e2cdf5f5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5d6b181e9d49b191",
+      "id": "5d6b181e9d49b191"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5de489badd05c461",
+      "id": "5de489badd05c461"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5f1078f7fdd4c790",
+      "id": "5f1078f7fdd4c790"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5f2d56f5d91cdfd2",
+      "id": "5f2d56f5d91cdfd2"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5f8466ddc1b83e75",
+      "id": "5f8466ddc1b83e75"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/5ff6421d9c912fef",
+      "id": "5ff6421d9c912fef"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/600a7d26051fc2be",
+      "id": "600a7d26051fc2be"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/609d5a5dac06930a",
+      "id": "609d5a5dac06930a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6128301969929c5a",
+      "id": "6128301969929c5a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/62730dbca00d2b31",
+      "id": "62730dbca00d2b31"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/63c9e21d6bbc89b0",
+      "id": "63c9e21d6bbc89b0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/63e5ff2ed6c1fcf7",
+      "id": "63e5ff2ed6c1fcf7"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/63ed774252e75097",
+      "id": "63ed774252e75097"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/63f79758a1dec69b",
+      "id": "63f79758a1dec69b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/64165c37286a939b",
+      "id": "64165c37286a939b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/646c58ed0f8bdec5",
+      "id": "646c58ed0f8bdec5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/64d2492ba6dc9239",
+      "id": "64d2492ba6dc9239"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/65115b58bc728bea",
+      "id": "65115b58bc728bea"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/65bc306b2b6333d2",
+      "id": "65bc306b2b6333d2"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6719c374dbc0262e",
+      "id": "6719c374dbc0262e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/67852194c3144ee7",
+      "id": "67852194c3144ee7"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/67c4baacf65c08cd",
+      "id": "67c4baacf65c08cd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/69efe7977e988b8d",
+      "id": "69efe7977e988b8d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6a54ca1b56a5caa5",
+      "id": "6a54ca1b56a5caa5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6abf96306a3c1171",
+      "id": "6abf96306a3c1171"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6ad3d1c9498ee917",
+      "id": "6ad3d1c9498ee917"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6b18217ce3fea99b",
+      "id": "6b18217ce3fea99b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6c7bca9ea07dd5c8",
+      "id": "6c7bca9ea07dd5c8"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6cbfbb3efcb6e914",
+      "id": "6cbfbb3efcb6e914"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6cea3d9fb5bfaffb",
+      "id": "6cea3d9fb5bfaffb"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6dbd19f38bb28c65",
+      "id": "6dbd19f38bb28c65"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6dca1db102609ac7",
+      "id": "6dca1db102609ac7"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6eb61b7467d8524a",
+      "id": "6eb61b7467d8524a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6f53096141158af5",
+      "id": "6f53096141158af5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6f5b4d483d34e818",
+      "id": "6f5b4d483d34e818"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/6fabf2e7a88e383a",
+      "id": "6fabf2e7a88e383a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/7042f31cf09b992c",
+      "id": "7042f31cf09b992c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/7085e3e3009520dc",
+      "id": "7085e3e3009520dc"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/7288aad0d0f4adbb",
+      "id": "7288aad0d0f4adbb"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/73a743480b19a94a",
+      "id": "73a743480b19a94a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/748f3429c810f8ae",
+      "id": "748f3429c810f8ae"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/749d7a86f4d95bae",
+      "id": "749d7a86f4d95bae"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/750febafec833fcd",
+      "id": "750febafec833fcd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/759ec0d4019aebd4",
+      "id": "759ec0d4019aebd4"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/75c57356544e84f0",
+      "id": "75c57356544e84f0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/766f3da5f9a29349",
+      "id": "766f3da5f9a29349"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/76e6884c9a88a19d",
+      "id": "76e6884c9a88a19d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/77805c8f7edd5b80",
+      "id": "77805c8f7edd5b80"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/78bf861348873d0f",
+      "id": "78bf861348873d0f"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/78ee3a5ea37c6875",
+      "id": "78ee3a5ea37c6875"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/7922a1f98e8d62d2",
+      "id": "7922a1f98e8d62d2"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/7956dd72549c920b",
+      "id": "7956dd72549c920b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/79a0492ca54e0601",
+      "id": "79a0492ca54e0601"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/7a0e5378ac7e8c1b",
+      "id": "7a0e5378ac7e8c1b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/7b0501ec77d8951d",
+      "id": "7b0501ec77d8951d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/7c3a934978b7236a",
+      "id": "7c3a934978b7236a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/7c6da223c724d184",
+      "id": "7c6da223c724d184"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/7c97593212e64aff",
+      "id": "7c97593212e64aff"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/7ca110cf3c676512",
+      "id": "7ca110cf3c676512"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/7f6be67953a9e3ac",
+      "id": "7f6be67953a9e3ac"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/7fd976332c040322",
+      "id": "7fd976332c040322"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/813fcbe83957c3c8",
+      "id": "813fcbe83957c3c8"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/8219035815a2a23f",
+      "id": "8219035815a2a23f"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/823b4117345e8d90",
+      "id": "823b4117345e8d90"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/82628768ac3732a5",
+      "id": "82628768ac3732a5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/82f74ff7ac1b0844",
+      "id": "82f74ff7ac1b0844"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/83495f218b267e63",
+      "id": "83495f218b267e63"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/83a3191e7d10aaf4",
+      "id": "83a3191e7d10aaf4"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/83d2dc2f3458ab87",
+      "id": "83d2dc2f3458ab87"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/83d5b11e6ab2cdfa",
+      "id": "83d5b11e6ab2cdfa"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/8473983ea542b2c2",
+      "id": "8473983ea542b2c2"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/85857deeebe2f8da",
+      "id": "85857deeebe2f8da"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/85db326d0caea8a6",
+      "id": "85db326d0caea8a6"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/874d64ab407ec663",
+      "id": "874d64ab407ec663"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/87a6ad57d9ef0790",
+      "id": "87a6ad57d9ef0790"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/88d8d3e216c761ef",
+      "id": "88d8d3e216c761ef"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/88eaa53bb92e430d",
+      "id": "88eaa53bb92e430d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/89240e63a10cb10c",
+      "id": "89240e63a10cb10c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/896f66ce6d1a36a3",
+      "id": "896f66ce6d1a36a3"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/89ed1fd8642ae704",
+      "id": "89ed1fd8642ae704"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/89f9043b55892d98",
+      "id": "89f9043b55892d98"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/8af807e1b00c0307",
+      "id": "8af807e1b00c0307"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/8bb70d53831baaf7",
+      "id": "8bb70d53831baaf7"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/8cc510954c7f3df6",
+      "id": "8cc510954c7f3df6"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/8ee10604afa9c075",
+      "id": "8ee10604afa9c075"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/8eed5bfdebad96f0",
+      "id": "8eed5bfdebad96f0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/9080617e64a8174c",
+      "id": "9080617e64a8174c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/9270d21c2d0cbdb4",
+      "id": "9270d21c2d0cbdb4"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/92ab69f37a178b54",
+      "id": "92ab69f37a178b54"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/92eb90ddb1c18915",
+      "id": "92eb90ddb1c18915"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/930ae51c0576a640",
+      "id": "930ae51c0576a640"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/93c8c406c3ac75bf",
+      "id": "93c8c406c3ac75bf"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/9410d8e29a6c5497",
+      "id": "9410d8e29a6c5497"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/94a14403948627dc",
+      "id": "94a14403948627dc"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/94a4fb941d8b6467",
+      "id": "94a4fb941d8b6467"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/951ae84f93fa30c6",
+      "id": "951ae84f93fa30c6"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/951cff569b39e7a1",
+      "id": "951cff569b39e7a1"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/9615b31beac3d349",
+      "id": "9615b31beac3d349"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/962d3fac0d191959",
+      "id": "962d3fac0d191959"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/97865201358d20d9",
+      "id": "97865201358d20d9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/98071f2f13171341",
+      "id": "98071f2f13171341"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/98606e5302e5e2e8",
+      "id": "98606e5302e5e2e8"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/98ba178e6cddffcf",
+      "id": "98ba178e6cddffcf"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/993958ae9b18227c",
+      "id": "993958ae9b18227c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/99b087c0200451cc",
+      "id": "99b087c0200451cc"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/99ccc068ac0d3c23",
+      "id": "99ccc068ac0d3c23"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/9a5e7d15f7e1ded5",
+      "id": "9a5e7d15f7e1ded5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/9a67340a7408dd3b",
+      "id": "9a67340a7408dd3b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/9aa3163c1beea335",
+      "id": "9aa3163c1beea335"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/9c0aa42818bd5438",
+      "id": "9c0aa42818bd5438"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/9c4589a22f1d61e0",
+      "id": "9c4589a22f1d61e0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/9c4f43435f76a8fb",
+      "id": "9c4f43435f76a8fb"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/9f0f74da563499a6",
+      "id": "9f0f74da563499a6"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a04220b1227e423f",
+      "id": "a04220b1227e423f"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a133d5d65cf7667d",
+      "id": "a133d5d65cf7667d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a18d1dc61ce9d087",
+      "id": "a18d1dc61ce9d087"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a1bbb8f29e3b2ac8",
+      "id": "a1bbb8f29e3b2ac8"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a232409f2669af94",
+      "id": "a232409f2669af94"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a261706499fdeed3",
+      "id": "a261706499fdeed3"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a2f40100ff64b88d",
+      "id": "a2f40100ff64b88d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a3d8a27899a50f95",
+      "id": "a3d8a27899a50f95"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a47448c9a1c6dd6b",
+      "id": "a47448c9a1c6dd6b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a4e0d2bbd307c5ff",
+      "id": "a4e0d2bbd307c5ff"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a4fa170bb512ab27",
+      "id": "a4fa170bb512ab27"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a75deb9e5f4f8981",
+      "id": "a75deb9e5f4f8981"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a8dbd1337de103a7",
+      "id": "a8dbd1337de103a7"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a8e76b9c8dba7e61",
+      "id": "a8e76b9c8dba7e61"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a91b4b9f701c26d6",
+      "id": "a91b4b9f701c26d6"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a94b1d3e8ed16f5d",
+      "id": "a94b1d3e8ed16f5d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/a96b9defb9965176",
+      "id": "a96b9defb9965176"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/ab50acfd5546ebfb",
+      "id": "ab50acfd5546ebfb"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/ab6284bb5abf72a1",
+      "id": "ab6284bb5abf72a1"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/ab872c3097f3e4d5",
+      "id": "ab872c3097f3e4d5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/ab9d5b6758ed68b9",
+      "id": "ab9d5b6758ed68b9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/ada3f208a503d219",
+      "id": "ada3f208a503d219"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/add776dbcc4c4735",
+      "id": "add776dbcc4c4735"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/aea030134c1366f7",
+      "id": "aea030134c1366f7"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b00e7c30d7a833e6",
+      "id": "b00e7c30d7a833e6"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b05778b72e076200",
+      "id": "b05778b72e076200"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b09ef95803b72a2d",
+      "id": "b09ef95803b72a2d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b0f3c878b114df4d",
+      "id": "b0f3c878b114df4d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b2b6f50152f8ee7f",
+      "id": "b2b6f50152f8ee7f"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b2c5d3ba04382e89",
+      "id": "b2c5d3ba04382e89"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b2f1d23a99f7daa7",
+      "id": "b2f1d23a99f7daa7"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b37c26bbc5945db5",
+      "id": "b37c26bbc5945db5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b3a75d4e79b28073",
+      "id": "b3a75d4e79b28073"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b3aa64e6725d07c1",
+      "id": "b3aa64e6725d07c1"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b3de6e7fff3b4a14",
+      "id": "b3de6e7fff3b4a14"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b4946f71fdc5d06b",
+      "id": "b4946f71fdc5d06b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b52b913d2bdf74cd",
+      "id": "b52b913d2bdf74cd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b5468247c0188afb",
+      "id": "b5468247c0188afb"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b5ed38a7d2e72d9d",
+      "id": "b5ed38a7d2e72d9d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b61fc285f2ac582b",
+      "id": "b61fc285f2ac582b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b703bf25d1be5617",
+      "id": "b703bf25d1be5617"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b709986edcf86a5a",
+      "id": "b709986edcf86a5a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b75a49d46427d274",
+      "id": "b75a49d46427d274"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b7ff5aa87ae2ca01",
+      "id": "b7ff5aa87ae2ca01"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b819ec1c0fa92c9e",
+      "id": "b819ec1c0fa92c9e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/b9dd4a2bbf1424a1",
+      "id": "b9dd4a2bbf1424a1"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/bb54a7445ba4300f",
+      "id": "bb54a7445ba4300f"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/bb5909da841f112d",
+      "id": "bb5909da841f112d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/bbb9c3beaffb77f5",
+      "id": "bbb9c3beaffb77f5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/bc30a3cb83225a64",
+      "id": "bc30a3cb83225a64"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/bc9c6785d3cf0013",
+      "id": "bc9c6785d3cf0013"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/bced05ec849a4429",
+      "id": "bced05ec849a4429"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/bd27095c12495f1d",
+      "id": "bd27095c12495f1d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/bda5859c6b0959d9",
+      "id": "bda5859c6b0959d9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/be2ff49bc8f0f305",
+      "id": "be2ff49bc8f0f305"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/be537e87454519f4",
+      "id": "be537e87454519f4"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/be634a88b3ed4bc6",
+      "id": "be634a88b3ed4bc6"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/bf0682b6d11b7e7d",
+      "id": "bf0682b6d11b7e7d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c02621dfdf7c8543",
+      "id": "c02621dfdf7c8543"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c13664e16725c791",
+      "id": "c13664e16725c791"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c17e055de3994ffd",
+      "id": "c17e055de3994ffd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c29f2517d8038c0d",
+      "id": "c29f2517d8038c0d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c29ffa729255a5c9",
+      "id": "c29ffa729255a5c9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c2d480a2fb22c7d6",
+      "id": "c2d480a2fb22c7d6"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c30e4c3d87c01dd5",
+      "id": "c30e4c3d87c01dd5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c456450c1566b67c",
+      "id": "c456450c1566b67c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c4b4abd67bf548d4",
+      "id": "c4b4abd67bf548d4"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c4b8bf7ee8339003",
+      "id": "c4b8bf7ee8339003"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c5c3af946964b6af",
+      "id": "c5c3af946964b6af"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c6c489e9a48e484d",
+      "id": "c6c489e9a48e484d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c845cafa352a50d5",
+      "id": "c845cafa352a50d5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c87658781c0384a2",
+      "id": "c87658781c0384a2"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c8bc670a9a9a9512",
+      "id": "c8bc670a9a9a9512"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c9a0275c36a995eb",
+      "id": "c9a0275c36a995eb"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c9b8f7a5da38f22b",
+      "id": "c9b8f7a5da38f22b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/c9ec44d2269ae719",
+      "id": "c9ec44d2269ae719"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/ca527e805018a189",
+      "id": "ca527e805018a189"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/cbf53e69790f2762",
+      "id": "cbf53e69790f2762"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/cc24b6509fe1f607",
+      "id": "cc24b6509fe1f607"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/cc26aeee6e13981c",
+      "id": "cc26aeee6e13981c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/cc6583e4725d8510",
+      "id": "cc6583e4725d8510"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/cc99f7a290a3960a",
+      "id": "cc99f7a290a3960a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/cd2a21fc3cd55d29",
+      "id": "cd2a21fc3cd55d29"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/cd71cf418f95087c",
+      "id": "cd71cf418f95087c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/cdaf515ad5832dae",
+      "id": "cdaf515ad5832dae"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/ce46291a56848c0c",
+      "id": "ce46291a56848c0c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/cfea5919ff523a27",
+      "id": "cfea5919ff523a27"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/charxiv_937",
+      "id": "1fd4220c2754a5d4"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d01fd0e4970f1913",
+      "id": "d01fd0e4970f1913"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d0f600235772fb56",
+      "id": "d0f600235772fb56"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d1034e0ff110962d",
+      "id": "d1034e0ff110962d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d1736051da5b06e8",
+      "id": "d1736051da5b06e8"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d28d4aa07f2d64a5",
+      "id": "d28d4aa07f2d64a5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d2a8a764724cf1bb",
+      "id": "d2a8a764724cf1bb"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d4bb2a6edba02562",
+      "id": "d4bb2a6edba02562"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d4ce6883cea99df5",
+      "id": "d4ce6883cea99df5"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d52d073636d433c8",
+      "id": "d52d073636d433c8"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d58bd5b2b4edaad9",
+      "id": "d58bd5b2b4edaad9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d67018a153f32c2d",
+      "id": "d67018a153f32c2d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d673eb2b6158db77",
+      "id": "d673eb2b6158db77"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d74675ea21cfbed4",
+      "id": "d74675ea21cfbed4"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d7ecf48fb63b41b9",
+      "id": "d7ecf48fb63b41b9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d822f6e1be478d96",
+      "id": "d822f6e1be478d96"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d88b4d040c303be3",
+      "id": "d88b4d040c303be3"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d88cc203f7b5dbcd",
+      "id": "d88cc203f7b5dbcd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d910b08dead22490",
+      "id": "d910b08dead22490"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/d9cd6dd586e64d54",
+      "id": "d9cd6dd586e64d54"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/dbb14f2a7f576c14",
+      "id": "dbb14f2a7f576c14"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/dc164ae62abba737",
+      "id": "dc164ae62abba737"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/dd624b4eef5b8c05",
+      "id": "dd624b4eef5b8c05"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/de4e059da0195c2c",
+      "id": "de4e059da0195c2c"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e03dce3d383f8fba",
+      "id": "e03dce3d383f8fba"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e0af320fe7ca9f15",
+      "id": "e0af320fe7ca9f15"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e0ca46f13a04d961",
+      "id": "e0ca46f13a04d961"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e14125497f4fc3a0",
+      "id": "e14125497f4fc3a0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e1e9efbf8eb5c22e",
+      "id": "e1e9efbf8eb5c22e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e26a07a8395fc0dd",
+      "id": "e26a07a8395fc0dd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e341caeed20f7db3",
+      "id": "e341caeed20f7db3"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e41132e4bd81afec",
+      "id": "e41132e4bd81afec"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e427d194d48281be",
+      "id": "e427d194d48281be"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e56c2616d5288bc3",
+      "id": "e56c2616d5288bc3"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e5712e5312db393a",
+      "id": "e5712e5312db393a"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e651c9ed25f41893",
+      "id": "e651c9ed25f41893"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e66a7b04b129168f",
+      "id": "e66a7b04b129168f"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e67d870b4df83f99",
+      "id": "e67d870b4df83f99"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e7688317cbc1fad6",
+      "id": "e7688317cbc1fad6"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e8782c8a29547ca3",
+      "id": "e8782c8a29547ca3"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e89899396a45a248",
+      "id": "e89899396a45a248"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e8b8965d019bf8e3",
+      "id": "e8b8965d019bf8e3"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/e931fc352afb7a71",
+      "id": "e931fc352afb7a71"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/eac25affa9302913",
+      "id": "eac25affa9302913"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/eacc43462051badd",
+      "id": "eacc43462051badd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/ebdcc08c12dda4ac",
+      "id": "ebdcc08c12dda4ac"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/ec09b4a7eff91b64",
+      "id": "ec09b4a7eff91b64"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/eced557b3fbe61a0",
+      "id": "eced557b3fbe61a0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/ed2519512097c012",
+      "id": "ed2519512097c012"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/ed932182a8dd52a1",
+      "id": "ed932182a8dd52a1"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/ee42d2e20109202d",
+      "id": "ee42d2e20109202d"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/efea7a80875ad066",
+      "id": "efea7a80875ad066"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f0e47376c0a944b6",
+      "id": "f0e47376c0a944b6"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f16103ca655535b0",
+      "id": "f16103ca655535b0"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f1a536f05f6a53f9",
+      "id": "f1a536f05f6a53f9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f2a3417eb9b2b1cd",
+      "id": "f2a3417eb9b2b1cd"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f2c1d3efeaa39611",
+      "id": "f2c1d3efeaa39611"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f3343620289d84c4",
+      "id": "f3343620289d84c4"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f463d08e13818fe4",
+      "id": "f463d08e13818fe4"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f50715e1ad86df40",
+      "id": "f50715e1ad86df40"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f56a4795d386062b",
+      "id": "f56a4795d386062b"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f6cc55bef2e292b9",
+      "id": "f6cc55bef2e292b9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f70283667d619918",
+      "id": "f70283667d619918"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f8dc587ffdc9f65e",
+      "id": "f8dc587ffdc9f65e"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f922c1ef9f2fc3c7",
+      "id": "f922c1ef9f2fc3c7"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/f9ed6c40772b8249",
+      "id": "f9ed6c40772b8249"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/fad8c5b8700c98d9",
+      "id": "fad8c5b8700c98d9"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/faef5594c556eb11",
+      "id": "faef5594c556eb11"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/faf6965a6791ae71",
+      "id": "faf6965a6791ae71"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/fd6aec46b17275e1",
+      "id": "fd6aec46b17275e1"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/ffc81c579ce9d919",
+      "id": "ffc81c579ce9d919"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/mathvision_140",
+      "id": "080903cc8ec35705"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/mathvision_1875",
+      "id": "0654ee75d8ab5479"
+    },
+    {
+      "workspace": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_builds/mathvision_2919",
+      "id": "276bad0fdf250d3e"
+    }
+  ],
+  "final_exclusions": {
+    "682351da7fd8b276": "Exact source-image duplicate of ChartQA 0055d6580f9409e9; retain native source only.",
+    "42f52c977ea24c1b": "Exact higher-than cannot be determined when after states share a color bin.",
+    "90944c639e8247fa": "Exact higher-than cannot be determined when after states share a color bin.",
+    "240200510d87d775": "Same bin does not establish equal exact values.",
+    "0e26f75d6cc6f598": "Same bin does not establish equal exact values.",
+    "4d5d74433918629e": "Swapped literal color names conflict with displayed mark colors.",
+    "0e690602c01d66da": "Swapped literal color names conflict with displayed mark colors."
+  },
+  "supporting_evidence": [
+    "work/v3_visual_reviews.json",
+    "work/v3_final_exclusions.json",
+    "work/v3_duplicate_audit/candidates.json",
+    "RUN_V3.md"
+  ]
+}
