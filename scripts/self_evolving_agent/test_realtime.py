@@ -68,10 +68,26 @@ class NativeRealtimeTests(unittest.TestCase):
                 self.assertTrue(done)
                 self.assertEqual(info["game_tics"], 14)
                 self.assertEqual(info["ticrate"], 35)
-                self.assertEqual(info["action_policy"], "wait")
+                self.assertEqual(info["action_policy"], "hold_last")
             finally:
                 env.close()
 
+
+    def test_native_buttons_stay_pressed_until_replacement_in_hold_mode(self):
+        for policy in ["hold_last", "wait"]:
+            env = RealtimeVizdoom("VizdoomHealthGathering-v1", frame_skip=4, ticrate=35,
+                                  game_tic_limit=70, action_policy=policy)
+            try:
+                env.reset(seed=123)
+                env.step(2)  # turn right
+                time.sleep(.25)  # much longer than four tics
+                buttons = env.poll()[3]["buttons"]
+                self.assertEqual(any(buttons), policy == "hold_last")
+                env.step(0)
+                time.sleep(.1)
+                self.assertFalse(any(env.poll()[3]["buttons"]))
+            finally:
+                env.close()
 
 
 class CancellationTests(unittest.TestCase):

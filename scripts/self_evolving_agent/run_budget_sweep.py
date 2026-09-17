@@ -31,7 +31,7 @@ PROMPT = (
     "Consider the visible geometry, hazards, and targets. "
     "You may reason before deciding; finish thinking once you have a decision. "
     "Return the chosen action in \\boxed{{action}}, using exactly one of: {actions}. "
-    "The game continues at 35 tics/sec while you decide, waiting until your answer is ready."
+    "The game continues at 35 tics/sec while you decide."
 )
 
 
@@ -111,7 +111,8 @@ class BudgetEngine:
 
         start = time.monotonic()
         image, extra = _obs_image_and_extra(observation, self.task)
-        text = self.context + "\n" + extra + PROMPT.format(actions=", ".join(self.actions))
+        from tasks.realtime_vizdoom import action_policy_doc
+        text = action_policy_doc() + "\n" + self.context + "\n" + extra + PROMPT.format(actions=", ".join(self.actions))
         messages = [{"role": "user", "content": [
             {"type": "image", "image": image}, {"type": "text", "text": text},
         ]}]

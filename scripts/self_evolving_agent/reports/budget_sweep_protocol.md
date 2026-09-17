@@ -1,4 +1,4 @@
-# Real-time evaluation protocol (version 3)
+# Real-time evaluation protocol (hold-last update)
 
 This replaces the synchronous September 15 campaign. Old results are preserved
 but are not pooled with these experiments.
@@ -8,7 +8,8 @@ but are not pooled with these experiments.
 All game entry points use native ViZDoom `ASYNC_PLAYER`, with a dedicated thread
 refreshing observations, rewards, and terminal state during model inference.
 Normal speed is 35 game tics/second. Global options are `SEA_GAME_TICRATE` and
-`SEA_INFERENCE_ACTION` (`wait`, the default, or `hold_last`). In wait mode a
+`SEA_INFERENCE_ACTION` (`hold_last`, the default, or `wait`). The launcher also
+accepts `--action-policy hold_last|wait`. In wait mode a
 completed action lasts four tics, then no buttons are pressed until another
 answer arrives. In hold-last mode that action remains pressed during inference.
 
@@ -30,7 +31,7 @@ saved frame with its game already closed, outside scored episodes.
 1. **Minimal self-evolution:** 10 independent runs per environment, five valid
    evolution rounds per run, five episodes per round. Each run starts from
    pristine engine and minimal prompt seeds. Existing task descriptions remain
-   available. Prompts now describe live time, cancellation and validity rules.
+   available. Prompts describe live time, the active action policy, cancellation and validity rules.
    Compile failures, no fresh evaluation, zero `LLM.forward()` calls, and runtime
    errors do not count as valid rounds and cannot update best-score tracking.
    A genuine inference that times out before returning any action remains valid.
@@ -136,3 +137,22 @@ completions trigger recovery on the next attempt. The stop-token union reads
 `llm.config.generation_config` directly. These changes address the prior
 immediate-EOS recovery loop; they do not guarantee successful agent revisions.
 Keep this rerun separate from the previous generation protocol's results.
+
+
+## September 17 hold-last restart
+
+The user changed the inference policy to **hold_last**: continue pressing the
+last returned action until the next one arrives. Before the first decision,
+press no buttons. `frame_skip=4` remains the minimum interval for returning a
+new observation; it no longer limits how long a button stays pressed. Normal
+speed and native timeouts are unchanged. Native last-button snapshots are saved
+in terminal info and tested for persistence and replacement.
+
+Use `--evolution-only --gpus 1 3 6 --action-policy hold_last` with a **new** output
+directory for minimal evolution. For baselines on the other server, pull this
+update and use `--baselines-only --action-policy hold_last` with that server's
+authorized GPUs and a **new** output directory. Already-running processes must
+be restarted to pick up the policy change. Never mix wait and hold-last results.
+Agent notes and baseline prompts describe the selected policy dynamically.
+Actions-per-forward continues to count completed decision updates, not every
+game tic for which the last action remains pressed.

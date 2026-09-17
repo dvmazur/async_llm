@@ -14,6 +14,7 @@ import time
 import threading
 
 from run_budget_sweep import atomic_json, report, seed_for, file_lock
+from tasks.realtime_vizdoom import realtime_options
 
 HERE = Path(__file__).resolve().parent
 STOP = threading.Event()
@@ -77,7 +78,7 @@ def process_running(pid):
 
 def evolution_worker(root, gpu, adoptions):
     env = dict(os.environ, CUDA_VISIBLE_DEVICES=gpu, HF_HOME="/mnt/LLM",
-               SEA_LLM_PORT=str(2490+int(gpu)), SEA_GAME_TICRATE="35", SEA_INFERENCE_ACTION="wait")
+               SEA_LLM_PORT=str(2490+int(gpu)), SEA_GAME_TICRATE="35", SEA_INFERENCE_ACTION=realtime_options()["action_policy"])
     jobs = [(task, run) for run in range(10) for task in ("doom", "health_gathering")]
     # Finish the already-running process on this GPU before claiming new work.
     jobs.sort(key=lambda job: 0 if adoptions.get(f"{job[0]}/{job[1]}", {}).get("gpu") == gpu else 1)
@@ -119,7 +120,7 @@ def evolution_worker(root, gpu, adoptions):
 
 def baseline_worker(root, gpu, plans):
     env = dict(os.environ, CUDA_VISIBLE_DEVICES=gpu, HF_HOME="/mnt/LLM",
-               SEA_GAME_TICRATE="35", SEA_INFERENCE_ACTION="wait")
+               SEA_GAME_TICRATE="35", SEA_INFERENCE_ACTION=realtime_options()["action_policy"])
     for mode, budgets in plans:
         out = root / mode
         command([sys.executable, str(HERE / "run_budget_sweep.py"), "--output", str(out),
@@ -136,7 +137,7 @@ def main(root, gpus, adoptions, baselines_only=False, evolution_only=False):
         if not owner:
             raise RuntimeError("Campaign already running")
         state = dict(pid=os.getpid(), status="running", phase="baselines" if baselines_only else "minimal", gpus=[int(g) for g in gpus],
-                     runs=10, episodes=5, valid_rounds=5, ticrate=35, action_policy="wait")
+                     runs=10, episodes=5, valid_rounds=5, ticrate=35, action_policy=realtime_options()["action_policy"])
         atomic_json(root / "status.json", state)
         from action_efficiency import report as efficiency_report
         try:
@@ -165,7 +166,7 @@ def main(root, gpus, adoptions, baselines_only=False, evolution_only=False):
                 futures = [pool.submit(baseline_worker, root, gpu, plan) for gpu, plan in zip(gpus, plans) if plan]
                 futures.append(pool.submit(command, [sys.executable, str(HERE / "run_random_baseline.py"),
                                        "--output", str(root / "random")],
-                                       dict(os.environ, CUDA_VISIBLE_DEVICES="", SEA_GAME_TICRATE="35", SEA_INFERENCE_ACTION="wait"),
+                                       dict(os.environ, CUDA_VISIBLE_DEVICES="", SEA_GAME_TICRATE="35", SEA_INFERENCE_ACTION=realtime_options()["action_policy"]),
                                        root / "random/process.log"))
                 while not all(f.done() for f in futures):
                     for f in futures:
@@ -188,11 +189,13 @@ def main(root, gpus, adoptions, baselines_only=False, evolution_only=False):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--action-policy", choices=["hold_last", "wait"], default=realtime_options()["action_policy"])
     p.add_argument("--gpus", nargs="+", default=["5", "6"])
     p.add_argument("--adopt", type=Path, help="Explicit task/run -> live PID and GPU mapping")
     p.add_argument("--evolution-only", action="store_true", help="Run minimal evolution only; do not queue baselines")
     p.add_argument("--baselines-only", action="store_true", help="Skip evolution and run the agreed seven baseline conditions")
     args = p.parse_args()
+    os.environ["SEA_INFERENCE_ACTION"] = args.action_policy
     if len(set(args.gpus)) != len(args.gpus):
         p.error("GPU IDs must be unique")
     adoptions = json.loads(args.adopt.read_text()) if args.adopt else {}

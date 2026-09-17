@@ -4,7 +4,7 @@ import random
 import time
 from typing import Any, Optional
 
-from .realtime_vizdoom import RealtimeVizdoom, realtime_options
+from .realtime_vizdoom import RealtimeVizdoom, realtime_options, action_policy_doc
 
 # Matches VizdoomHealthGathering-v1's actual Discrete(4) button_map: index 0 =
 # no button pressed, 1 = MOVE_FORWARD, 2 = TURN_RIGHT, 3 = TURN_LEFT. No
@@ -41,8 +41,8 @@ DOC = (
     "the action via a logit probe over just the action-name tokens instead of generating and "
     "parsing free text. Not required -- build it however you like.\n"
     "The game runs asynchronously at the configured tic rate (normally 35 tics/sec), including "
-    "while act() awaits LLM inference. The default action while waiting is wait; a completed "
-    "action is applied for frame_skip tics. Death and the native episode timeout end evaluation "
+    "while act() awaits LLM inference. The active inference action policy is described below. "
+    "Death and the native episode timeout end evaluation "
     "and cancel any pending decision. Latency therefore directly affects attainable reward. "
     "Use real LLM.forward() calls: evaluations with no forward calls are invalid.\n"
     "Watch out for a degenerate local optimum here: doing nothing at all (e.g. always 'wait', or "
@@ -118,6 +118,7 @@ class HealthGatheringEnv:
         episode_timeout: int = 10000,
         seed: Optional[int] = None,
     ) -> None:
+        self.doc = DOC + "\n" + action_policy_doc()
         self.env = RealtimeVizdoom(env_id, frame_skip=frame_skip,
                                    game_tic_limit=episode_timeout, **realtime_options())
         # See tasks/doom_env.py's DoomEnv.__init__ -- same randomized-seed

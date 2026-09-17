@@ -104,8 +104,8 @@ round -- if you spend the entire token budget planning and never reach a `<use_t
 round is wasted: nothing changes and no result gets recorded, at the same wall-clock cost as a \
 productive round. State a short plan, then act on it; refine next round once you can see the result.
 
-Evaluation protocol: games keep running during inference at 35 tics/sec, waiting between completed
-four-tic actions. Death/native timeout cancels pending act(); free temporary cache blocks in finally.
+Evaluation protocol: games keep running during inference at 35 tics/sec. Follow the active
+inference action policy in the task notes (hold_last or wait). Death/native timeout cancels pending act(); free temporary cache blocks in finally.
 Each valid evolution round must call start_task/restart_task for a fresh five-episode evaluation,
 perform real LLM.forward() calls during that evaluation, and compile successfully. Missing evaluations,
 zero-forward evaluations, runtime errors, and compile failures do not count as valid rounds.

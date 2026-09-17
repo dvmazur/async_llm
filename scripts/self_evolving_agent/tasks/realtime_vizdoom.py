@@ -17,7 +17,7 @@ import vizdoom.gymnasium_wrapper  # noqa: F401
 def realtime_options():
     """Shared options for every game entry point; defaults are the eval protocol."""
     return {"ticrate": int(os.environ.get("SEA_GAME_TICRATE", "35")),
-            "action_policy": os.environ.get("SEA_INFERENCE_ACTION", "wait")}
+            "action_policy": os.environ.get("SEA_INFERENCE_ACTION", "hold_last")}
 
 
 class RealtimeVizdoom:
@@ -56,6 +56,7 @@ class RealtimeVizdoom:
             self._done = False
             self._timeout = False
             self._error = None
+            self._buttons = list(self.base.button_map[0])
             self._pending_action = 0
             self._submitted = self._applied = 0
             self._applied_tic = 0
@@ -104,6 +105,7 @@ class RealtimeVizdoom:
                 obs = {key: value.copy() if hasattr(value, "copy") else value for key, value in obs.items()}
                 reward = float(self.game.get_total_reward()) + self.living_reward * tics
                 with self._cv:
+                    self._buttons = list(self.game.get_last_action())
                     self._obs, self._tics, self._reward = obs, tics, reward
                     self._done = done
                     if done:
@@ -125,7 +127,7 @@ class RealtimeVizdoom:
                 "wall_elapsed_s": (self._end or time.monotonic()) - self._start,
                 "episode_total_reward": self._reward,
                 "real_time": True, "ticrate": self.ticrate,
-                "action_policy": self.action_policy,
+                "action_policy": self.action_policy, "buttons": list(self._buttons),
                 "timeout": getattr(self, "_timeout", False)}
 
     def _consume(self):
@@ -160,3 +162,14 @@ class RealtimeVizdoom:
             if self._thread.is_alive():
                 raise RuntimeError("Real-time game thread did not stop")
             self._thread = None
+
+
+def action_policy_doc():
+    policy = realtime_options()["action_policy"]
+    if policy == "hold_last":
+        return ("Active inference action policy: hold_last. The game keeps the last returned "
+                "action pressed until a new decision arrives, including throughout inference. "
+                "It waits before the first action. Each step waits at least frame_skip tics "
+                "before returning an observation, but the action does not expire afterward.")
+    return ("Active inference action policy: wait. Each returned action lasts frame_skip tics, "
+            "then the game presses no buttons while inference is pending.")
