@@ -3,8 +3,63 @@
 `image_async_thoughts_eval.py` consumes the self-contained dataset Parquet.
 Four persistent blocks are used: prompt, image, thinker, writer. Thinker sees
 `[prompt,image,thinker]`; writer sees `[prompt,image,thinker,writer]`.
-The fifth, transient probe reads text snapshots of both streams (the same
-decision task as text async thoughts), then is freed. It does not reread images.
+The transient probe reads the existing thinker/writer KV blocks, then is freed.
+It excludes the prompt and image blocks from its cache view and does not rerun
+the vision encoder or replay either stream's text history.
+
+## Suffix-only probe protocol (v2)
+
+`four_blocks_image_replace_suffix_probe_v2` prefills only the fixed decision
+instruction/question suffix and at most two pending tokens per probe. The
+decision instructions now follow the cached streams ("above", not "below").
+This changes the probe conditioning: stream KV retains the context in which it
+was generated. It is not numerically equivalent to the v1 full-text replay
+under a different prefix. Start fresh outputs and do not combine v1/v2 scores.
+Probe cadence, yes/no comparison, sampling, scoring, EOS behavior, image-update
+timing and stream generation are unchanged.
+
+The probe runs between completed decode rounds: await the thinker/writer
+decode batch, run the transient probe, free it, then resume decoding. This is
+intentional: upstream `main` (checked at `6ff3d73`) supports mixed batches in
+the regular serving scheduler, but not in `AsyncCacheEngine` or Qwen's shared-
+cache/async-reasoning path. No scheduler or model changes are needed here.
+
+A pending thinker token uses a temporary one-token block between thinker and
+writer; a pending writer token precedes the suffix in the probe block. These
+are read-only branches: stream KV, pending IDs and generation RNG are untouched.
+No pending token is dropped or written into the persistent streams by a probe.
+Both temporary blocks are freed, including on failure. Initial stream prefixes
+and newly injected shard/reminder text still require their ordinary prefills.
+
+Each result's `probe_stats` records calls, input-token counts, pending-token
+counts and elapsed time. The campaign validator enforces
+`input_tokens == calls * suffix_tokens + pending_tokens`, with at most two
+pending tokens per call, and writes these metrics into both sweep reports.
+
+The five-GPU launcher uses physical GPUs **1,2,3,4,6**, one replica each, with
+per-GPU/condition locks and a shared condition queue. It preserves exact resume
+configuration and GPU affinity. Once all 400 fixed-50 results validate and are
+reported, the same process automatically starts the 4,104-result full sweep.
+Any worker or validation failure prevents the handoff. The original fixed
+manifest and `42 + original Parquet row index` seeds are unchanged.
+
+Run the CPU tests and the evaluator's `--prepare-only` over the explicit root
+dataset first, with the pinned snapshot and unchanged generation settings.
+The preflight output must be
+`eval_runs/qwen38_27b_suffix_v2_5gpu_preflight_16k/` under this directory.
+Then launch durably from the repository root:
+
+```bash
+tmux -L image-async-eval new-session -d -s suffix-v2-5gpu \
+  'bash scripts/image_async_inputs/launch_gpu_campaign.sh'
+```
+
+Outputs are `eval_runs/qwen38_27b_suffix_v2_5gpu_fixed50_16k/` and
+`eval_runs/qwen38_27b_suffix_v2_5gpu_full_16k/`. The control directory is
+`eval_runs/qwen38_27b_suffix_v2_5gpu_16k/` (append-only campaign log and worker
+status). Both sweeps write `VALIDATED_REPORT.md` and `validated_results.json`.
+The older GPU-1/GPU-6 launchers below are retained for historical reference;
+do not use them for this five-GPU campaign.
 
 Image 1 is prefilled exactly once. After `--k-steps` emitted thinker tokens,
 both decode requests finish before any mutation; the old image block is freed,

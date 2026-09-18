@@ -1,7 +1,7 @@
 """Four-block async image correction evaluation. No OpenRouter calls.
 
 Persistent views: thinker=[prompt,image,thinker], writer=[prompt,image,thinker,writer].
-One transient text-only probe reads stream snapshots, as in the text experiment.
+Text-only probes read the existing thinker/writer caches and prefill only a suffix.
 All mutations happen between completed decode rounds, never while a reader is live.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ from transformers import AutoProcessor
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'async_thoughts'))
 sys.path.insert(0, str(HERE / 'dataset_construction'))
-from async_thoughts.demo import Prompting, _tokens_with_pending
+from async_thoughts.demo import Prompting
 from async_thoughts.engine import encode, ends_with_double_newline, single_token_id, vocab_id_or_none
 from package_dataset import validate_package
 from minisgl.llm import AsyncLLM
@@ -32,6 +32,7 @@ from minisgl.shared_cache import AsyncContext
 from fixed_subset import apply_manifest
 
 REMINDER = ' ... [SYSTEM: additional user input detected; recheck the updated image]\n'
+PROTOCOL = 'four_blocks_image_replace_suffix_probe_v2'
 
 
 def arguments():
@@ -135,19 +136,67 @@ async def append_note(llm, ctx, block, ids):
     return out.logits  # sampled and counted on the next normal decode round
 
 
-async def probe_once(llm, tokenizer, prompting, thinker, writer):
-    block = await llm.create_block()
-    try:
-        ids = torch.cat([encode(prompting.mode_switching_prompt, tokenizer),
-                         torch.tensor(thinker, dtype=torch.int32),
-                         torch.tensor(writer, dtype=torch.int32),
-                         encode(prompting.mode_switching_question, tokenizer)])
-        out = await llm.forward(ids, write_to=block)
-        yes = float(out.logits[single_token_id('yes', tokenizer)])
-        no = float(out.logits[single_token_id('no', tokenizer)])
-        return yes > no, yes, no
-    finally:
-        await llm.free_block(block)
+class SuffixProbe:
+    """Read live text KV without replaying history or mutating either stream.
+
+    This is deliberately a new protocol: cached stream representations retain
+    their original conditioning, unlike the v1 text replay under a new prefix.
+    The image and prompt blocks are NOT in the probe view. Pending tokens live
+    in temporary blocks, in thinker-before-writer order, so the stream contexts
+    and their next_input_id values stay untouched. Only the fixed decision
+    suffix and at most two pending tokens are processed per probe.
+    """
+
+    def __init__(self, llm, tokenizer, prompting):
+        self.llm = llm
+        instruction = prompting.mode_switching_prompt.replace(
+            'thoughts and response below', 'thoughts and response above')
+        self.suffix = encode('\n' + instruction + prompting.mode_switching_question, tokenizer)
+        self.yes_id = single_token_id('yes', tokenizer)
+        self.no_id = single_token_id('no', tokenizer)
+        self.calls = self.input_tokens = self.pending_tokens = 0
+        self.elapsed_seconds = 0.0
+
+    async def check(self, thinker, writer):
+        started = time.monotonic()
+        temporary = []
+        pending_count = 0
+        view = [thinker.output_block]
+        try:
+            if thinker.next_input_id is not None:
+                tail = await self.llm.create_block()
+                temporary.append(tail)
+                # Explicit prefill avoids the decode path's unused sampler,
+                # so probing does not consume generation RNG state.
+                await self.llm.prefill_block(
+                    input_ids=torch.tensor([thinker.next_input_id], dtype=torch.int32),
+                    cache_view=view, write_to=tail, return_logits=False)
+                view.append(tail)
+                pending_count += 1
+            view.append(writer.output_block)
+            ids = self.suffix
+            if writer.next_input_id is not None:
+                ids = torch.cat([torch.tensor([writer.next_input_id], dtype=torch.int32), ids])
+                pending_count += 1
+            block = await self.llm.create_block()
+            temporary.append(block)
+            out = await self.llm.prefill_block(
+                input_ids=ids, cache_view=view, write_to=block, return_logits=True)
+            yes = float(out.logits[self.yes_id])
+            no = float(out.logits[self.no_id])
+            self.calls += 1
+            self.pending_tokens += pending_count
+            self.input_tokens += len(self.suffix) + pending_count
+            return yes > no, yes, no
+        finally:
+            for block in reversed(temporary):
+                await self.llm.free_block(block)
+            self.elapsed_seconds += time.monotonic() - started
+
+    def stats(self):
+        return {'calls': self.calls, 'suffix_tokens': len(self.suffix),
+                'input_tokens': self.input_tokens, 'pending_tokens': self.pending_tokens,
+                'elapsed_seconds': self.elapsed_seconds}
 
 
 async def generate(llm, tokenizer, inputs, pair, a):
@@ -156,6 +205,7 @@ async def generate(llm, tokenizer, inputs, pair, a):
     if a.k_steps == 0:
         question += '\n\n' + inputs['text_shard_2']
     prompting = Prompting('Reason step by step and put the final answer in \\boxed{}.\n\n'+question)
+    probe = SuffixProbe(llm, tokenizer, prompting)
     blocks = [await llm.create_block() for _ in range(4)]
     prompt, image, thinker, writer = blocks
     emitted = {'thinker': [], 'writer': []}
@@ -236,15 +286,14 @@ async def generate(llm, tokenizer, inputs, pair, a):
                 break
             n = len(emitted['thinker'])
             if not thinker_done and (n % a.probe_period == 0 or ends_with_double_newline(emitted['thinker'],tokenizer)):
-                writer_active, yes, no = await probe_once(llm,tokenizer,prompting,
-                    _tokens_with_pending(thinker,contexts['thinker']),_tokens_with_pending(writer,contexts['writer']))
+                writer_active, yes, no = await probe.check(contexts['thinker'], contexts['writer'])
                 events.append({'event':'probe','thinker_tokens':n,'writer_tokens':len(emitted['writer']),
                                'write':writer_active,'yes_logit':yes,'no_logit':no})
         return {'generated_text':tokenizer.decode(emitted['writer'],skip_special_tokens=True),
                 'thinker_text':tokenizer.decode(emitted['thinker'],skip_special_tokens=True),
                 'token_ids':emitted,'events':events,'image_replaced':any(e['event']=='image_replaced' for e in events),
                 'final_image':'after' if injected else 'before','hit_eos':hit_eos,
-                'writer_reminder_pending':pending_reminder}
+                'writer_reminder_pending':pending_reminder, 'probe_stats':probe.stats()}
     finally:
         for block in reversed(blocks):
             await llm.free_block(block)
@@ -320,7 +369,7 @@ async def run(a):
     config = {k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()}
     config.update(dataset_sha256=dataset_sha, sample_manifest=manifest,
                   evaluator_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-                  protocol='four_blocks_image_replace_v1',hf_home=os.environ.get('HF_HOME'),
+                  protocol=PROTOCOL,hf_home=os.environ.get('HF_HOME'),
                   cuda_visible_devices=os.environ.get('CUDA_VISIBLE_DEVICES'))
     a.output.mkdir(parents=True,exist_ok=True)
     old_config = a.output/'config.json'
