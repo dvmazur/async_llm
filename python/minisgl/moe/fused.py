@@ -204,6 +204,8 @@ def fused_experts_impl(
     topk_ids: torch.Tensor,
     activation: str = "silu",
     apply_router_weight_on_input: bool = False,
+    w1_scale: torch.Tensor | None = None,
+    w2_scale: torch.Tensor | None = None,
 ) -> torch.Tensor:
     from minisgl.kernel import fused_moe_kernel_triton, moe_sum_reduce_triton
     from minisgl.layers import gelu_and_mul, silu_and_mul
@@ -243,6 +245,15 @@ def fused_experts_impl(
         (M, topk_ids.shape[1], w2.shape[1]),
     )
     compute_type = hidden_states.dtype
+    use_fp8 = w1.dtype == torch.float8_e4m3fn
+    if use_fp8:
+        from minisgl.kernel.fp8 import quantize_fp8_groups, validate_weight
+        validate_weight(w1, w1_scale)
+        validate_weight(w2, w2_scale)
+        if num_tokens == 0:
+            return hidden_states
+    elif w1_scale is not None or w2_scale is not None:
+        raise ValueError("FP8 scales supplied for non-FP8 experts")
 
     out_hidden_states = hidden_states
     curr_hidden_states = hidden_states
@@ -253,6 +264,9 @@ def fused_experts_impl(
     intermediate_cache2 = intermediate_cache2[: tokens_num * topk_ids.shape[1]]
     intermediate_cache3 = intermediate_cache3[:tokens_num]
     config = get_config_func(tokens_num)
+    if use_fp8:
+        # One dot contribution per 128-wide quantization block.
+        config = {**config, "BLOCK_SIZE_K": 128}
 
     curr_topk_ids = topk_ids[begin_token_idx:end_token_idx]
     curr_topk_weights = topk_weights[begin_token_idx:end_token_idx]
@@ -261,8 +275,10 @@ def fused_experts_impl(
         curr_topk_ids, config["BLOCK_SIZE_M"], E
     )
 
+    gemm_input, input_scale = (quantize_fp8_groups(curr_hidden_states) if use_fp8
+                              else (curr_hidden_states, None))
     fused_moe_kernel_triton(
-        curr_hidden_states,
+        gemm_input,
         w1,
         intermediate_cache1,
         curr_topk_weights,
@@ -274,11 +290,15 @@ def fused_experts_impl(
         topk_ids.shape[1],
         config,
         compute_type=compute_type,
+        a_scale=input_scale,
+        b_scale=w1_scale,
     )
     FN_MAP = {"silu": silu_and_mul, "gelu": gelu_and_mul}
     FN_MAP[activation](intermediate_cache1.view(-1, N), intermediate_cache2)
+    gemm_input, input_scale = (quantize_fp8_groups(intermediate_cache2) if use_fp8
+                              else (intermediate_cache2, None))
     fused_moe_kernel_triton(
-        intermediate_cache2,
+        gemm_input,
         w2,
         (intermediate_cache3),
         curr_topk_weights,
@@ -290,6 +310,8 @@ def fused_experts_impl(
         1,
         config,
         compute_type=compute_type,
+        a_scale=input_scale,
+        b_scale=w2_scale,
     )
 
     moe_sum_reduce_triton(
@@ -310,6 +332,8 @@ class FusedMoe(BaseMoeBackend):
         renormalize: bool,
         activation: str = "silu",
         apply_router_weight_on_input: bool = False,
+        w1_scale: torch.Tensor | None = None,
+        w2_scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
         topk_weights, topk_ids = fused_topk(
             hidden_states=hidden_states,
@@ -325,4 +349,6 @@ class FusedMoe(BaseMoeBackend):
             topk_ids,
             activation,
             apply_router_weight_on_input=apply_router_weight_on_input,
+            w1_scale=w1_scale,
+            w2_scale=w2_scale,
         )

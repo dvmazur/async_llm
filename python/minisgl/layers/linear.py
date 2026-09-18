@@ -27,8 +27,23 @@ class _LinearTPImpl(BaseOP):
         self.local_output_size = local_osize
         self.weight = torch.empty(local_osize, local_isize)
         self.bias = torch.empty(local_osize) if has_bias else None
+        self.weight_scale_inv = None
+
+    def load_state_dict(self, state_dict, *, prefix="", _internal=False):
+        key = f"{prefix}.weight" if prefix else "weight"
+        incoming = state_dict[key]
+        if incoming.dtype == torch.float8_e4m3fn:
+            from minisgl.kernel.fp8 import validate_weight
+            scale = state_dict.get(key + "_scale_inv")
+            validate_weight(incoming, scale, expected_shape=self.weight.shape)
+            self.weight = torch.empty_like(incoming, device="meta")
+            self.weight_scale_inv = torch.empty_like(scale, device="meta")
+        super().load_state_dict(state_dict, prefix=prefix, _internal=_internal)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.weight_scale_inv is not None:
+            from minisgl.kernel.fp8 import block_fp8_linear
+            return block_fp8_linear(x, self.weight, self.weight_scale_inv, self.bias)
         return F.linear(x, self.weight, self.bias)
 
 
@@ -100,7 +115,7 @@ class LinearOProj(_LinearTPImpl):
         super().__init__(full_isize, full_osize, local_isize, local_osize, has_bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = F.linear(x, self.weight, self.bias)
+        y = super().forward(x)
         if self._tp_size > 1:
             y = self._comm.all_reduce(y)
         return y
@@ -121,7 +136,7 @@ class LinearRowParallel(_LinearTPImpl):
         super().__init__(input_size, output_size, local_input_size, local_output_size, has_bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = F.linear(x, self.weight, self.bias)
+        y = super().forward(x)
         if self._tp_size > 1:
             y = self._comm.all_reduce(y)
         return y

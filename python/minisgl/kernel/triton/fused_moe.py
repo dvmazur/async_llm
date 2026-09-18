@@ -1,6 +1,8 @@
 import triton
 import triton.language as tl
 
+from minisgl.kernel.fp8_format import e4m3fn_decode
+
 
 @triton.jit
 def moe_sum_reduce_kernel(
@@ -57,6 +59,8 @@ def fused_moe_kernel(
     sorted_token_ids_ptr,
     expert_ids_ptr,
     num_tokens_post_padded_ptr,
+    a_scale_ptr,
+    b_scale_ptr,
     # Matrix dimensions
     N,
     K,
@@ -82,6 +86,8 @@ def fused_moe_kernel(
     top_k: tl.constexpr,
     compute_type: tl.constexpr,
     even_Ks: tl.constexpr,
+    USE_FP8: tl.constexpr,
+    EMULATE_FP8: tl.constexpr,
 ):
     """
     Implements the fused computation for a Mixture of Experts (MOE) using
@@ -175,7 +181,16 @@ def fused_moe_kernel(
 
         # We accumulate along the K dimension.
 
-        accumulator += tl.dot(a, b)
+        if USE_FP8:
+            if EMULATE_FP8:
+                a = e4m3fn_decode(a).to(tl.bfloat16)
+                b = e4m3fn_decode(b).to(tl.bfloat16)
+            a_s = tl.load(a_scale_ptr + (offs_token // top_k) * (K // 128) + k,
+                          token_mask, other=0)
+            b_s = tl.load(b_scale_ptr + (off_experts * (N // 128) + offs_bn // 128) * (K // 128) + k)
+            accumulator += tl.dot(a, b) * (a_s[:, None] * b_s[None, :])
+        else:
+            accumulator += tl.dot(a, b)
         # Advance the ptrs to the next K block.
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk

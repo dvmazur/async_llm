@@ -16,6 +16,8 @@ def fused_moe_kernel_triton(
     top_k: int,
     config: Dict[str, Any],
     compute_type: torch.dtype,
+    a_scale: torch.Tensor | None = None,
+    b_scale: torch.Tensor | None = None,
 ) -> None:
     import triton
     import triton.language as tl
@@ -35,14 +37,28 @@ def fused_moe_kernel_triton(
     else:
         even_Ks = False
     dtype = tl.bfloat16 if compute_type == torch.bfloat16 else tl.float16
+    use_fp8 = B.dtype == torch.float8_e4m3fn
+    emulated = False
+    if use_fp8:
+        from .fp8 import validate_weight
+        from .fp8_format import emulate_fp8
+        emulated = emulate_fp8(A.device)
+        validate_weight(B, b_scale)
+        if (A.dtype != B.dtype or a_scale is None
+                or a_scale.shape != (A.shape[0], A.shape[1] // 128)
+                or a_scale.dtype != torch.float32 or not a_scale.is_contiguous()
+                or config["BLOCK_SIZE_K"] != 128):
+            raise ValueError("FP8 MoE requires quantized activations and group-128 scales")
     fused_moe_kernel[grid](
-        A,
-        B,
+        A.view(torch.uint8) if emulated else A,
+        B.view(torch.uint8) if emulated else B,
         C,
         topk_weights,
         sorted_token_ids,
         expert_ids,
         num_tokens_post_padded,
+        a_scale,
+        b_scale,
         B.shape[1],
         B.shape[2] - padded_size,
         sorted_token_ids.shape[0],
@@ -58,6 +74,8 @@ def fused_moe_kernel_triton(
         top_k=top_k,  # type: ignore
         compute_type=dtype,  # type: ignore
         even_Ks=even_Ks,  # type: ignore
+        USE_FP8=use_fp8,
+        EMULATE_FP8=emulated,
         **config,
     )
 
