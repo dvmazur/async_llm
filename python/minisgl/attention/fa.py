@@ -158,7 +158,8 @@ def _fa_sgl_impl(
         from sgl_kernel.flash_attn import flash_attn_with_kvcache
     except ImportError as e:
         raise ImportError(
-            "sgl_kernel.flash_attn is not found. Please install it with `pip install sgl-kernel`.\n"
+            "sgl_kernel.flash_attn is unavailable. Install the compatible sglang-kernel "
+            "from the project lockfile (`uv sync --locked`).\n"
             "If you're sure it's correctly installed, try `apt update && apt install libnuma1`."
         ) from e
 

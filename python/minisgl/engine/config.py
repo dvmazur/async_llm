@@ -56,7 +56,7 @@ class EngineConfig:
         generation_config = (
             self.generation_config
             if self.generation_config is not None
-            else self._default_generation_config()
+            else self._default_generation_config
         )
         return SamplingParams.from_hf(generation_config)
 
