@@ -14,4 +14,4 @@ def test_missing_jit_tool_fails_before_importing_cuda(monkeypatch):
     monkeypatch.setattr(shutil, 'which', lambda name: None)
     monkeypatch.setattr(builtins, '__import__', guarded)
     with pytest.raises(RuntimeError, match='ninja is not on PATH'):
-        preflight.main()
+        preflight.main([])

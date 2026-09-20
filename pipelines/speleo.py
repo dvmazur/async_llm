@@ -5,6 +5,7 @@ import time
 
 from experiment_runner.logs import atomic
 from experiment_runner.blocks import BlockHandle
+from experiment_runner.generation import Generation
 from .prompts import SPELEO, role_request, action_request, history_event
 
 
@@ -20,10 +21,9 @@ class RoleParams:
 ROLE_PARAMS = {
     'observer': RoleParams(18, .35, 1),
     'planner': RoleParams(60, .65, 2),
-    'falsifier': RoleParams(18, .45, 4),
     'executor': RoleParams(16, .45, 5),
 }
-ROLE_ORDER = ('observer', 'planner', 'falsifier', 'executor')
+ROLE_ORDER = ('observer', 'planner', 'executor')
 
 
 def position_info(info):
@@ -49,28 +49,20 @@ class SpeleoPipeline:
     async def generate_tokens(self, role, step, rng, *, last_action, close_previous):
         """Append this role's prompt and every nonterminal token to the same block."""
         params = self.params[role]
-        text, tokens, sampled, error = '', 0, 0, None
+        result, error = Generation(), None
         started = time.perf_counter()
         try:
-            output = await self.engine.prefill(
+            await self.engine.generate(
                 role_request(role, step, last_action, close_previous=close_previous),
-                [self.common], self.history)
-            for _ in range(params.budget):
-                token, piece, eos = self.engine.sample(output, generator=rng,
-                    temperature=params.temperature, top_k=params.top_k, top_p=params.top_p)
-                sampled += 1
-                if eos or any(tag in piece for tag in ('<|im_end|>', '<|endoftext|>', '<|im_start|>')):
-                    break
-                output = await self.engine.decode(token, [self.common], self.history)
-                tokens += 1
-                text += piece
-            return text
+                [self.common], self.history, result=result, generator=rng, budget=params.budget,
+                temperature=params.temperature, top_k=params.top_k, top_p=params.top_p)
+            return result.text
         except BaseException as exc:
             error = repr(exc)
             raise
         finally:
-            self.recorder.log('stream', dict(role=role, observation=step, text=text,
-                sampled_tokens=sampled, visible_tokens=tokens,
+            self.recorder.log('stream', dict(role=role, observation=step, text=result.text,
+                sampled_tokens=result.sampled_tokens, visible_tokens=result.visible_tokens,
                 seconds=time.perf_counter()-started, live_dependencies_at_start=[], error=error))
 
     async def rollout(self, initial, rngs):
@@ -107,7 +99,7 @@ class SpeleoPipeline:
 
             output = await self.engine.prefill(action_request(SPELEO, step),
                                                [self.common], self.history)
-            scores = self.engine.score_tokens(output, action_ids)
+            scores = await self.engine.score_tokens(output, action_ids)
             index = max(range(len(scores)), key=scores.__getitem__)
             action = action_names[index]
             # Scoring alone does not write the chosen token to KV. Retain the
@@ -117,7 +109,7 @@ class SpeleoPipeline:
             latency = time.perf_counter()-started
             self.recorder.log('decision', dict(observation=step, action_index=index, action=action,
                 action_probabilities=dict(zip(action_names, scores)), decision_seconds=latency,
-                draft='', assessment=answers['executor'], critique=answers['falsifier'],
+                draft='', assessment=answers['executor'],
                 published_plan=plan_text, published_plan_based_on=plan_step,
                 new_planner_started=new_plan, requested_replan=False))
             # Evaluation log only: no second history block or summarized context.
@@ -157,7 +149,8 @@ class SpeleoPipeline:
             for role, params in self.params.items():
                 seed = 1_000_003 * (self.context.model_seed+1) + params.seed_offset
                 rngs[role] = self.engine.new_generator(seed)
-                self.recorder.log('role_parameters', dict(role=role, seed=seed,
+                self.recorder.log('role_parameters', dict(role=role,
+                    seed=seed if rngs[role] is not None else None,
                     temperature=params.temperature, top_k=params.top_k, top_p=params.top_p, budget=params.budget))
             await self.rollout(initial, rngs)
             status = 'stopped' if self.stop_requested() else 'completed'

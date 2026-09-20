@@ -25,7 +25,6 @@ ROLE_PARAMETERS = {
     'observer': RoleParams(budget=18, temperature=.35, seed_offset=1, top_k=20, top_p=.9),
     'planner': RoleParams(budget=60, temperature=.65, seed_offset=2, top_k=20, top_p=.9),
     'executor': RoleParams(budget=16, temperature=.45, seed_offset=5, top_k=20, top_p=.9),
-    'falsifier': RoleParams(budget=18, temperature=.45, seed_offset=4, top_k=20, top_p=.9),
 }
 
 ENGINE_PARAMS = {

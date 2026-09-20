@@ -8,6 +8,7 @@ import zipfile
 
 def source_files(root):
     files = [root/name for name in ('pyproject.toml', 'README.md', 'DOCUMENTATION.md')]
+    files += [root/'environment/sglang'/name for name in ('pyproject.toml', 'uv.lock')]
     for name in ('experiment_runner', 'environment', 'pipelines', 'tools', 'tests'):
         files.extend(sorted((root/name).rglob('*.py')))
     # Experiments may keep JSON/TOML settings beside their Python entry point.

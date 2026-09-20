@@ -16,14 +16,15 @@ from pipelines.world import Observation
 
 
 def test_role_limits_and_sequential_order():
-    assert ROLE_ORDER == ('observer', 'planner', 'falsifier', 'executor')
+    assert ROLE_ORDER == ('observer', 'planner', 'executor')
     assert {r: (p.budget, p.temperature, p.seed_offset, p.top_k, p.top_p)
             for r, p in ROLE_PARAMS.items()} == {
         'observer': (18, .35, 1, 20, .9), 'planner': (60, .65, 2, 20, .9),
-        'falsifier': (18, .45, 4, 20, .9), 'executor': (16, .45, 5, 20, .9)}
+        'executor': (16, .45, 5, 20, .9)}
 
 
 class Engine:
+    from experiment_runner.generation import generate
     def __init__(self, *, fail=None, eos=False):
         self.common = None
         self.live = {}
@@ -86,14 +87,14 @@ class Engine:
         return seed
 
     def sample(self, output, *, generator, temperature, top_k, top_p):
-        role = {1: 'observer', 2: 'planner', 4: 'falsifier', 5: 'executor'}[generator % 1_000_003]
+        role = {1: 'observer', 2: 'planner', 5: 'executor'}[generator % 1_000_003]
         self.samples[role] += 1
         return generator, role+' answer ', self.eos
 
     def encode(self, text):
         return [[name for name, _ in SPELEO.actions].index(text)]
 
-    def score_tokens(self, output, ids):
+    async def score_tokens(self, output, ids):
         assert ids == list(range(7))
         return [1., 0., 0., 0., 0., 0., 0.]
 

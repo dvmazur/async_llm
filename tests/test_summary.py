@@ -56,3 +56,15 @@ def test_overlapping_episodes_global_denominator(tmp_path, legacy_readout_events
     atomic(gpu/'engine-totals.json', {counter_name: 999})
     with pytest.raises(ValueError, match='action readout accounting mismatch'):
         Summary(tmp_path).compute()
+
+
+def test_native_sglang_keeps_tps_but_does_not_invent_batch_metrics(tmp_path):
+    test_overlapping_episodes_global_denominator(tmp_path, False, 'restricted_readouts')
+    gpu = tmp_path/'gpu-000'
+    atomic(gpu/'engine-totals.json', dict(restricted_readouts=2, forward_telemetry_available=False))
+    (gpu/'forwards.jsonl').unlink()
+    report = Summary(tmp_path).compute()
+    assert report['generated_tps'] == 15.
+    assert report['batches'] is None
+    assert report['workers'][0]['batches'] is None
+    assert report['workers'][0]['decode_rows_per_second'] is None

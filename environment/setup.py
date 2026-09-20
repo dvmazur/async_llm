@@ -28,7 +28,13 @@ def digest(path):
 
 def setup(args):
     project = Path(__file__).resolve().parent.parent
-    engine, venv, craftium = (Path(p).expanduser().resolve() for p in (args.engine, args.venv, args.craftium))
+    vanilla = args.backend == 'sglang'
+    if vanilla and args.engine:
+        raise ValueError('--engine is for minisgl; vanilla SGLang uses environment/sglang/uv.lock')
+    if not vanilla and not args.engine:
+        raise ValueError('--engine is required for minisgl')
+    engine = project/'environment/sglang' if vanilla else Path(args.engine).expanduser().resolve()
+    venv, craftium = (Path(p).expanduser().resolve() for p in (args.venv, args.craftium))
     if args.jobs < 1:
         raise ValueError('jobs must be positive')
     if len({engine, venv, craftium}) != 3:
@@ -95,13 +101,13 @@ def setup(args):
         locked = subprocess.check_output([uv, 'export', '--project', str(engine), '--locked',
             '--no-dev', '--no-default-groups', '--no-emit-project', '--no-hashes',
             '--format', 'requirements.txt'], text=True)
-        command(uv, 'pip', 'install', '--project', project, '--python', python,
-            '--group', 'runtime', '--constraints', '-', '-e', craftium, input=locked, text=True)
+        command(uv, 'pip', 'install', '--project', engine if vanilla else project, '--python', python,
+            *([] if vanilla else ['--group', 'runtime']), '--constraints', '-', '-e', craftium, input=locked, text=True)
         # Runner/experiments are source files, never installed into this venv.
         command(python, '-m', 'environment.dependencies', uv, env=runtime_env)
         if digest(engine/'uv.lock') != lock_hash:
             raise RuntimeError('setup changed the engine lock')
-        command(python, '-m', 'environment.check', env=runtime_env)
+        command(python, '-m', 'environment.check', '--backend', args.backend, env=runtime_env)
         if future:
             future.result()
     finally:
@@ -113,8 +119,10 @@ def setup(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Prepare a GPU environment from an existing engine checkout.')
-    parser.add_argument('--engine', required=True, metavar='DIRECTORY',
+    parser = argparse.ArgumentParser(description='Prepare mini-sglang from a checkout or locked vanilla SGLang.')
+    parser.add_argument('--backend', choices=('minisgl', 'sglang'), default='minisgl',
+        help='minisgl uses --engine; sglang uses this runner\'s environment/sglang/uv.lock')
+    parser.add_argument('--engine', metavar='DIRECTORY',
         help='existing engine repository with pyproject.toml and uv.lock; never cloned or checked out')
     parser.add_argument('--venv', required=True, metavar='DIRECTORY',
         help='Python environment to create; use this same VENV path in the experiment')
