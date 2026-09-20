@@ -9,12 +9,10 @@ import torch
 
 from .logs import JsonlWriter, atomic, stamp
 from .blocks import BlockHandle
-from .generation import generate
 import asyncio
 
 
 class Backend:
-    generate = generate
     def __init__(self, llm, output):
         self.llm, self.output = llm, Path(output)
         self.prefixes = {}
@@ -128,7 +126,7 @@ class Backend:
         self.generation_log.emit(kind='sample', token=int(value))
         return int(value), piece, value == eos
 
-    async def score_tokens(self, output, token_ids):
+    def score_tokens(self, output, token_ids):
         logits = output.logits[token_ids].float()
         probabilities = logits.softmax(-1).tolist()
         self.metrics['restricted_readouts'] += 1
