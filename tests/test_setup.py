@@ -8,7 +8,7 @@ import environment.setup as deployment
 
 
 def arguments(tmp_path, **overrides):
-    values = dict(engine=tmp_path/'engine', venv=tmp_path/'venv', craftium=tmp_path/'craftium',
+    values = dict(backend='minisgl', engine=tmp_path/'engine', venv=tmp_path/'venv', craftium=tmp_path/'craftium',
         update_existing=False, system_deps=False, jobs=2,
         download_model=None, craftium_revision=deployment.CRAFTIUM_REVISION,
         model_revision=deployment.MODEL_REVISION)
@@ -110,3 +110,26 @@ def test_setup_cli_rejects_bundle(monkeypatch):
     with pytest.raises(SystemExit) as error:
         deployment.main()
     assert error.value.code == 2
+
+
+def test_sglang_setup_uses_own_lock_without_engine_checkout(tmp_path, monkeypatch):
+    args = arguments(tmp_path, backend='sglang', engine=None)
+    calls = []
+    def command(*cmd, **kwargs):
+        calls.append(tuple(map(str, cmd)))
+        if 'sync' in cmd:
+            args.venv.mkdir()
+    monkeypatch.setattr(deployment, 'command', command)
+    monkeypatch.setattr(deployment.shutil, 'which', lambda name: '/bin/'+name)
+    monkeypatch.setattr(deployment.subprocess, 'check_output', lambda *a, **kw: '')
+    deployment.setup(args)
+    project = Path(deployment.__file__).resolve().parent/'sglang'
+    assert any('sync' in c and str(project) in c and '--locked' in c for c in calls)
+    assert any(c[-3:] == ('environment.check', '--backend', 'sglang') for c in calls)
+    install = next(c for c in calls if 'install' in c and '-e' in c)
+    assert '--group' not in install and '--constraints' in install
+
+
+def test_sglang_rejects_engine_instead_of_ignoring_it(tmp_path):
+    with pytest.raises(ValueError, match='--engine is for minisgl'):
+        deployment.setup(arguments(tmp_path, backend='sglang'))

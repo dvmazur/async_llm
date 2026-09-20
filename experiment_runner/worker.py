@@ -25,7 +25,10 @@ async def run_worker(spec, ordinal, factory, *, engine_factory=None):
     real_engine = engine_factory is None
     try:
         if engine_factory is None:
-            from .engine import create_engine
+            if spec['engine_params'].get('backend', 'minisgl') == 'sglang':
+                from .sglang_engine import create_engine
+            else:
+                from .engine import create_engine
             engine_factory = create_engine
         started = stamp()
         atomic(directory / "status.json", dict(status="engine_initializing", **started))

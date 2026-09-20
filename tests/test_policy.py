@@ -24,6 +24,7 @@ def test_role_limits_and_sequential_order():
 
 
 class Engine:
+    from experiment_runner.generation import generate
     def __init__(self, *, fail=None, eos=False):
         self.common = None
         self.live = {}
@@ -93,7 +94,7 @@ class Engine:
     def encode(self, text):
         return [[name for name, _ in SPELEO.actions].index(text)]
 
-    def score_tokens(self, output, ids):
+    async def score_tokens(self, output, ids):
         assert ids == list(range(7))
         return [1., 0., 0., 0., 0., 0., 0.]
 

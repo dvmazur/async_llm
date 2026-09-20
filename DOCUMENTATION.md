@@ -1,6 +1,6 @@
 # Portable Speleo runner — sequential
 
-**Короткая инструкция установки и запуска 15×10: [README.md](README.md).**
+**Актуальная инструкция vanilla SGLang 15×150×7: [README.md](README.md).**
 
 One model per GPU, independently repeating async pipeline slots. The engine owns
 batching. Pipeline code owns roles, history, its World and Recorder. No TP, image
@@ -11,7 +11,7 @@ parameter-heavy launcher CLI. Runner/pipeline sources are read from this checkou
 they do not need to be installed in either the launching Python or the engine venv.
 
 ```text
-experiments/speleo_15x5_sequential.py  # edit venv, model/config, GPUs, repeats, output path here
+experiments/sglang_15x150_r7_sequential.py  # current evaluation: edit paths/GPUs here
 experiment_runner/        # execution and telemetry infrastructure
 environment/              # explicit setup, dependency and Qwen/Craftium checks
 pipelines/speleo.py        # sequential roles and one append-only conversation
@@ -22,6 +22,9 @@ pyproject.toml            # dependency groups and native build constraints
 ```
 
 ## Setup (explicit; never run by Runner)
+
+For the current vanilla SGLang evaluation use `--backend sglang` without `--engine`,
+as shown in README. The checkout-based instructions below apply to mini-sglang.
 
 Setup installs pinned `uv` locally if absent, without editing shell startup files.
 Select an existing engine repository with `pyproject.toml` and `uv.lock`.
@@ -71,7 +74,81 @@ The default model is `Qwen/Qwen3.6-35B-A3B-FP8`, revision
 `61a5771f218894aaacf97551e24a25b866750fc2`. Old results with a different weight
 revision must not be treated as exactly matched controls.
 
-## Run
+## Vanilla SGLang
+
+`experiments/sglang_15x150_r7_sequential.py` selects `backend='sglang'` and passes native
+SGLang `ServerArgs` in `engine_config`. It uses the **same** `SpeleoPipeline`,
+World, prompts, role limits, planner cadence, Recorder and multi-GPU Runner.
+Mini-sglang examples still select their original backend; its venv is not modified.
+
+The current evaluation has 15 independent slots, each running seven fresh episodes
+of up to 150 actions (105 episodes, up to 15,750 actions per GPU). A slot proceeds
+to its next episode without a global barrier. The engine is loaded once per GPU;
+history is reset between episodes, never within one episode. PNG/GIF are disabled.
+The model is Qwen3.6-35B-A3B-FP8. Context length is 131,072 rather than the short
+benchmarks' 32,768: measured prompts reached about 5,700 tokens by action 10.
+This context limit is not a GPU-memory guarantee. Only the short 1×2, 15×10 and
+30×10 runs have been GPU-validated so far; the full 15×150×7 has not been run.
+The short experiment files remain available for smoke/throughput checks.
+
+`environment/sglang/pyproject.toml` pins SGLang 0.5.17; its `uv.lock` pins the full
+Linux x86-64 / Python 3.12 environment. This is separate from the selected mini
+engine's lock because their Torch/FlashInfer dependencies differ. Setup supports
+`--backend sglang` without `--engine`; all Craftium/download flags work as before.
+The vanilla environment uses NumPy 2.3.5 because SGLang's Mistral dependency requires
+NumPy below 2.4. No dependency constraints are bypassed with `--no-deps`.
+
+Each role is one `Engine.async_generate` call with its own sampling parameters.
+The adapter keeps exact generated token IDs and the full image/text history, then
+sends that complete prefix on the next request. SGLang owns automatic prefix
+caching and multimodal processing. Nothing is trimmed on the client. KV eviction
+can cause recomputation; it does not truncate the conversation. Context-limit or
+server abort errors fail the run rather than silently dropping old messages.
+The existing BlockHandle interface here owns **CPU history fragments**, not KV
+allocations in SGLang. There is no custom KV allocator or emulated shared-cache DAG.
+
+Action selection queries next-token logprobs for the same seven single-token
+actions and chooses their argmax. SGLang's unconstrained one-token response for
+this query is discarded; only the selected action is appended to history.
+Role termination tokens count towards sampled tokens but are not appended twice.
+SGLang 0.5.17 has a mixed-request logprob bug: an action-logprob request batched
+with a request without selected-token logprobs can crash on `list.tolist()`.
+The adapter requests one discarded token's logprob for ordinary role generations
+as well (`logprob_start_len=-1`, no full-prompt logprobs). This adds logprob work,
+but preserves batching and action semantics without patching SGLang. Benchmark
+numbers for this adapter include that overhead.
+In normal SGLang mode the engine uses a **global** RNG (`random_seed` in its config),
+not the per-episode/per-role seeds of mini. The adapter warns about this and records
+`sampling_seed_policy='engine_global'`; role logs show `seed=null`. World seeds
+still vary per episode. For per-role request seeds set
+`enable_deterministic_inference=True`; SGLang also changes numerical/sampling
+backends in this mode, so this is not a free reproducibility switch. Even then equal
+seeds do not promise the same tokens as mini's Torch sampler.
+
+Telemetry retains role TPS, tokens/action, action/height logs, GPU-util samples
+and initialization boundaries. `requests.jsonl` additionally records server prompt,
+cached and completion-token counts. These are **requests**, not model forwards.
+Without private scheduler hooks vanilla mean decode/prefill batch sizes and
+decode-row throughput are unavailable (`null`), not fabricated from request count.
+First-request lazy compilation is included in workload time if it occurs there;
+the short smoke TPS is not a warmed performance benchmark.
+
+## Mini-sglang run
+
+`experiments/minisgl_15x150_r7_sequential.py` is the long-run counterpart of the
+mini-sglang sequential policy from `fbdf5c1`, with 15 slots, 150 actions and seven
+episodes per slot. Compared with the 15×10 config, `max_seq_len_override` grows
+from 32,768 to 131,072 and `num_page_override` from 8,192 to 98,304 (page size 16).
+The aggregate pool holds 1,572,864 tokens, not 131,072 for every worker at once.
+A tokenizer calculation using full role budgets, 64 visual tokens per 224×224
+image and long numeric feedback gives about 85,115 tokens per 150-action episode,
+or 1,276,725 across 15 episodes. This is an estimate for these prompts/images,
+not a general bound for arbitrary policy changes. The pool has about 23% spare
+capacity over that estimate. Seven repeats reuse it, not multiply it by seven.
+For this checkpoint BF16 KV is 20 KiB/token (K+V, 10 attention layers, 2 KV heads,
+head dimension 256, two-byte elements), so the pool is 30 GiB before weights,
+GDN states and scratch/graphs. The full long run has not been GPU-validated.
+The short benchmark configs and vanilla SGLang configs are unchanged.
 
 Open `experiments/speleo_15x5_sequential.py` and edit its settings:
 
