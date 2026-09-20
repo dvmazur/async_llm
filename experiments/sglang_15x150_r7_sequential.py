@@ -31,6 +31,7 @@ ENGINE_PARAMS = {
     'engine_config': {
         'model_path': str(MODEL), 'dtype': 'bfloat16', 'quantization': 'fp8',
         'mem_fraction_static': .8,
+        'mamba_full_memory_ratio': .5,
         # Append-only history: ~5.7k tokens at 10 actions in the measured run.
         # 32k is insufficient for 150 actions; never silently truncate history.
         'context_length': 131072,
