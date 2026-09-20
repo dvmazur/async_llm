@@ -9,23 +9,19 @@ Falsifier → Executor → выбор действия. Весь эпизод �
 0, 10, 20…; лимиты ролей — 18/60/18/16 токенов. Между разными pipeline Runner
 по-прежнему допускает параллельную работу.
 
-## 1. Актуальный эксперимент: vanilla SGLang, 15×150×7
+## 1. Выбрать движок
 
-Основной пример — `experiments/sglang_15x150_r7_sequential.py`: **обычный SGLang
-0.5.17**, модель **Qwen3.6-35B-A3B-FP8**, 15 параллельных слотов, каждый выполняет
-7 эпизодов по 150 действий. Всего до **105 эпизодов / 15 750 действий на GPU**.
-PNG и GIF выключены. Исправление совместной обработки обычных запросов и
-action-logprobs уже включено в адаптер; вручную патчить SGLang не нужно.
+Setup принимает **существующую папку репозитория движка** с `pyproject.toml` и
+`uv.lock`. Нужную ветку/коммит выберите заранее сами. Setup не делает `git clone`,
+`pull` или `checkout` движка и не принимает Git bundle.
 
 Запускалка находится в отдельной orphan-ветке `speleo-runner`, в корне checkout,
-без исходников движка. SGLang ставится из пакета по
-`environment/sglang/uv.lock`; отдельный checkout движка не нужен.
-Все команды ниже — из папки запускалки.
+без исходников движка. Движок подготовьте **в другой папке**. Все команды ниже —
+из папки запускалки:
 
 На GPU-машине нужны Linux, Python 3.11+ для setup, интернет, рабочий драйвер
 NVIDIA и совместимый CUDA toolkit с `nvcc`. Проверенный стек использовал CUDA 13.0.
-Короткие проверки 15×10 и 30×10 прошли на RTX PRO 6000 96 GB; полный
-15×150×7 ещё не проверен, эти проверки не гарантируют его вместимость. Setup не ставит
+Пример 15×10 с FP8 A3B рассчитан на свободную GPU порядка 96 GB. Setup не ставит
 драйверы или CUDA. На постоянной CPU-машине setup не запускаем: окружение готовится
 на арендованной GPU.
 
@@ -33,8 +29,8 @@ NVIDIA и совместимый CUDA toolkit с `nvcc`. Проверенный 
 
 ```bash
 python3 -m environment.setup \
-  --backend sglang \
-  --venv ./.venvs/sglang \
+  --engine /path/to/engine \
+  --venv ./.venvs/minisgl \
   --craftium ./craftium \
   --download-model ./models/Qwen3.6-35B-A3B-FP8 \
   --jobs 8 \
@@ -58,8 +54,8 @@ python3 -m environment.setup \
 
 | Аргумент | Что делает |
 |---|---|
-| `--backend sglang` | Ставит vanilla SGLang и зависимости по `environment/sglang/uv.lock`. |
-| `--venv ./.venvs/sglang` | Создаёт здесь Python-окружение с движком и зависимостями. Тот же путь укажите как `VENV` в эксперименте. |
+| `--engine /path/to/engine` | Берёт код и lock-файл **уже существующего** репозитория движка. Это отдельная папка, не checkout запускалки. |
+| `--venv ./.venvs/minisgl` | Создаёт здесь Python-окружение с движком и зависимостями. Тот же путь укажите как `VENV` в эксперименте. |
 | `--craftium ./craftium` | Папка исходников и сборки среды: клонирует Craftium, если папки нет, выбирает закреплённую версию, собирает Minetest, устанавливает Python-пакет editable. Папку после установки нельзя удалять/переносить. |
 | `--download-model ./models/...` | Скачивает сюда закреплённые FP8-веса `Qwen/Qwen3.6-35B-A3B-FP8` через `hf`. Если веса уже есть, уберите флаг и задайте их путь в `MODEL`. |
 | `--jobs 8` | Восемь параллельных задач **компиляции Craftium**. Это не число GPU, сред или pipeline. |
@@ -75,51 +71,48 @@ python3 -m environment.setup \
   Она может изменить установленные пакеты. Без флага существующий venv не трогаем.
 
 Setup создаёт venv на Python 3.12, ставит движок по его lock-файлу, собирает
-Craftium с ограничениями из того же lock-файла.
+Craftium и добавляет зависимости runner с ограничениями из того же lock-файла.
 Скачивание весов идёт параллельно сборке. Если нет `uv`, устанавливается
 закреплённая версия. В конце проверяются CUDA и импорты, без загрузки модели.
 
-Каталоги venv/Craftium должны быть различными; venv обычно должен быть новым.
-Dirty Craftium не перезаписывается.
+Каталоги engine/venv/Craftium должны быть различными. Engine уже должен
+существовать, venv обычно должен быть новым. Dirty Craftium не перезаписывается.
 Setup не нужно запускать заново перед каждым экспериментом.
 
 ## 3. Настроить и запустить эксперимент
 
-Откройте `experiments/sglang_15x150_r7_sequential.py` и проверьте настройки в начале файла:
+Откройте `experiments/speleo_15x10_sequential.py` и проверьте настройки в начале файла:
 
 ```python
-VENV = REPOSITORY / '.venvs' / 'sglang'  # папка venv, созданная setup
+VENV = REPOSITORY / '.venvs' / 'minisgl'  # папка venv, созданная setup
 MODEL = REPOSITORY / 'models' / 'Qwen3.6-35B-A3B-FP8'  # скачанные веса
-CRAFTIUM = REPOSITORY / 'craftium'  # папка исходников/сборки среды
-RESULTS = REPOSITORY / 'results' / 'sglang_15x150_r7_sequential'  # новый каталог результатов
+RESULTS = REPOSITORY / 'results' / 'speleo_15x10_sequential'  # новый каталог результатов
 
 GPUS = [0]               # на каких GPU запускать
 PIPELINES_PER_GPU = 15    # сколько pipeline одновременно на каждой GPU
-REPEATS = 7              # сколько эпизодов выполнит каждый параллельный слот
-ACTIONS = 150            # максимум действий в одном эпизоде
+REPEATS = 1              # сколько эпизодов выполнит каждый параллельный слот
+ACTIONS = 10             # максимум действий в одном эпизоде
 DUMP_IMAGES = False      # не сохранять PNG
 GIF_ON = False           # не сохранять GIF
 ```
 
 `REPOSITORY` — папка запускалки. Если setup запускался с путями из раздела 2,
-`VENV`, `MODEL` и `CRAFTIUM` уже совпадают. Если выбрали другие папки, впишите их,
-например `VENV = Path('/data/venvs/sglang')`.
+`VENV` и `MODEL` уже совпадают. Если выбрали другие папки, впишите их, например
+`VENV = Path('/data/venvs/minisgl')` и `MODEL = Path('/data/models/Qwen3.6-35B-A3B-FP8')`.
 
 Ниже в `ENGINE_PARAMS['engine_config']` путь к модели уже задан как
 `'model_path': str(MODEL)` — достаточно изменить `MODEL` выше.
 Остальные настройки движка и ролей для этого запуска оставьте как в примере.
 
-По умолчанию получится **15 параллельных слотов × 7 эпизодов по 150 действий на GPU 0**.
-Закончив эпизод, слот начинает следующий, не дожидаясь остальных; модель не перезагружается.
-История начинается заново в каждом эпизоде, но не обрезается внутри него.
-Лимит контекста поднят до 131 072 токенов для длинной истории.
+По умолчанию получится **15 эпизодов по 10 действий на GPU 0**.
+При `REPEATS = 3` каждый слот выполнит три эпизода: всего 45.
 `GPUS = [0, 1]` повторит такую нагрузку независимо на каждой карте;
 на каждой GPU загружается одна модель, общая для её pipeline.
 
 Сохраните файл и запустите на GPU-машине из папки запускалки:
 
 ```bash
-python3 experiments/sglang_15x150_r7_sequential.py
+python3 experiments/speleo_15x10_sequential.py
 ```
 
 Активировать venv не нужно: Runner сам использует `VENV/bin/python`.
@@ -130,41 +123,14 @@ python3 experiments/sglang_15x150_r7_sequential.py
 Полный разбор параметров движка, ролей, seeds и Python API —
 в [документации](DOCUMENTATION.md#настройки-python-эксперимента).
 
-### Короткие проверки и mini-sglang
-
-Для короткой проверки того же адаптера есть `experiments/sglang_1x2_sequential.py`,
-а для бенчей — `sglang_15x10_sequential.py` и `sglang_30x10_sequential.py`.
-Mini-sglang примеры также сохранены; для них нужен отдельный checkout движка и venv:
-
-```bash
-python3 -m environment.setup --engine /path/to/engine \
-  --venv ./.venvs/minisgl --craftium ./craftium --jobs 8
-```
-
-Setup не делает checkout/pull движка и не принимает Git bundle. Роли и промпты
-общие с mini-версией. Детали и ограничения метрик — [в документации](DOCUMENTATION.md#vanilla-sglang).
-
-Для **mini-sglang 15×150×7** есть отдельный конфиг с увеличенными лимитами:
-
-```bash
-python3 experiments/minisgl_15x150_r7_sequential.py
-```
-
-Укажите в нём `VENV` с mini-sglang и `MODEL`. Контекст — **131 072** токена;
-общий KV-пул — **98 304 страницы × 16 = 1 572 864 токена** (30 GiB только KV
-для этой модели). Это запас к расчётным ~1,28 млн токенов на 15 длинных историй,
-но не гарантия полной GPU-вместимости: длинный запуск пока не проверен.
-Короткие конфиги оставлены без изменений; vanilla SGLang этот фиксированный пул не использует.
-
 ## 4. Забрать результаты
 
-По умолчанию — `results/sglang_15x150_r7_sequential/`. Summary печатается в терминале и записывается
-в `analysis/summary.json`: TPS, tokens/action, выборочное среднее GPU util.
-В vanilla SGLang внутренние mean decode/prefill batches недоступны (`null`).
-Высота и действия сохраняются и без PNG/GIF.
+По умолчанию — `results/speleo_15x10_sequential/`. Summary печатается в терминале и записывается
+в `analysis/summary.json`: TPS, tokens/action, средние decode/prefill batches,
+выборочное среднее GPU util. Высота и действия сохраняются и без PNG/GIF.
 
 ```bash
-python3 -m experiment_runner.artifacts results/sglang_15x150_r7_sequential results/sglang_15x150_r7_sequential.zip
+python3 -m experiment_runner.artifacts results/speleo_15x10_sequential results/speleo_15x10_sequential.zip
 ```
 
-В mini-sglang BF16 GDN требует соответствующей ветки/флага, а не просто `dtype='bfloat16'`.
+BF16 GDN требует соответствующей ветки/флага, а не просто `dtype='bfloat16'`.

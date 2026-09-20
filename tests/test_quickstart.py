@@ -19,55 +19,7 @@ def test_release_has_readme_documentation_and_no_machine_specific_experiments():
     assert {'README.md', 'DOCUMENTATION.md'} <= paths
     assert 'QUICKSTART.md' not in paths
     assert 'experiments/speleo_15x10_sequential.py' in paths
-    assert 'experiments/sglang_15x150_r7_sequential.py' in paths
-    assert 'experiments/minisgl_15x150_r7_sequential.py' in paths
-    assert 'environment/sglang/uv.lock' in paths
     assert not any(p.startswith('experiments/rtx_') for p in paths)
-
-
-def test_current_sglang_evaluation_and_pipeline_factory(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from experiments import sglang_15x150_r7_sequential as run
-    assert (run.PIPELINES_PER_GPU, run.ACTIONS, run.REPEATS, run.GPUS) == (15, 150, 7, [0])
-    assert run.ENGINE_PARAMS['backend'] == 'sglang'
-    config = run.ENGINE_PARAMS['engine_config']
-    assert config['model_path'] == str(run.MODEL)
-    assert run.MODEL.name == 'Qwen3.6-35B-A3B-FP8'
-    assert config['context_length'] == 131072
-    assert config['max_running_requests'] >= run.PIPELINES_PER_GPU
-    assert config['cuda_graph_max_bs_decode'] >= run.PIPELINES_PER_GPU
-    assert run.VENV == run.REPOSITORY/'.venvs/sglang'
-    assert run.RESULTS.name == 'sglang_15x150_r7_sequential'
-    monkeypatch.setattr(run, 'SpeleoWorld', lambda **kwargs: SimpleNamespace(**kwargs))
-    monkeypatch.setattr(run, 'Recorder', lambda directory, **kwargs: SimpleNamespace(directory=directory, **kwargs))
-    context = SimpleNamespace(world_seed=42, results_directory=tmp_path)
-    engine = object()
-    pipeline = run.make_pipeline(engine, context)
-    assert pipeline.engine is engine and pipeline.max_actions == 150
-    assert pipeline.planner_interval == 10
-    assert pipeline.world.max_steps == 150 and pipeline.world.seed == 42
-    assert pipeline.world.craftium_directory == str(run.CRAFTIUM)
-    assert pipeline.recorder.directory == tmp_path
-    assert pipeline.recorder.dump_images is False and pipeline.recorder.gif_on is False
-
-
-def test_long_minisgl_has_context_and_aggregate_kv_capacity():
-    from experiments import minisgl_15x150_r7_sequential as run
-    from experiments import speleo_15x10_sequential as short
-    assert (run.PIPELINES_PER_GPU, run.ACTIONS, run.REPEATS) == (15, 150, 7)
-    assert run.VENV == run.REPOSITORY/'.venvs/minisgl'
-    assert run.ENGINE_PARAMS.get('backend', 'minisgl') == 'minisgl'
-    config = run.ENGINE_PARAMS['engine_config']
-    assert config['max_seq_len_override'] == 131072
-    assert config['num_page_override'] * config['page_size'] == 1572864
-    assert run.DUMP_IMAGES is False and run.GIF_ON is False
-    # Keep measured short benchmarks reproducible. Only the two capacity
-    # overrides change, not precision, graph catalogue, prefill caps or policy.
-    changed = {key for key, value in config.items()
-               if value != short.ENGINE_PARAMS['engine_config'][key]}
-    assert changed == {'max_seq_len_override', 'num_page_override'}
-    assert run.ROLE_PARAMETERS == short.ROLE_PARAMETERS
-    assert run.RESULTS.name == 'minisgl_15x150_r7_sequential'
 
 
 def test_source_release_needs_no_engine_checkout(tmp_path):

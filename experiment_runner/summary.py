@@ -64,7 +64,6 @@ class Summary:
             readouts = sum(r['action_readouts'] for r in local)
             totals_path = gpu/'engine-totals.json'
             totals = json.loads(totals_path.read_text()) if totals_path.exists() else {}
-            forward_telemetry = totals.get('forward_telemetry_available', True)
             engine_readouts = totals.get('restricted_readouts', totals.get('action_readouts'))
             if complete and engine_readouts is not None and readouts != engine_readouts:
                 raise ValueError(f'pipeline/engine action readout accounting mismatch in {gpu.name}')
@@ -75,11 +74,8 @@ class Summary:
                 generated_tps=divide(tokens, seconds) if complete else None,
                 # Historical launcher included one action readout in output tokens.
                 output_tokens_including_readouts_tps=divide(tokens + readouts, seconds) if complete else None,
-                tokens_per_action=divide(tokens, actions),
-                forward_telemetry_available=forward_telemetry,
-                batches=batch_stats(forwards) if forward_telemetry else None,
-                decode_rows_per_second=divide(sum(r["decode_requests"] for r in forwards), seconds)
-                    if complete and forward_telemetry else None)
+                tokens_per_action=divide(tokens, actions), batches=batch_stats(forwards),
+                decode_rows_per_second=divide(sum(r["decode_requests"] for r in forwards), seconds) if complete else None)
             samples = list(read_jsonl(gpu/'gpu-samples.jsonl')) if (gpu/'gpu-samples.jsonl').exists() else []
             samples = [r for r in samples if start is not None and start <= r['monotonic'] <= end]
             utilization = [r['utilization_percent'] for r in samples if r.get('utilization_percent') is not None]
@@ -99,8 +95,7 @@ class Summary:
             metric_contract="Full workload including first actions and role drain; role tokens include EOS; no padding in batches.",
             workload_seconds=seconds, generated_tokens=tokens, actions=actions,
             generated_tps=divide(tokens, seconds) if complete else None,
-            tokens_per_action=divide(tokens, actions), batches=batch_stats(all_forwards)
-                if all(w['forward_telemetry_available'] for w in workers) else None,
+            tokens_per_action=divide(tokens, actions), batches=batch_stats(all_forwards),
             workers=workers, episodes=episodes)
 
     def write(self):
