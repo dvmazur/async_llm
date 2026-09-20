@@ -78,23 +78,17 @@ def ends_with_double_newline(token_ids: List[int], tokenizer: AutoTokenizer) -> 
 class ModeSwitchProbe:
     """The mode-switching probe, with everything static cached across calls.
 
-    Each probe is the design doc's "action choice" use of ``AsyncLLM.forward``:
-    a fresh, throwaway prefill of the probe context (correct: reusing the
-    *live* thinker/writer blocks as context under the new
-    ``mode_switching_prompt`` prefix would attend to stale KV/state), read for
-    one yes/no logits row and freed.  The growing thinker/writer parts arrive
-    as token-id lists, so we concatenate them directly instead of decoding to
-    text and re-encoding every call.  Runs concurrently with the decode
-    streams: the scheduler slots the prefill between decode ticks.
+    Each probe is the design doc's "action choice" use of ``AsyncLLM.forward``.
+    The static probe prompt and live thinker/writer blocks are reused as a
+    cache chain; only the short probe question is prefilled.  Runs concurrently
+    with the decode streams.
 
     Cached here, computed once instead of per call:
 
     * the encoded ``mode_switching_prompt`` / ``mode_switching_question`` ids
       and the yes/no vocab ids;
-    * on standard-attention models, the KV of the static prompt prefix — it is
-      prefilled (lazily) into a persistent block, and each probe then only
-      prefills the growing thinker/writer tail in context of it (``forward``'s
-      conditional-prefill mode).
+    * the KV/GDN summary of the static prompt prefix, prefilled lazily into a
+      persistent block.
 
     Call ``close()`` when done to release the cached prefix block.
     """
@@ -113,39 +107,37 @@ class ModeSwitchProbe:
         self.no_id = single_token_id(no_token, tokenizer)
         self._prompt_ids = encode(mode_switching_prompt, tokenizer)
         self._question_ids = encode(mode_switching_question, tokenizer)
-        self._reuse_prompt_kv = getattr(llm.async_engine.session, "sc_gdn", None) is None
         self._prompt_block: CacheBlock | None = None
 
     async def check_continue_writing(
-        self, thinker_tokens: List[int], writer_tokens: List[int]
+        self,
+        thinker: CacheBlock,
+        writer: CacheBlock,
     ) -> Tuple[bool, float, float]:
-        """Prefill the probe and compare the yes/no logits.
+        """Reuse the live stream blocks, prefill the question, and compare logits.
+
+        Only committed tokens are visible. The streams retain ownership of
+        their pending sampled tokens; the probe never writes into live blocks.
+        Reusing their cached trajectories is deliberately different from
+        recomputing those tokens under the probe prompt.
 
         Returns ``(should_continue_writing, yes_logit, no_logit)``.  The two
         raw logit values are useful for debug logging since they show how
         confident the probe was at any given step.
         """
-        tail = torch.cat(
-            [
-                torch.tensor(thinker_tokens, dtype=torch.int32),
-                torch.tensor(writer_tokens, dtype=torch.int32),
-                self._question_ids,
-            ]
-        )
-        if self._reuse_prompt_kv:
-            if self._prompt_block is None:
-                self._prompt_block = await self.llm.create_block()
-                await self.llm.forward(
-                    self._prompt_ids, write_to=self._prompt_block, return_logits=False
-                )
-            context, ids = [self._prompt_block], tail
-        else:
-            context, ids = [], torch.cat([self._prompt_ids, tail])
+        if self._prompt_block is None:
+            self._prompt_block = await self.llm.create_block()
+            await self.llm.forward(
+                self._prompt_ids, write_to=self._prompt_block, return_logits=False
+            )
+
         block = await self.llm.create_block()
         try:
-            # The probe block is read once then freed, so skip the GDN affine
-            # capture on the flat (hybrid) path; ignored with a context.
-            out = await self.llm.forward(ids, context, write_to=block)
+            out = await self.llm.forward(
+                self._question_ids,
+                [self._prompt_block, thinker, writer],
+                write_to=block,
+            )
             logits = out.logits.float().cpu()
             yes_logit = float(logits[self.yes_id])
             no_logit = float(logits[self.no_id])

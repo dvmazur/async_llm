@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -121,6 +122,11 @@ async def generate(llm, tokenizer, first, second, k_steps, budget, probe_period,
     injection_done = asyncio.Event(); injection_done.set()
     injected = k_steps <= 0
     writer_reminder_pending = False
+    started = time.monotonic()
+
+    def progress(stream, steps):
+        if steps % 256 == 0:
+            print(f"progress {stream}={steps} elapsed={time.monotonic()-started:.1f}s", flush=True)
 
     async def inject():
         nonlocal injected, writer_reminder_pending
@@ -146,6 +152,7 @@ async def generate(llm, tokenizer, first, second, k_steps, budget, probe_period,
                 out = await llm.forward(cache_view=thinker_ctx)
                 thinker_ctx.next_input_id = sample_token(out.logits, thinker_forbid, *sampling)
                 steps += 1
+                progress("thinker", steps)
                 if steps % probe_period == 0 or ends_with_double_newline(
                     _tokens_with_pending(thinker, thinker_ctx), tokenizer
                 ): probe_due.set()
@@ -163,6 +170,7 @@ async def generate(llm, tokenizer, first, second, k_steps, budget, probe_period,
             writer_ctx.next_input_id = token
             if token == eos: done.set(); return
             steps += 1
+            progress("writer", steps)
             boundary = token == nn or ends_with_double_newline(
                 _tokens_with_pending(writer, writer_ctx), tokenizer
             )
@@ -179,8 +187,7 @@ async def generate(llm, tokenizer, first, second, k_steps, budget, probe_period,
             await probe_due.wait(); probe_due.clear(); await injection_done.wait()
             if done.is_set() or thinker_done.is_set(): return
             should_write, _, _ = await probe.check_continue_writing(
-                _tokens_with_pending(thinker, thinker_ctx),
-                _tokens_with_pending(writer, writer_ctx))
+                thinker, writer)
             (writer_run.set if should_write else writer_run.clear)()
 
     try:
@@ -225,6 +232,7 @@ async def run(args):
                 predicted = find_last_boxed_answer(response)
                 equal = check_equality(predicted, str(item["answer"]))
                 result = {"idx": idx, "k_steps": args.k_steps, "is_equal": equal,
+                          "probe_mode": "reuse_live_blocks",
                           "predicted_answer": predicted, "correct_answer": str(item["answer"]),
                           "generated_text": response, "thinker_text": thoughts,
                           "shard_injected": injected,
@@ -241,6 +249,7 @@ async def run(args):
     finally:
         await llm.close()
     summary = {"k_steps": args.k_steps, "accuracy": correct / total if total else 0,
+               "probe_mode": "reuse_live_blocks",
                "correct": correct, "total": total, "model": args.model_name,
                "routing": {"prompt": "shard", "thinker": "shard",
                            "writer": "deferred_reminder" if args.defer_writer_reminder else "reminder"}}

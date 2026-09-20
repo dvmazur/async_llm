@@ -280,8 +280,8 @@ async def _run_loop(
             if done.is_set():
                 return
             should_write, yes_logit, no_logit = await probe.check_continue_writing(
-                _tokens_with_pending(thinker_blk, thinker_ctx),
-                _tokens_with_pending(writer_blk, writer_ctx),
+                thinker_blk,
+                writer_blk,
             )
             if done.is_set():
                 return
