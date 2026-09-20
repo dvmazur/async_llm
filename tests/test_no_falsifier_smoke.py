@@ -1,32 +1,31 @@
-"""Two-action CPU smoke of the real policy with an in-memory engine and World."""
+"""CPU smoke: real async role protocol, not a sequential replacement."""
 import asyncio
-import json
-
+from experiment_runner import EpisodeContext, Recorder
 from experiment_runner.logs import read_jsonl
-from test_policy import Engine, World, pipeline
+from pipelines.speleo import SpeleoPipeline
+from test_policy import FakeEngine, FakeWorld
 
 
-def test_two_actions_without_falsifier(tmp_path):
-    engine, world = Engine(), World()
-    p = pipeline(tmp_path, engine, world, max_actions=2)
-    asyncio.run(p.run())
-
-    events = list(read_jsonl(tmp_path/'events.jsonl'))
-    streams = [event for event in events if event['kind'] == 'stream']
-    assert [(s['observation'], s['role'], s['sampled_tokens']) for s in streams] == [
-        (0, 'observer', 18), (0, 'planner', 60), (0, 'executor', 16),
-        (1, 'observer', 18), (1, 'executor', 16),
-    ]
-    assert {e['role'] for e in events if e['kind'] == 'role_parameters'} == {
-        'observer', 'planner', 'executor'}
-    prompts = [engine.common.raw.data[0][1]]
-    prompts += [c[1] for c in engine.calls if c[0] == 'text']
-    assert all('falsifier' not in text.lower() and 'objection' not in text.lower()
-               for text in prompts)
-    decisions = [e for e in events if e['kind'] == 'decision']
-    assert len(decisions) == 2 and all('critique' not in e for e in decisions)
-    assert [e['published_plan_based_on'] for e in decisions] == [0, 0]
-    assert world.i == 2 and world.closed
-    assert p.history is p.common is None
-    assert list(engine.live.values()) == [engine.common.raw]
-    assert json.loads((tmp_path/'completion.json').read_text())['status'] == 'completed'
+def test_fast_roles_without_falsifier(tmp_path):
+    async def run():
+        engine, world = FakeEngine(), FakeWorld()
+        pipeline = SpeleoPipeline(world, Recorder(tmp_path), engine,
+            context=EpisodeContext('smoke', 0, 0, tmp_path, 0, 0, 0), max_actions=2)
+        await pipeline.run()
+        assert world.i == 2 and world.closed
+        assert len(pipeline.actors) == 2 and all(t.done() for t in pipeline.actors)
+        assert not pipeline.jobs
+        assert list(engine.live_blocks.values()) == [engine.common.raw]
+        for call in engine.calls:
+            if call[0] in ('prefill', 'system'):
+                assert 'falsifier' not in call[1].lower()
+                assert 'objection' not in call[1].lower()
+        events = list(read_jsonl(tmp_path/'events.jsonl'))
+        assert {e['role'] for e in events if e['kind'] == 'stream'} == {
+            'observer', 'planner', 'executor'}
+        decisions = [e for e in events if e['kind'] == 'decision']
+        assert len(decisions) == 2
+        assert all('critique' not in e and 'falsifier' not in e['live_inputs_at_action_submit']
+                   for e in decisions)
+        assert any(call[0] == 'snapshot' for call in engine.calls)
+    asyncio.run(asyncio.wait_for(run(), 3))

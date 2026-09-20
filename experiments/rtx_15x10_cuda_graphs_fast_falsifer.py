@@ -1,4 +1,4 @@
-"""RTX 15x10: role-owned pipeline, cuda_graphs_minimal/08-gdn-bf16."""
+"""RTX 15x10: current pipeline, cuda_graphs_minimal/07-cuda-graphs (FP32 GDN)."""
 from pathlib import Path
 import sys
 
@@ -21,7 +21,6 @@ PARAMS = {
         'cuda_graph_bs': [4, 16, 48, 64], 'cuda_graph_max_bs': 64,
         'shared_cuda_graph_prefill_rows': [256, 1024, 4096],
         'shared_cuda_graph_max_depth': 16,
-        'shared_gdn_bf16_state': True,
         'generation_config': {'do_sample': True, 'temperature': .6, 'top_k': 20, 'top_p': .9},
     },
     'adapter_options': {'cpu_threads': 4},
@@ -45,5 +44,5 @@ if __name__ == '__main__':
         .set_engine_params(PARAMS)
         .set_pipeline(RepeatedPipeline(make_pipeline, repeats=1))
         .set_concurrency(15)
-        .set_results_directory(DEPLOY / 'results-15x10_sequential')
+        .set_results_directory(DEPLOY / 'results-15x10_fast_falsifer')
         .run(gpus=[0]))

@@ -1,27 +1,9 @@
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
 from experiment_runner.blocks import BlockHandle
-
-
-class FakeEngine:
-    def __init__(self):
-        self.live_blocks = {}
-
-    async def create_block(self):
-        raw = SimpleNamespace(num_tokens=0)
-        self.live_blocks[id(raw)] = raw
-        return raw
-
-    async def free_block(self, raw):
-        del self.live_blocks[id(raw)]
-
-    async def merge_blocks(self, left, right):
-        raw = await self.create_block()
-        raw.num_tokens = left.num_tokens + right.num_tokens
-        return raw
+from test_policy import FakeEngine
 
 
 def test_each_owner_closes_independently_and_last_owner_frees():

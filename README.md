@@ -1,36 +1,36 @@
-# Speleo runner — sequential
-
-Актуальный mini-sglang эксперимент: **15 потоков × 150 действий × 7 эпизодов на слот**.
-После подготовки venv ниже настройте пути в
-`experiments/minisgl_15x150_r7_sequential.py` и запустите:
-
-```bash
-python3 experiments/minisgl_15x150_r7_sequential.py
-```
-
-Контекст — 131 072 токена; KV-пул — 98 304 страницы по 16 токенов
-(1 572 864 токена суммарно, 30 GiB BF16 KV для Qwen3.6-35B-A3B).
-PNG/GIF выключены. Модель загружается один раз, история освобождается между
-эпизодами. GPU-smoke 15×2 с этими полными буферами прошёл на RTX PRO 6000
-с движком `bbe7abf55512342d56af61d4009dff0174d8896d` (07-cuda-graphs).
-Используйте этот checkout при подготовке mini-sglang venv.
-Полный 150-шаговый прогон пока не проверен.
-Короткий GPU-smoke с теми же буферами:
-
-```bash
-python3 tools/gpu_smoke.py --experiment experiments/minisgl_15x150_r7_sequential.py --results results/smoke-15x2
-```
-
-Ниже сохранён короткий пример 15×10 и общая инструкция установки.
+# Speleo runner — fast async без falsifier
 
 Одна модель на GPU, несколько параллельных pipeline. Подробное описание API,
 ролей, телеметрии и тестов — [DOCUMENTATION.md](DOCUMENTATION.md).
 
-Текущая стратегия — **pure sequential**: пара картинок → Observer → Planner →
-Executor → выбор действия. Весь эпизод — один растущий контекст,
-без обрезки истории и параллельной генерации ролей. Planner вызывается на шагах
-0, 10, 20…; лимиты ролей — 18/60/16 токенов. Между разными pipeline Runner
-по-прежнему допускает параллельную работу.
+Текущая стратегия — **fast async V9 из `7d7ada7`, только без falsifier**.
+Observer, planner и executor остаются отдельными корутинами с живыми KV-блоками;
+executor стартует после одного токена observer, planner может продолжаться между
+действиями. Бюджеты — 18/60/16; planner запускается не чаще раза в 10 действий.
+Это **не sequential** и не один неограниченно растущий диалог со всеми картинками.
+
+Актуальный эксперимент — **15 потоков × 150 действий × 7 эпизодов на слот**:
+
+```bash
+python3 experiments/minisgl_15x150_r7_fast_async.py
+```
+
+После подготовки окружения ниже укажите в этом файле свои `VENV`, `MODEL`,
+`RESULTS` и GPU. PNG/GIF выключены. Конфигурация буферов взята из успешного
+архивного H200 15×150×7: 49 152 KV-страницы по 16 токенов, контекст 32 768,
+prefill cap 1024, decode-графы [4,16,48,64], глубина 16.
+GPU-smoke 15×2 прошёл на RTX PRO 6000 с движком
+`bbe7abf55512342d56af61d4009dff0174d8896d` (07-cuda-graphs), без уменьшения
+этих буферов. Сам новый вариант без falsifier ещё не проходил полный 150-шаговый прогон.
+Для проверки с теми же буферами, не уменьшая число потоков:
+
+```bash
+python3 tools/gpu_smoke.py --experiment experiments/minisgl_15x150_r7_fast_async.py --results results/smoke-15x2
+```
+
+Ниже сохранены короткие примеры и инструкция установки. Старые имена файлов
+`*_fast_falsifer.py` оставлены для совместимости; исполняемая стратегия в них
+тоже больше не содержит falsifier.
 
 ## 1. Выбрать движок
 
@@ -104,12 +104,12 @@ Setup не нужно запускать заново перед каждым э
 
 ## 3. Настроить и запустить эксперимент
 
-Откройте `experiments/speleo_15x10_sequential.py` и проверьте настройки в начале файла:
+Откройте `experiments/speleo_15x10_fast_falsifer.py` и проверьте настройки в начале файла:
 
 ```python
 VENV = REPOSITORY / '.venvs' / 'minisgl'  # папка venv, созданная setup
 MODEL = REPOSITORY / 'models' / 'Qwen3.6-35B-A3B-FP8'  # скачанные веса
-RESULTS = REPOSITORY / 'results' / 'speleo_15x10_sequential'  # новый каталог результатов
+RESULTS = REPOSITORY / 'results' / 'speleo_15x10_fast_falsifer'  # новый каталог результатов
 
 GPUS = [0]               # на каких GPU запускать
 PIPELINES_PER_GPU = 15    # сколько pipeline одновременно на каждой GPU
@@ -135,7 +135,7 @@ GIF_ON = False           # не сохранять GIF
 Сохраните файл и запустите на GPU-машине из папки запускалки:
 
 ```bash
-python3 experiments/speleo_15x10_sequential.py
+python3 experiments/speleo_15x10_fast_falsifer.py
 ```
 
 Активировать venv не нужно: Runner сам использует `VENV/bin/python`.
@@ -148,12 +148,12 @@ python3 experiments/speleo_15x10_sequential.py
 
 ## 4. Забрать результаты
 
-По умолчанию — `results/speleo_15x10_sequential/`. Summary печатается в терминале и записывается
+По умолчанию — `results/speleo_15x10_fast_falsifer/`. Summary печатается в терминале и записывается
 в `analysis/summary.json`: TPS, tokens/action, средние decode/prefill batches,
 выборочное среднее GPU util. Высота и действия сохраняются и без PNG/GIF.
 
 ```bash
-python3 -m experiment_runner.artifacts results/speleo_15x10_sequential results/speleo_15x10_sequential.zip
+python3 -m experiment_runner.artifacts results/speleo_15x10_fast_falsifer results/speleo_15x10_fast_falsifer.zip
 ```
 
 BF16 GDN требует соответствующей ветки/флага, а не просто `dtype='bfloat16'`.

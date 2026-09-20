@@ -12,7 +12,7 @@ from pipelines.world import SpeleoWorld
 
 VENV = REPOSITORY / '.venvs' / 'minisgl'
 MODEL = REPOSITORY / 'models' / 'Qwen3.6-35B-A3B-FP8'
-RESULTS = REPOSITORY / 'results' / 'speleo_15x10_sequential'
+RESULTS = REPOSITORY / 'results' / 'speleo_15x10_fast_falsifer'
 GPUS = [0]
 PIPELINES_PER_GPU = 15
 REPEATS = 1

@@ -42,5 +42,5 @@ if __name__ == '__main__':
         .set_engine_params(PARAMS)
         .set_pipeline(RepeatedPipeline(make_pipeline, repeats=1))
         .set_concurrency(args.pipelines)
-        .set_results_directory(DEPLOY / f'{args.revision}-{args.pipelines}x10_sequential')
+        .set_results_directory(DEPLOY / f'{args.revision}-{args.pipelines}x10_fast_falsifer')
         .run(gpus=[0]))

@@ -4,7 +4,7 @@ from experiment_runner import Runner, RepeatedPipeline, Recorder
 from pipelines.speleo import SpeleoPipeline
 from pipelines.world import SpeleoWorld
 from copy import deepcopy
-from experiments.speleo_15x5_sequential import ENGINE_PARAMS
+from experiments.speleo_15x5_fast_falsifer import ENGINE_PARAMS
 
 
 def make_pipeline(engine, context):

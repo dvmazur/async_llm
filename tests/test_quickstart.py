@@ -2,13 +2,13 @@ from pathlib import Path
 
 
 def test_portable_15x10_matches_bench_and_disables_media():
-    from experiments import speleo_15x10_sequential as run
-    from experiments.speleo_15x5_sequential import ENGINE_PARAMS
+    from experiments import speleo_15x10_fast_falsifer as run
+    from experiments.speleo_15x5_fast_falsifer import ENGINE_PARAMS
     assert run.ENGINE_PARAMS == ENGINE_PARAMS
     assert (run.PIPELINES_PER_GPU, run.REPEATS, run.ACTIONS, run.GPUS) == (15, 1, 10, [0])
     assert run.DUMP_IMAGES is False and run.GIF_ON is False
     assert run.VENV == run.REPOSITORY / '.venvs' / 'minisgl'
-    assert run.RESULTS == run.REPOSITORY / 'results' / 'speleo_15x10_sequential'
+    assert run.RESULTS == run.REPOSITORY / 'results' / 'speleo_15x10_fast_falsifer'
     assert run.MODEL_SEED_START == run.WORLD_SEED_START == 0
 
 
@@ -18,8 +18,8 @@ def test_release_has_readme_documentation_and_no_machine_specific_experiments():
     paths = {str(p.relative_to(root)) for p in source_files(root)}
     assert {'README.md', 'DOCUMENTATION.md'} <= paths
     assert 'QUICKSTART.md' not in paths
-    assert 'experiments/speleo_15x10_sequential.py' in paths
-    assert 'experiments/minisgl_15x150_r7_sequential.py' in paths
+    assert 'experiments/speleo_15x10_fast_falsifer.py' in paths
+    assert 'experiments/minisgl_15x150_r7_fast_async.py' in paths
     assert not any(p.startswith('experiments/rtx_') for p in paths)
 
 
@@ -39,26 +39,13 @@ def test_source_release_needs_no_engine_checkout(tmp_path):
             assert hashlib.sha256(archive.read('speleo-runner/'+name)).hexdigest() == expected
 
 
-def test_long_mini_keeps_original_engine_options_except_capacity():
-    from experiments import minisgl_15x150_r7_sequential as run
-    from experiments import speleo_15x10_sequential as short
-    assert (run.PIPELINES_PER_GPU, run.ACTIONS, run.REPEATS) == (15, 150, 7)
-    config = run.ENGINE_PARAMS['engine_config']
-    assert config['max_seq_len_override'] == 131072
-    assert config['num_page_override'] * config['page_size'] == 1572864
-    assert {k for k, v in config.items() if v != short.ENGINE_PARAMS['engine_config'][k]} == {
-        'max_seq_len_override', 'num_page_override'}
-    assert run.ROLE_PARAMETERS == short.ROLE_PARAMETERS
-    assert run.DUMP_IMAGES is run.GIF_ON is False
-
-
 def test_each_experiment_declares_its_own_parameters():
     import ast
     root = Path(__file__).resolve().parents[1]
     for path in (root/'experiments').glob('*.py'):
         if path.name == '__init__.py':
             continue
-        assert path.stem.endswith('_sequential'), path
+        assert path.stem.endswith(('_fast_falsifer', '_fast_async')), path
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
@@ -74,15 +61,29 @@ def test_each_experiment_declares_its_own_parameters():
             'observer', 'planner', 'executor'}, path
 
 
+def test_long_fast_config_keeps_archived_h200_capacities():
+    from experiments import minisgl_15x150_r7_fast_async as run
+    assert (run.PIPELINES_PER_GPU, run.ACTIONS, run.REPEATS) == (15, 150, 7)
+    c = run.ENGINE_PARAMS['engine_config']
+    assert c['num_page_override'] * c['page_size'] == 786432
+    assert c['max_seq_len_override'] == 32768
+    assert c['max_prefill_rows'] == 1024
+    assert c['shared_cuda_graph_prefill_rows'] == [256, 1024]
+    assert c['cuda_graph_bs'] == [4, 16, 48, 64]
+    assert c['max_running_req'] >= 3 * run.PIPELINES_PER_GPU
+    assert c['shared_cuda_graph_max_depth'] >= 10
+    assert run.DUMP_IMAGES is run.GIF_ON is False
+
+
 def test_historical_layouts_preserved_when_inlining():
     import ast
     root = Path(__file__).resolve().parents[1]/'experiments'
     expected = {
-        'rtx_15x100_cuda_graphs_sequential': (24576, 1024, [4, 16, 48, 64], [256, 1024], 'fp8', False),
-        'rtx_15x10_24d940f_sequential': (8192, 4096, [4, 16, 48, 64], [256, 1024, 4096], 'fp8', False),
-        'rtx_15x10_cuda_graphs_sequential': (8192, 4096, [4, 16, 48, 64], [256, 1024, 4096], 'fp8', False),
-        'rtx_15x10_gdn_bf16_sequential': (8192, 4096, [4, 16, 48, 64], [256, 1024, 4096], 'fp8', True),
-        'rtx_bf16_1x10_prefill_graphs_sequential': (8192, 4096, [4], [256, 1024, 4096], None, False),
+        'rtx_15x100_cuda_graphs_fast_falsifer': (24576, 1024, [4, 16, 48, 64], [256, 1024], 'fp8', False),
+        'rtx_15x10_24d940f_fast_falsifer': (8192, 4096, [4, 16, 48, 64], [256, 1024, 4096], 'fp8', False),
+        'rtx_15x10_cuda_graphs_fast_falsifer': (8192, 4096, [4, 16, 48, 64], [256, 1024, 4096], 'fp8', False),
+        'rtx_15x10_gdn_bf16_fast_falsifer': (8192, 4096, [4, 16, 48, 64], [256, 1024, 4096], 'fp8', True),
+        'rtx_bf16_1x10_prefill_graphs_fast_falsifer': (8192, 4096, [4], [256, 1024, 4096], None, False),
     }
     for name, layout in expected.items():
         tree = ast.parse((root/(name+'.py')).read_text())
