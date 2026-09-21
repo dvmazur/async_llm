@@ -6,13 +6,11 @@ import triton.language as tl
 
 
 def chunk_gdn(q, k, v, g, beta, initial, cu, chunk_indices, chunk_offsets,
-              output_final_state=False):
+              output_final_state=False, *, skip_empty_states=False):
+    """With skip_empty_states, empty final-state entries are unspecified/unused."""
     from fla.modules.l2norm import l2norm_fwd
-    from fla.ops.utils import chunk_local_cumsum
     from fla.ops.utils.constant import RCP_LN2
-    from fla.ops.gated_delta_rule.chunk_fwd import chunk_gated_delta_rule_fwd_intra
-    from fla.ops.common.chunk_delta_h import chunk_gated_delta_rule_fwd_kernel_h_blockdim64
-    from fla.ops.common.chunk_o import chunk_fwd_o
+    from .gdn_fla_guards import kernels
 
     # Match FLA's public input_guard before entering lower-level kernels.
     q, k, v, g, beta = (x.contiguous() for x in (q, k, v, g, beta))
@@ -20,25 +18,34 @@ def chunk_gdn(q, k, v, g, beta, initial, cu, chunk_indices, chunk_offsets,
     k, _ = l2norm_fwd(k)
     b, t, h, dk = k.shape
     hv, dv = v.shape[-2:]
-    gc = chunk_local_cumsum(g, chunk_size=64, scale=RCP_LN2,
-                            cu_seqlens=cu, chunk_indices=chunk_indices)
-    w, u, _ = chunk_gated_delta_rule_fwd_intra(
-        k=k, v=v, g=gc, beta=beta.float(), cu_seqlens=cu,
-        chunk_indices=chunk_indices, chunk_size=64)
-    # The output kernel reads h by global chunk slot, including masked dummy
-    # slots. Allocate all capacity slots and don't read uninitialized scratch.
-    states = k.new_zeros(b, len(chunk_indices), hv, dk, dv)
-    values = torch.empty_like(u)
+    (cs, cs_body), (kk, kk_body), (wu, wu_body), (hs, hs_body), (o, o_body) = kernels()
+    n, chunks = len(cu)-1, len(chunk_indices)
+    meta = dict(T=t, N=n, BT=64, IS_VARLEN=True)
+    gc = torch.empty_like(g, dtype=torch.float32)  # FLA cumsum's default output dtype.
+    cs[(chunks, b*hv)](chunk_offsets, g, gc, RCP_LN2, cu, chunk_indices,
+                       B=b, H=hv, REVERSE=False, BODY=cs_body, **meta)
+    coefficients = k.new_zeros(b, t, hv, 64)  # FLA writes only the lower triangle.
+    beta = beta.float()
+    kk[(chunks, b*hv)](chunk_offsets, k, gc, beta, coefficients, cu, chunk_indices,
+                       H=h, HV=hv, K=dk, BC=16, BODY=kk_body, **meta)
+    w, u = k.new_empty(b, t, hv, dk), torch.empty_like(v)
+    wu[(chunks, b*hv)](chunk_offsets, k, v, beta, w, u, coefficients, gc, cu, chunk_indices,
+                       H=h, HV=hv, K=dk, V=dv, BK=64, BV=64, BODY=wu_body, **meta)
+    # Only actual chunks are read by O, and H writes each before O runs.
+    # Unused scratch can remain uninitialized; no capacity-wide memset needed.
+    states = k.new_empty(b, chunks, hv, dk, dv)
+    values = torch.empty_like(v)
     final = initial.new_empty(initial.shape) if output_final_state else None
-    # Bypass only the wrapper which caches chunk_offsets by tensor identity.
-    # All recurrence math is the installed FLA kernel, unchanged.
-    chunk_gated_delta_rule_fwd_kernel_h_blockdim64[
-        lambda meta: (tr.cdiv(dv, meta['BV']), (len(cu)-1)*hv)](
-            k=k, v=u, w=w, v_new=values, g=gc, gk=None, h=states,
-            h0=initial, ht=final, cu_seqlens=cu, chunk_offsets=chunk_offsets,
-            T=t, H=h, HV=hv, K=dk, V=dv, BT=64, STATE_V_FIRST=False)
-    out = chunk_fwd_o(q=q, k=k, v=values, h=states, g=gc, scale=dk**-.5,
-                      cu_seqlens=cu, chunk_indices=chunk_indices, chunk_size=64)
+    # Preserve final=initial for empty sequences by default. Joint capture
+    # opts out: inactive final entries have no consumer/write pointer.
+    hs[lambda m: (tr.cdiv(dv, m['BV']), n*hv)](
+        k, u, w, values, gc, states, initial, final, cu, chunk_offsets,
+        T=t, H=h, HV=hv, K=dk, V=dv, BT=64, STATE_V_FIRST=False,
+        SKIP_EMPTY=skip_empty_states or final is None, BODY=hs_body)
+    out = torch.empty_like(v)
+    o[lambda m: (tr.cdiv(dv, m['BV']), chunks, b*hv)](
+        chunk_offsets, q, k, values, states, gc, out, cu, chunk_indices, dk**-.5,
+        T=t, N=n, H=h, HV=hv, K=dk, V=dv, BT=64, STATE_V_FIRST=False, BODY=o_body)
     out = out.masked_fill(torch.arange(t, device=q.device)[None, :, None, None] >= cu[-1], 0)
     return out, final
 
@@ -46,8 +53,11 @@ def chunk_gdn(q, k, v, g, beta, initial, cu, chunk_indices, chunk_offsets,
 @tr.jit
 def _affine_scan(Read, Write, Key, Value, Alpha, Beta, Cu,
                  H: tl.constexpr, DK: tl.constexpr, DV: tl.constexpr,
-                 BK: tl.constexpr, R: tl.constexpr):
+                 BK: tl.constexpr, R: tl.constexpr, ONE_TOKEN: tl.constexpr):
     worker, head, tile = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    oa, ob = tl.load(Write + worker * 3), tl.load(Write + worker * 3 + 1)
+    if (oa == 0) & (ob == 0):
+        return
     rows = tile * R + tl.arange(0, R)
     columns = tl.arange(0, BK)
     is_a = rows < DK
@@ -61,7 +71,10 @@ def _affine_scan(Read, Write, Key, Value, Alpha, Beta, Cu,
     state = tl.load(pointer[:, None] + offset, mask & present[:, None], other=0)
     identity = (local_row[:, None] == columns[None, :]) & is_a[:, None]
     state = tl.where(present[:, None], state, identity.to(tl.float32))
-    start, end = tl.load(Cu + worker), tl.load(Cu + worker + 1)
+    if ONE_TOKEN:
+        start, end = worker, worker + 1
+    else:
+        start, end = tl.load(Cu + worker), tl.load(Cu + worker + 1)
     for t in range(start, end):
         key = tl.load(Key + (t * H + head) * DK + columns, columns < DK, other=0)
         value = tl.load(Value + (t * H + head) * DV + local_row,
@@ -98,18 +111,19 @@ def _affine_scan(Read, Write, Key, Value, Alpha, Beta, Cu,
             constraints="=f,f,f,f,f,f,f",
             args=[state, alpha, beta, dot[:, None], key[None, :], value[:, None]],
             dtype=tl.float32, is_pure=True, pack=1)
-    oa, ob = tl.load(Write + worker * 3), tl.load(Write + worker * 3 + 1)
     destination = tl.where(is_a, oa, ob).to(tl.pointer_type(tl.float32))
     enabled = tl.where(is_a, oa != 0, ob != 0)
     tl.store(destination[:, None] + offset, state, mask & enabled[:, None])
 
 
-def capture_affine_scan(read, write, key, value, alpha, beta, cu):
+def capture_affine_scan(read, write, key, value, alpha, beta, cu=None, *, l2norm_eps=1e-6):
+    """Pointer update; absent cu means one token per worker (decode)."""
     key = key.float()
-    key = key * torch.rsqrt((key * key).sum(-1, keepdim=True) + 1e-6)
+    key = key * torch.rsqrt((key * key).sum(-1, keepdim=True) + l2norm_eps)
     value, alpha, beta = value.float().contiguous(), alpha.float().contiguous(), beta.float().contiguous()
     _, h, dk = key.shape
     dv = value.shape[-1]
-    _affine_scan[(len(cu)-1, h, tr.cdiv(dk + dv, 8))](
+    _affine_scan[(read.shape[0], h, tr.cdiv(dk + dv, 8))](
         read, write, key.contiguous(), value, alpha, beta, cu,
-        h, dk, dv, max(8, tr.next_power_of_2(dk)), 8, num_warps=2, enable_fp_fusion=False)
+        h, dk, dv, max(8, tr.next_power_of_2(dk)), 8, cu is None,
+        num_warps=2, enable_fp_fusion=False)

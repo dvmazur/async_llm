@@ -7,7 +7,7 @@ import torch
 
 from minisgl.shared_cache.gdn import SharedCacheGDN
 from minisgl.shared_cache.gdn_affine import compose_gdn_affines, init_gdn_affine
-from minisgl.shared_cache.gdn_decode import GDNDecodeBuffers, prefix_links
+from minisgl.shared_cache.gdn_decode import GDNDecodeBuffers, prefix_links, terminal_sinks
 from minisgl.shared_cache.shared_block import CacheBlock
 
 
@@ -52,6 +52,60 @@ def test_links_share_prefixes_not_equal_suffixes():
         prefix_links([[a, b]], 1, 1)
     with pytest.raises(ValueError, match="capacity"):
         prefix_links([[a], [b]], 1, 1)
+
+
+def test_terminal_sinks_deliver_once_across_depths():
+    a, b, c = [object() for _ in range(3)]
+    _, _, terminals = prefix_links([[a], [a, b], [a], [], [a, b, c]], 7, 5)
+    offsets, workers, empty = terminal_sinks(terminals)
+    deliveries = []
+    for depth, row in enumerate(offsets):
+        for node in range(7):
+            for w in workers[depth][row[node]:row[node+1]]:
+                deliveries.append((depth, node, w))
+    assert deliveries == [(0, 0, 0), (0, 0, 2), (1, 0, 1), (2, 0, 4)]
+    assert empty == [False, False, False, True, False, True, True]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA state ownership')
+@pytest.mark.parametrize('prefill', [False, True])
+@torch.inference_mode()
+def test_frozen_worker_does_not_retain_other_workers_output_storage(prefill):
+    from minisgl.shared_cache.gdn_prefill import GDNPrefillBuffers
+    ar = SharedCacheGDN(num_heads=2, head_k_dim=8, head_v_dim=6,
+                         conv_dim=7, conv_kernel=4, device=torch.device('cuda'))
+    targets = [CacheBlock(ar.device) for _ in range(4)]
+    cls = GDNPrefillBuffers if prefill else GDNDecodeBuffers
+    buf = cls(ar, 2, 4, 1, torch.bfloat16, **({'rows': 4} if prefill else {}))
+
+    def publish(group, value):
+        args = ([[t] for t in group], group)
+        buf.prepare(*args, **({'lengths': [1]*len(group)} if prefill else {}))
+        for outputs in buf._current[1:4]:
+            for tensor in outputs:
+                tensor.fill_(value)
+        buf.publish()
+        torch.cuda.synchronize()
+        buf.retire_completed()
+        assert not buf._pending
+
+    publish(targets, 1)
+    expected = (2*2*8*8*4, 2*2*6*8*4, 2*7*4*2)
+    for kind, size in enumerate(expected):
+        storages = []
+        for target in targets:
+            rows = [(*target.linear_affine[layer], target.linear_conv_state[layer])[kind]
+                    for layer in range(2)]
+            # Layers share a worker's storage, but workers never share storage.
+            assert rows[0].untyped_storage().data_ptr() == rows[1].untyped_storage().data_ptr()
+            assert rows[0].untyped_storage().nbytes() == size
+            storages.append(rows[0].untyped_storage().data_ptr())
+        assert len(set(storages)) == len(targets)
+    saved = targets[1].linear_affine[0][0]
+    publish(targets[1:], 2)  # worker0 freezes while the others keep decoding
+    assert torch.all(saved == 1)
+    assert torch.all(targets[0].linear_affine[1][0] == 1)
+    assert torch.all(targets[1].linear_affine[0][0] == 2)
 
 
 def make_case(dtype, dk=8, dv=6):
@@ -186,3 +240,69 @@ def test_failed_step_does_not_publish_and_duplicate_writers_rejected():
     assert all(targets[0].linear_affine[l][0] is pair[0] for l, pair in original.items())
     with pytest.raises(ValueError, match="distinct write"):
         buf.prepare(chains, [targets[0]] * 5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA pointer preparation')
+@pytest.mark.parametrize('dtype', [torch.bfloat16, torch.float16, torch.float32])
+@torch.inference_mode()
+def test_prepare_uses_event_owned_refs_and_no_temporary_layer_views(dtype, monkeypatch):
+    ar, chains, targets, _ = make_case(dtype)
+    buf = GDNDecodeBuffers(ar, 2, 6, 5, dtype)
+    query, record = torch.cuda.current_stream, torch.Tensor.record_stream
+    streams, registrations = [], []
+
+    def current(device=None):
+        stream = query(device)
+        streams.append(stream)
+        return stream
+
+    def registered(tensor, stream):
+        registrations.append(stream)
+        return record(tensor, stream)
+
+    def no_view(*args, **kwargs):
+        raise AssertionError('prepare must not index tensors just to get layer pointers')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(torch.cuda, 'current_stream', current)
+        patch.setattr(torch.Tensor, 'record_stream', registered)
+        patch.setattr(torch.Tensor, '__getitem__', no_view)
+        buf.prepare(chains, targets)
+    try:
+        # The completion-event-owned descriptors retain source storage directly.
+        assert not streams and not registrations
+        pointers = buf.write_ptrs.cpu().tolist()
+        for layer in range(buf.layers):
+            for worker in range(len(targets)):
+                assert pointers[layer][worker] == [out[worker][layer].data_ptr()
+                                                   for out in buf._current[1:4]]
+            assert all(p == [0, 0, 0] for p in pointers[layer][len(targets):])
+    finally:
+        buf.publish(False)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA stream lifetime')
+@torch.inference_mode()
+def test_prepare_retains_sources_until_cross_stream_consumer_finishes():
+    import weakref
+    ar, _, _, _ = make_case(torch.bfloat16)
+    buf = GDNDecodeBuffers(ar, 2, 1, 1, torch.bfloat16)
+    source, target = CacheBlock(ar.device), CacheBlock(ar.device)
+    producer, consumer = torch.cuda.Stream(), torch.cuda.Stream()
+    with torch.cuda.stream(producer):
+        tensor = torch.full((7, 4), 3., device=ar.device, dtype=torch.bfloat16)
+        source.linear_conv_state[0] = tensor
+    ref = weakref.ref(tensor)
+    consumer.wait_stream(producer)
+    with torch.cuda.stream(consumer):
+        buf.prepare([[source]], [target])
+        source.linear_conv_state.clear()
+        del tensor
+        assert ref() is not None
+        actual = buf.conv(0).clone()
+        buf.publish(False)
+        assert ref() is not None  # event-owned refs still protect raw pointers
+    consumer.synchronize()
+    torch.testing.assert_close(actual, torch.full_like(actual, 3.), rtol=0, atol=0)
+    buf.retire_completed()
+    assert ref() is None and not buf._pending

@@ -1,9 +1,10 @@
 """Prepared ragged prefill using the same block state/addressing as decode."""
 
 import torch
-import torch.nn.functional as F
 
 from minisgl.kernel.gdn_prefill import capture_affine_scan, chunk_gdn
+from minisgl.kernel.gdn_conv import prefill_conv
+from minisgl.kernel.gdn_prefill_io import pack_initial, store_affines
 from .gdn_decode import GDNDecodeBuffers
 
 
@@ -16,10 +17,16 @@ class GDNPrefillBuffers(GDNDecodeBuffers):
         self.cu = torch.zeros(workers + 1, dtype=torch.int32, **args)
         self.chunk_offsets = torch.zeros_like(self.cu)
         self.chunk_indices = torch.zeros(chunks, 2, dtype=torch.int32, **args)
-        self.conv_indices = torch.zeros(rows, self.conv_shape[1], dtype=torch.int64, **args)
-        self.state_indices = torch.zeros(workers, self.conv_shape[1], dtype=torch.int64, **args)
         self.row_worker = torch.zeros(rows, dtype=torch.int64, **args)
         self.row_local = torch.zeros(rows, dtype=torch.int64, **args)
+        self.conv_output = torch.empty(self.conv_shape[0], rows, dtype=dtype, **args).t()
+        # Joint FLA: S/A/B share token transforms, but A/B still belong to
+        # individual blocks. Only these packing buffers are persistent scratch.
+        width = self.dv + self.dk + self.dv
+        # Empty slots are never read: both packing and FLA H are guarded.
+        self.joint_initial = torch.empty(workers, self.h, self.dk, width,
+                                         dtype=torch.float32, **args)
+        self.joint_values = torch.zeros(1, rows, self.h, width, dtype=dtype, **args)
         self.prefill_count = 0
 
     def prepare(self, chains, targets, lengths):
@@ -28,49 +35,53 @@ class GDNPrefillBuffers(GDNDecodeBuffers):
         super().prepare(chains, targets)
         lengths = list(lengths) + [0] * (self.workers - len(lengths))
         cu, offsets, chunks = [0], [0], []
-        conv, store, owners, local = [], [], [], []
-        k = self.conv_shape[1]
-        base = self.workers * k
+        owners, local = [], []
         for worker, length in enumerate(lengths):
             start = cu[-1]
             for position in range(length):
-                conv.append([base + start + t if t >= 0 else worker * k + k + t
-                             for t in range(position - k + 1, position + 1)])
                 owners.append(worker)
                 local.append(position)
-            store.append([base + start + t if t >= 0 else worker * k + k + t
-                          for t in range(length - k, length)])
             count = (length + 63) // 64
             chunks.extend((worker, chunk) for chunk in range(count))
             cu.append(start + length)
             offsets.append(offsets[-1] + count)
         pad = self.rows - cu[-1]
-        conv += [[0] * k] * pad
         owners += [0] * pad
         local += [0] * pad
-        # All dummy chunks are outside sequence0, never duplicates of real
-        # chunks. FLA masks their token accesses; h has full capacity storage.
-        chunks += [(0, len(self.chunk_indices) - 1)] * (len(self.chunk_indices) - len(chunks))
         for dst, values in ((self.cu, cu), (self.chunk_offsets, offsets),
-                            (self.chunk_indices, chunks), (self.conv_indices, conv),
-                            (self.state_indices, store), (self.row_worker, owners), (self.row_local, local)):
+                            (self.row_worker, owners), (self.row_local, local)):
             host = torch.tensor(values, dtype=dst.dtype, pin_memory=True)
             self._current[-1].append(host)
             dst.copy_(host, non_blocking=True)
+        # Keep capacity/address, upload only real entries. Guards read the
+        # actual count from chunk_offsets[-1] before touching this table.
+        if chunks:
+            host = torch.tensor(chunks, dtype=self.chunk_indices.dtype, pin_memory=True)
+            self._current[-1].append(host)
+            self.chunk_indices[:len(chunks)].copy_(host, non_blocking=True)
 
     def convolve(self, layer, qkv, weight):
-        prior = self.conv(layer).transpose(1, 2).reshape(-1, self.conv_shape[0])
-        inputs = torch.cat([prior, qkv], dim=0)
-        # Keep the original channel-major conv result. Downstream Torch key
-        # normalization uses a strided reduction; changing this layout changes
-        # its FP32 rounding and can amplify in later BF16 recurrent steps.
-        total = torch.zeros(qkv.shape[1], qkv.shape[0], device=qkv.device, dtype=torch.float32)
-        # Match the old prefill's BF16 product rounding before FP32 accumulation.
-        for tap in range(self.conv_shape[1]):
-            total += (inputs.index_select(0, self.conv_indices[:, tap]).t() * weight[:, 0, tap, None]).float()
-        new_state = inputs[self.state_indices].transpose(1, 2)
-        self.store_conv(layer, new_state)
-        return F.silu(total).to(qkv.dtype).t()
+        return prefill_conv(qkv, weight, self.read_ptrs[layer], self.write_ptrs[layer],
+                            self.cu, self.row_worker, self.row_local, self.conv_output)
+
+    def core_and_capture(self, layer, q, k, v, g, beta, initial, use_fla, torch_chunk):
+        if not use_fla:
+            out = self.core(q, k, v, g, beta, initial, False, torch_chunk)
+            self.capture_prefill(layer, k, v, g.exp(), beta)
+            return out
+        self.prefill_count += 1
+        pack_initial(self.read_ptrs[layer], initial, self.joint_initial, self.cu)
+        self.joint_values[0, ..., :self.dv].copy_(v)
+        self.joint_values[0, ..., self.dv + self.dk:].copy_(v)
+        # One installed FLA pass, NOT a second FP32 affine pass. Its operands
+        # (including those updating A/B) use activation dtype, normally BF16;
+        # accumulators/final A/B are FP32. This changes capture numerics from
+        # the old FP32 token scan; external model parity is the quality gate.
+        out, final = chunk_gdn(q[None], k[None], self.joint_values, g[None], beta[None],
+                               self.joint_initial, self.cu, self.chunk_indices,
+                               self.chunk_offsets, output_final_state=True, skip_empty_states=True)
+        store_affines(self.write_ptrs[layer], final, self.dv)
+        return out[0, ..., :self.dv].contiguous()
 
     def core(self, q, k, v, g, beta, initial, use_fla, torch_chunk):
         self.prefill_count += 1
