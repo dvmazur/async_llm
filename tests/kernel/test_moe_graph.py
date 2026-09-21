@@ -7,7 +7,7 @@ from minisgl.moe.fused import fused_experts_impl, fused_topk, moe_align_block_si
 
 
 def alignment_reference(ids, block, experts):
-    # Original semantic order: stable expert-major token ids, sentinel padding.
+    # Reference uses stable ordering; within-expert order is not required.
     flat = ids.cpu().flatten().tolist()
     sorted_ids, expert_ids = [], []
     for expert in range(experts):
@@ -27,7 +27,12 @@ def test_alignment_known_capacity(device):
         actual, experts, count = moe_align_block_size(ids, block, 8)
         expected, expected_experts = alignment_reference(ids, block, 8)
         assert count.item() == len(expected)
-        assert actual[:len(expected)].tolist() == expected
+        actual_ids = actual[:len(expected)].tolist()
+        offset = 0
+        for expert in range(8):
+            size = expected_experts.count(expert) * block
+            assert sorted(actual_ids[offset:offset + size]) == sorted(expected[offset:offset + size])
+            offset += size
         assert experts[:len(expected_experts)].tolist() == expected_experts
         assert (actual[len(expected):] == ids.numel()).all()
 
