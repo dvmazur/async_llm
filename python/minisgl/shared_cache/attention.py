@@ -49,6 +49,7 @@ import torch
 from minisgl.attention import BaseAttnMetadata
 
 from .rope_correction import apply_rope_correction
+from .attention_metadata import page_numbers, upload_page_indices
 
 if TYPE_CHECKING:
     from flashinfer import BatchDecodeWithPagedKVCacheWrapper
@@ -85,6 +86,7 @@ class SharedCacheAttnMetadata(BaseAttnMetadata):
     last_indices: Optional[torch.Tensor] = None
     phase: Literal["decode", "prefill_batch"] = "decode"
     _plan_refs: tuple = field(default=(), repr=False)
+    graph_buffers: object | None = field(default=None, repr=False)
 
     def get_last_indices(self, bs: int) -> torch.Tensor:
         if self.phase == "prefill_batch":
@@ -175,6 +177,7 @@ class SharedCacheAttention:
         self.device = device
 
         self._workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+        self._workspace_prepared = False
         gqa = num_qo_heads // num_kv_heads
         # Primary paged decode wrapper (planned with the pool's real page_size).
         self.wrapper: BatchDecodeWithPagedKVCacheWrapper = BatchDecodeWithPagedKVCacheWrapper(
@@ -205,6 +208,35 @@ class SharedCacheAttention:
 
         self._plan_event = torch.cuda.Event()
         self._plan_event.record()
+
+    def prepare_workspace(self, profiles) -> None:
+        """Reserve the complete fixed-buffer catalogue before planning/capture.
+
+        Both decode and prefill wrappers share one float arena but own their int
+        plan storage. Never resize/rebind a captured profile. Existing eager
+        wrappers retain their original storage and are not invalidated here.
+        """
+        profiles = tuple(profiles)
+        if not profiles:
+            return
+        if self._workspace_prepared or torch.cuda.is_current_stream_capturing():
+            raise RuntimeError('Attention workspace must be prepared once before capture')
+        if any(p.attention is not self for p in profiles):
+            raise ValueError('Attention workspace profiles must belong to this instance')
+        requirements = [r for p in profiles for r in p.workspace_requirements()]
+        size = max(self._workspace.numel(), *(r[1] for r in requirements))
+        workspace = self._workspace
+        if size > workspace.numel():
+            workspace = torch.empty(size, device=self.device, dtype=torch.uint8)
+        # Allocate before rebinding any wrapper, so a device OOM cannot leave
+        # only half the catalogue pointing at the new arena.
+        bindings = [(wrapper, torch.empty(max(16, int_bytes), device=self.device,
+                                         dtype=torch.uint8))
+                    for wrapper, _, int_bytes in requirements]
+        for wrapper, ints in bindings:
+            wrapper.reset_workspace_buffer(workspace, ints)
+        self._workspace = workspace
+        self._workspace_prepared = True
 
     def _rope(self, x: torch.Tensor, corrections: torch.Tensor) -> torch.Tensor:
         """Block-relative RoPE correction on ``x [N, heads, head_dim]``.
@@ -252,6 +284,7 @@ class SharedCacheAttention:
         group: WorkerGroup,
         new_page_for_block: Dict[int, Optional[int]],
         new_token_slots: torch.Tensor,
+        graph_buffers=None,
     ) -> SharedCacheAttnMetadata:
         """
         Build per-(worker, segment) sub-requests for one decode step and plan
@@ -275,7 +308,9 @@ class SharedCacheAttention:
         main_sub_worker: List[int] = []
         main_sub_loc: List[int] = []
         main_sub_slot: List[int] = []
-        main_kv_parts: List[torch.Tensor] = []  # page-number tensors
+        main_kv_parts: List[List[int]] = []
+        page_snapshot: Dict[int, List[int]] = {}
+        token_slots_cpu = None
         main_page_counts: List[int] = []
         main_seq_lens: List[int] = []
         main_last_page: List[int] = []
@@ -307,14 +342,10 @@ class SharedCacheAttention:
                 if length == 0:
                     mprefix += mspan
                     continue
-                page_nums = b.page_numbers_tensor()
                 # If this block is written this step and the new token started a
                 # fresh page, that page must be visible to the reader as well.
-                new_page = new_page_for_block.get(id(b)) if id(b) in write_set else None
-                if new_page is not None:
-                    extra = torch.tensor([new_page // P], dtype=torch.int32, device=self.device)
-                    page_nums = torch.cat([page_nums, extra])
-                n_pages_seg = int(page_nums.numel())
+                page_nums = page_numbers(b, page_snapshot, new_page_for_block.get(id(b)))
+                n_pages_seg = len(page_nums)
                 main_sub_worker.append(w)
                 main_sub_loc.append(mtotal - mprefix - 1)
                 main_sub_slot.append(n_seg)
@@ -331,19 +362,26 @@ class SharedCacheAttention:
                 aux_sub_worker.append(w)
                 aux_sub_loc.append(wt.mrope_span)
                 aux_sub_slot.append(n_seg)
-                aux_kv_slots.append(int(new_token_slots[w].item()))
+                if token_slots_cpu is None:
+                    token_slots_cpu = new_token_slots.cpu().tolist()
+                aux_kv_slots.append(token_slots_cpu[w])
                 n_seg += 1
 
             max_segments = max(max_segments, n_seg)
 
         n_main = len(main_sub_worker)
         n_aux = len(aux_sub_worker)
+        if graph_buffers is not None:
+            return graph_buffers.plan(
+                main_sub_worker, main_sub_loc, main_sub_slot, main_kv_parts,
+                main_page_counts, main_seq_lens, main_last_page,
+                aux_sub_worker, aux_sub_loc, aux_kv_slots)
         CPU_KWARGS = {"device": "cpu", "dtype": torch.int32, "pin_memory": True}
         plan_refs: List[torch.Tensor] = []
 
         self._plan_event.synchronize()
         if n_main > 0:
-            kv_indices = torch.cat(main_kv_parts).to(dtype=torch.int32)
+            kv_indices = upload_page_indices(main_kv_parts, self.device, plan_refs)
             kv_indptr_cpu = (
                 torch.tensor([0] + main_page_counts, **CPU_KWARGS).cumsum_(0).to(torch.int32)
             )
@@ -367,7 +405,7 @@ class SharedCacheAttention:
             plan_refs += [kv_indices, kv_indptr_cpu, seq_lens_cpu, last_page_cpu]
 
         if n_aux > 0:
-            aux_indices = torch.tensor(aux_kv_slots, dtype=torch.int32, device=self.device)
+            aux_indices = upload_page_indices([aux_kv_slots], self.device, plan_refs)
             aux_indptr_cpu = torch.arange(0, n_aux + 1, **CPU_KWARGS)
             aux_seq_lens_cpu = torch.ones(n_aux, **CPU_KWARGS)
             aux_last_page_cpu = torch.ones(n_aux, **CPU_KWARGS)
@@ -409,7 +447,7 @@ class SharedCacheAttention:
         meta._plan_refs = tuple(plan_refs)
         return meta
 
-    def prepare_prefill_batch(self, specs: List[PrefillSpec]) -> SharedCacheAttnMetadata:
+    def prepare_prefill_batch(self, specs: List[PrefillSpec], graph_buffers=None) -> SharedCacheAttnMetadata:
         """
         Plan several prefills as one forward, laid out request-major: request
         ``r`` owns output rows ``[offset_r, offset_r + num_new_r)``.
@@ -431,6 +469,8 @@ class SharedCacheAttention:
         grouping and ``SharedCacheSession.prefill_batch`` both refuse it).
         """
         assert specs, "prepare_prefill_batch needs at least one request"
+        if graph_buffers is not None:
+            return graph_buffers.plan(specs)
         P = self.page_size
         # A single 3-D request forces every row onto the 3-axis mRoPE path, since
         # ``sub_loc`` is one tensor; text rows simply repeat their position thrice.
@@ -445,7 +485,8 @@ class SharedCacheAttention:
         ctx_gather: List[int] = []
         ctx_slot: List[int] = []
         ctx_loc: List[torch.Tensor] = []
-        ctx_kv_parts: List[torch.Tensor] = []
+        ctx_kv_parts: List[List[int]] = []
+        page_snapshot: Dict[int, List[int]] = {}
         ctx_page_counts: List[int] = []
         ctx_q_lens: List[int] = []
         ctx_seq_lens: List[int] = []
@@ -454,7 +495,7 @@ class SharedCacheAttention:
         self_gather: List[int] = []
         self_slot: List[int] = []
         self_loc: List[torch.Tensor] = []
-        self_kv_parts: List[torch.Tensor] = []
+        self_kv_parts: List[List[int]] = []
         self_page_counts: List[int] = []
         self_q_lens: List[int] = []
         self_seq_lens: List[int] = []
@@ -480,15 +521,15 @@ class SharedCacheAttention:
                 ctx_gather.extend(rows)
                 ctx_slot.extend([j] * S)
                 ctx_loc.append(rel + (self_offset - prefix))
-                ctx_kv_parts.append(block.page_numbers_tensor())
+                ctx_kv_parts.append(page_numbers(block, page_snapshot))
                 ctx_page_counts.append(block.num_pages)
                 ctx_q_lens.append(S)
                 ctx_seq_lens.append(block.num_tokens)
                 ctx_last_page.append(block.last_page_len)
                 prefix += span
 
-            pages = (spec.self_page_starts.to(self.device) // P).to(torch.int32)
-            n_pages = int(pages.numel())
+            pages = [start // P for start in spec.self_page_starts.cpu().tolist()]
+            n_pages = len(pages)
             self_len = T + S
             self_gather.extend(rows)
             self_slot.extend([len(spec.context)] * S)
@@ -523,7 +564,7 @@ class SharedCacheAttention:
         self._plan_event.synchronize()
         if ctx_q_lens:
             # context segments lie entirely in the new tokens' past -> no masking
-            ctx_kv_indices = torch.cat(ctx_kv_parts).to(torch.int32)
+            ctx_kv_indices = upload_page_indices(ctx_kv_parts, self.device, plan_refs)
             ctx_kv_indptr = (
                 torch.tensor([0] + ctx_page_counts, **CPU_KWARGS).cumsum_(0).to(torch.int32)
             )
@@ -536,6 +577,7 @@ class SharedCacheAttention:
                 paged_kv_indices=ctx_kv_indices,
                 paged_kv_last_page_len=ctx_last_cpu,
                 seq_lens=ctx_seq_cpu,
+                max_token_per_sequence=max(ctx_q_lens),
                 causal=False,
                 **plan_common,
             )
@@ -543,7 +585,7 @@ class SharedCacheAttention:
 
         # Each request attends to its own block causally; with qo_len = S <=
         # kv_len = T + S FlashInfer aligns the mask to the end, i.e. an extend prefill.
-        self_kv_indices = torch.cat(self_kv_parts).to(torch.int32)
+        self_kv_indices = upload_page_indices(self_kv_parts, self.device, plan_refs)
         self_kv_indptr = (
             torch.tensor([0] + self_page_counts, **CPU_KWARGS).cumsum_(0).to(torch.int32)
         )
@@ -556,6 +598,7 @@ class SharedCacheAttention:
             paged_kv_indices=self_kv_indices,
             paged_kv_last_page_len=self_last_cpu,
             seq_lens=self_seq_cpu,
+            max_token_per_sequence=max(self_q_lens),
             causal=True,
             **plan_common,
         )
@@ -618,8 +661,10 @@ class SharedCacheAttention:
 
         outs: List[torch.Tensor] = []
         lses: List[torch.Tensor] = []
+        main_wrapper = self.wrapper if meta.graph_buffers is None else meta.graph_buffers.main
+        aux_wrapper = self.aux_wrapper if meta.graph_buffers is None else meta.graph_buffers.aux
         if meta.n_main > 0:
-            out_m, lse_m = self.wrapper.run(
+            out_m, lse_m = main_wrapper.run(
                 q=q_sub[: meta.n_main], paged_kv_cache=(k_paged, v_paged), return_lse=True
             )
             outs.append(out_m)
@@ -629,7 +674,7 @@ class SharedCacheAttention:
             # offset -> read it through the flattened (page_size=1) pool.
             kflat = k_paged.view(-1, 1, self.num_kv_heads, D)
             vflat = v_paged.view(-1, 1, self.num_kv_heads, D)
-            out_a, lse_a = self.aux_wrapper.run(
+            out_a, lse_a = aux_wrapper.run(
                 q=q_sub[meta.n_main :], paged_kv_cache=(kflat, vflat), return_lse=True
             )
             outs.append(out_a)
@@ -637,6 +682,10 @@ class SharedCacheAttention:
 
         out = outs[0] if len(outs) == 1 else torch.cat(outs, dim=0)
         lse = lses[0] if len(lses) == 1 else torch.cat(lses, dim=0)
+        if meta.graph_buffers is not None:
+            mask = meta.graph_buffers.valid
+            out = torch.where(mask[:, None, None], out, 0)
+            lse = torch.where(mask[:, None], lse, -5.0e4)
 
         if meta.max_segments == 1 and meta.n_aux == 0:
             # Every worker has exactly one paged segment, emitted in worker order.
@@ -667,11 +716,18 @@ class SharedCacheAttention:
         n_ctx_rows = meta.n_ctx_rows
 
         kv = (self.kv_cache.k_cache(layer_id), self.kv_cache.v_cache(layer_id))
-        out_self, lse_self = self.prefill_self_wrapper.run(q_sub[n_ctx_rows:], kv, return_lse=True)
+        buffers = meta.graph_buffers
+        self_wrapper = self.prefill_self_wrapper if buffers is None else buffers.aux
+        ctx_wrapper = self.prefill_ctx_wrapper if buffers is None else buffers.main
+        out_self, lse_self = (self_wrapper.run(q_sub[n_ctx_rows:], kv, return_lse=True)
+                             if buffers is None else buffers.run(
+                                 self_wrapper, q_sub[n_ctx_rows:], kv, buffers.used_self_rows))
         if n_ctx_rows == 0:
             # No request has context: the causal self segment is the whole answer.
             return out_self.view(N, -1)
-        out_ctx, lse_ctx = self.prefill_ctx_wrapper.run(q_sub[:n_ctx_rows], kv, return_lse=True)
+        out_ctx, lse_ctx = (ctx_wrapper.run(q_sub[:n_ctx_rows], kv, return_lse=True)
+                           if buffers is None else buffers.run(
+                               ctx_wrapper, q_sub[:n_ctx_rows], kv, buffers.used_ctx_rows))
 
         from flashinfer import merge_states
 
@@ -685,7 +741,12 @@ class SharedCacheAttention:
         # kernel seeds its accumulator with (``triton/kernels/cascade.py``), and
         # staying finite keeps an all-padding row from going NaN.
         s_pad = torch.full((N * M, Hq), -5.0e4, dtype=torch.float32, device=self.device)
-        v_pad[meta.pad_slot] = torch.cat([out_ctx, out_self], dim=0)
-        s_pad[meta.pad_slot] = torch.cat([lse_ctx, lse_self], dim=0)
+        out = torch.cat([out_ctx, out_self], dim=0)
+        lse = torch.cat([lse_ctx, lse_self], dim=0)
+        if buffers is not None:
+            out = torch.where(buffers.valid[:, None, None], out, 0)
+            lse = torch.where(buffers.valid[:, None], lse, -5.0e4)
+        v_pad[meta.pad_slot] = out
+        s_pad[meta.pad_slot] = lse
         merged, _ = merge_states(v_pad.view(N, M, Hq, D), s_pad.view(N, M, Hq))
         return merged.view(N, -1)
