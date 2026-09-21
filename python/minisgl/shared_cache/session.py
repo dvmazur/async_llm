@@ -1140,6 +1140,9 @@ class SharedCacheSession:
                 if batch.is_decode:
                     self.sc_gdn.prepare_decode(
                         self._model_config.num_linear_layers, self.engine.config.dtype)
+                else:
+                    self.sc_gdn.prepare_prefill(self._model_config.num_linear_layers,
+                                                self.engine.config.dtype, batch.input_ids.numel())
             with ctx.forward_batch(batch):
                 logits = self.engine.model.forward()
             success = True
@@ -1147,4 +1150,5 @@ class SharedCacheSession:
         finally:
             if self.sc_gdn is not None:
                 self.sc_gdn.finish_decode(success)
+                self.sc_gdn.finish_prefill(success)
             ctx.gdn_ar = None
