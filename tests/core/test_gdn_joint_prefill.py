@@ -17,18 +17,19 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason='Joint FLA
 
 
 @pytest.mark.parametrize('dk,dv', [(64, 32), (128, 128)])
+@pytest.mark.parametrize('state_dtype', [torch.float32, torch.bfloat16])
 @torch.inference_mode()
-def test_joint_state_pack_and_store_are_exact(dk, dv):
+def test_joint_state_pack_and_store_are_exact(dk, dv, state_dtype):
     torch.manual_seed(804)
     workers, heads = 3, 2
-    initial = torch.randn(workers, heads, dk, dv, device='cuda')
-    a = torch.randn(1, heads, dk, dk, device='cuda')  # not symmetric: transpose matters
-    b = torch.randn(1, heads, dv, dk, device='cuda')
+    initial = torch.randn(workers, heads, dk, dv, device='cuda', dtype=state_dtype)
+    a = torch.randn(1, heads, dk, dk, device='cuda', dtype=state_dtype)  # nonsymmetric
+    b = torch.randn(1, heads, dv, dk, device='cuda', dtype=state_dtype)
     read = torch.tensor([[a.data_ptr(), b.data_ptr(), 0], [0, 0, 0],
                          [a.data_ptr(), 0, 0]], device='cuda', dtype=torch.int64)
-    joint = torch.empty(workers, heads, dk, dv + dk + dv, device='cuda')
+    joint = torch.empty(workers, heads, dk, dv + dk + dv, device='cuda', dtype=state_dtype)
     pack_initial(read, initial, joint)
-    identity = torch.eye(dk, device='cuda').expand(1, heads, dk, dk)
+    identity = torch.eye(dk, device='cuda', dtype=state_dtype).expand(1, heads, dk, dk)
     expected_a = torch.cat([a, identity, a]).transpose(-1, -2)
     expected_b = torch.cat([b, torch.zeros_like(b), torch.zeros_like(b)]).transpose(-1, -2)
     expected = torch.cat([initial, expected_a, expected_b], -1)
@@ -50,8 +51,9 @@ def test_joint_state_pack_and_store_are_exact(dk, dv):
 
 @pytest.mark.parametrize('dtype', [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize('dk,dv', [(64, 32), (128, 128)])
+@pytest.mark.parametrize('state_dtype', [torch.float32, torch.bfloat16])
 @torch.inference_mode()
-def test_one_joint_fla_pass_replays_ragged_lengths_and_new_allocations(dtype, dk, dv, monkeypatch):
+def test_one_joint_fla_pass_replays_ragged_lengths_and_new_allocations(dtype, dk, dv, state_dtype, monkeypatch):
     fla = pytest.importorskip('fla.ops.gated_delta_rule')
     from minisgl.models.qwen3_5_delta import _chunk_gated_delta_rule
     import minisgl.shared_cache.gdn_prefill as module
@@ -59,7 +61,7 @@ def test_one_joint_fla_pass_replays_ragged_lengths_and_new_allocations(dtype, dk
     torch.manual_seed(808)
     rows, workers, heads = 256, 3, 2
     ar = SharedCacheGDN(num_heads=heads, head_k_dim=dk, head_v_dim=dv,
-                        conv_dim=heads*(2*dk+dv), conv_kernel=4, device=torch.device('cuda'))
+                        conv_dim=heads*(2*dk+dv), conv_kernel=4, device=torch.device('cuda'), state_dtype=state_dtype)
     buf = GDNPrefillBuffers(ar, 1, workers, 2, dtype, rows)
     common = CacheBlock(ar.device)
     common.linear_affine[0] = (torch.randn(1, heads, dk, dk, device='cuda')*.01,
@@ -99,7 +101,7 @@ def test_one_joint_fla_pass_replays_ragged_lengths_and_new_allocations(dtype, dk
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         output = body()
-    assert calls == [(dtype, dv+dk+dv, torch.float32,
+    assert calls == [(dtype, dv+dk+dv, state_dtype,
                       {'output_final_state': True, 'skip_empty_states': True})]*2
     buf.publish(False)
     scratch_ptrs = (buf.joint_initial.data_ptr(), buf.joint_values.data_ptr())
@@ -119,6 +121,7 @@ def test_one_joint_fla_pass_replays_ragged_lengths_and_new_allocations(dtype, dk
                 torch.eye(dk, device='cuda').expand(1, heads, dk, dk),
                 torch.zeros(1, heads, dv, dk, device='cuda')))
             retained.extend((x, x.clone()) for x in target.linear_affine.get(0, ()))
+            a, b = a.to(state_dtype), b.to(state_dtype)
             state = torch.cat([initial[worker:worker+1], a.transpose(-1, -2), b.transpose(-1, -2)], -1)
             section = slice(start, start+length)
             values = torch.cat([v[None, section], torch.zeros(1, length, heads, dk, device='cuda', dtype=dtype),
@@ -140,8 +143,12 @@ def test_one_joint_fla_pass_replays_ragged_lengths_and_new_allocations(dtype, dk
             torch.testing.assert_close(actual[section], core, atol=2e-4, rtol=2e-3)
             for got, ref in zip(target.linear_affine[0], (final[..., dv:dv+dk].transpose(-1, -2),
                                                           final[..., dv+dk:].transpose(-1, -2))):
-                assert got.dtype == torch.float32 and got.is_contiguous()
-                torch.testing.assert_close(got, ref, atol=2e-5, rtol=2e-4)
+                assert got.dtype == state_dtype and got.is_contiguous()
+                # Same BF16 initial values; public FLA returns FP32 final state.
+                # Compare at the explicit storage-rounding boundary.
+                torch.testing.assert_close(got, ref.to(state_dtype),
+                    atol=2e-5 if state_dtype==torch.float32 else 2e-3,
+                    rtol=2e-4 if state_dtype==torch.float32 else 8e-3)
                 assert got.untyped_storage().data_ptr() != buf.joint_initial.untyped_storage().data_ptr()
         assert torch.count_nonzero(actual[start:]) == 0
         for old, saved in retained:

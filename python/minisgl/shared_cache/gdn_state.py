@@ -89,7 +89,8 @@ def prepare_state(block, signature):
     cached = block._gdn_state_cache.prepared if cacheable else None
     if cached is not None and cached.signature == signature:
         return cached
-    device, layers, h, dk, dv, conv_shape, dtype = signature
+    device, layers, h, dk, dv, conv_shape, dtype = signature[:7]
+    state_dtype = signature[7] if len(signature) > 7 else torch.float32
     shapes = ((1, h, dk, dk), (1, h, dv, dk), conv_shape)
     pointers, owners = np.zeros((layers, 3), dtype=np.int64), []
     for layer in range(layers):
@@ -99,7 +100,7 @@ def prepare_state(block, signature):
                 continue
             if tuple(tensor.shape) != shapes[kind]:
                 raise ValueError(f'Unexpected GDN state shape {tensor.shape}, expected {shapes[kind]}')
-            prepared = tensor.to(device=device, dtype=dtype if kind == 2 else torch.float32).contiguous()
+            prepared = tensor.to(device=device, dtype=dtype if kind == 2 else state_dtype).contiguous()
             cacheable &= prepared is tensor
             owners.append(prepared)
             pointers[layer, kind] = prepared.data_ptr()

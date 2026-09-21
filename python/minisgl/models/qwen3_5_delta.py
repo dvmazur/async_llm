@@ -345,10 +345,10 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         # Reads are batched over the forward's chains; the recurrent scan is not,
         # so a batch of prefills runs one scan per request over its own rows.
         prior_conv = ar.prior_conv_states(lin)  # (R, conv_dim, k) | None
-        # fp32 initial state: the delta-rule kernels upcast to fp32 anyway, and
-        # fp32 composition avoids bf16 error compounding across long chains.
+        # FP32 by default; experimental BF16 state is upcast inside delta-rule
+        # kernels, not by materializing another full state tensor here.
         initial_state = ar.compose_initial_recurrent_state(
-            lin, dtype=torch.float32
+            lin, dtype=getattr(ar, 'state_dtype', torch.float32)
         )  # (R,H,dk,dv)|None
         segments = ar.prefill_segments
         if segments is None or len(segments) == 1:
@@ -452,7 +452,7 @@ class Qwen3_5GatedDeltaNet(BaseOP):
         q, kk, v = self._split_heads(qkv2)  # (W, num_v_heads, d)
         beta, g = self._gates(a, b)
         initial_state = ar.compose_initial_recurrent_state(
-            lin, dtype=torch.float32
+            lin, dtype=getattr(ar, 'state_dtype', torch.float32)
         )  # (W,H,dk,dv)|None
         if initial_state is None:
             initial_state = torch.zeros(
@@ -461,7 +461,7 @@ class Qwen3_5GatedDeltaNet(BaseOP):
                 self.head_k_dim,
                 self.head_v_dim,
                 device=x.device,
-                dtype=torch.float32,
+                dtype=getattr(ar, 'state_dtype', torch.float32),
             )
         core, _ = _recurrent_delta(
             q.unsqueeze(1),

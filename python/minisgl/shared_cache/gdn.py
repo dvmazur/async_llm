@@ -37,8 +37,12 @@ class SharedCacheGDN:
         conv_dim: int,
         conv_kernel: int,
         device: torch.device,
+        state_dtype: torch.dtype = torch.float32,
     ) -> None:
         self.device = device
+        if state_dtype not in (torch.float32, torch.bfloat16):
+            raise ValueError('Shared GDN state dtype must be float32 or bfloat16')
+        self.state_dtype = state_dtype
         self.num_heads = num_heads  # H (post GQA-repeat, = linear_num_value_heads)
         self.head_k_dim = head_k_dim
         self.head_v_dim = head_v_dim
@@ -150,8 +154,8 @@ class SharedCacheGDN:
                 if key in prefix_memo:
                     acc = prefix_memo[key]
                     continue
-                A_b = pair[0].to(dtype=torch.float32, device=self.device)
-                B_b = pair[1].to(dtype=torch.float32, device=self.device)
+                A_b = pair[0].to(dtype=self.state_dtype, device=self.device)
+                B_b = pair[1].to(dtype=self.state_dtype, device=self.device)
                 if acc is None:
                     acc = (A_b, B_b)  # first real block: no identity compose needed
                 else:
@@ -165,7 +169,7 @@ class SharedCacheGDN:
                     num_heads=self.num_heads,
                     d_k=self.head_k_dim,
                     d_v=self.head_v_dim,
-                    dtype=torch.float32,
+                    dtype=self.state_dtype,
                     device=self.device,
                 )
             return acc
@@ -261,7 +265,8 @@ class SharedCacheGDN:
             )
 
         for w, target in enumerate(targets):
-            target.linear_affine[lin_idx] = (A[w : w + 1], B[w : w + 1])
+            target.linear_affine[lin_idx] = (A[w : w + 1].to(self.state_dtype),
+                                             B[w : w + 1].to(self.state_dtype))
 
     def set_conv_states(
         self, lin_idx: int, conv: torch.Tensor, workers: Optional[Sequence[int]] = None

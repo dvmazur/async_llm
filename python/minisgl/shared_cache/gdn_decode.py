@@ -69,10 +69,11 @@ class GDNDecodeBuffers:
     def __init__(self, ar, layers: int, workers: int, depth: int, dtype):
         self.workers, self.depth, self.layers = workers, depth, layers
         self.dtype, self.device = dtype, ar.device
+        self.state_dtype = getattr(ar, 'state_dtype', torch.float32)
         self.h, self.dk, self.dv = ar.num_heads, ar.head_k_dim, ar.head_v_dim
         self.conv_shape = (ar.conv_dim, ar.conv_kernel)
         self._state_signature = (self.device, layers, self.h, self.dk, self.dv,
-                                 self.conv_shape, dtype)
+                                 self.conv_shape, dtype, self.state_dtype)
         args = dict(device=ar.device)
         self.affine_ptrs = torch.zeros(layers, depth, workers, 2, dtype=torch.int64, **args)
         self.read_ptrs = torch.zeros(layers, workers, 3, dtype=torch.int64, **args)
@@ -83,11 +84,11 @@ class GDNDecodeBuffers:
         self.sink_offsets = torch.zeros(depth, workers + 1, dtype=torch.int32, **args)
         self.sink_workers = torch.zeros(depth, workers, dtype=torch.int32, **args)
         self.empty_workers = torch.ones(workers, dtype=torch.bool, **args)
-        self.b = torch.empty(workers, self.h, self.dv, self.dk, dtype=torch.float32, **args)
+        self.b = torch.empty(workers, self.h, self.dv, self.dk, dtype=self.state_dtype, **args)
         # Compose ping-pongs between b and frontier. Capture writes directly
         # into block-owned outputs, without staging dense A/B scratch.
         self.frontier = torch.empty_like(self.b)
-        self.initial = torch.empty(workers, self.h, self.dk, self.dv, dtype=torch.float32, **args)
+        self.initial = torch.empty(workers, self.h, self.dk, self.dv, dtype=self.state_dtype, **args)
         self.conv_input = torch.empty(workers, *self.conv_shape, dtype=dtype, **args)
         self._pending = []
         self._current = None
@@ -112,9 +113,9 @@ class GDNDecodeBuffers:
         # not retain the outputs of an entire previous batch through its view.
         # New outputs still preserve readers of the previous tensors.
         out_a = [torch.empty(self.layers, 1, self.h, self.dk, self.dk,
-                             dtype=torch.float32, device=self.device) for _ in targets]
+                             dtype=self.state_dtype, device=self.device) for _ in targets]
         out_b = [torch.empty(self.layers, 1, self.h, self.dv, self.dk,
-                             dtype=torch.float32, device=self.device) for _ in targets]
+                             dtype=self.state_dtype, device=self.device) for _ in targets]
         out_conv = [torch.empty(self.layers, *self.conv_shape,
                                 dtype=self.dtype, device=self.device) for _ in targets]
         refs.extend((*out_a, *out_b, *out_conv))
@@ -206,7 +207,8 @@ class GDNDecodeBuffers:
 
     def capture(self, layer, key, value, alpha, beta, eps):
         capture_affine_scan(self.read_ptrs[layer], self.write_ptrs[layer],
-                            key[:, 0], value[:, 0], alpha[:, 0], beta[:, 0], l2norm_eps=eps)
+                            key[:, 0], value[:, 0], alpha[:, 0], beta[:, 0], l2norm_eps=eps,
+                            state_dtype=self.state_dtype)
 
     def store_conv(self, layer, conv):
         scatter_rows(self.write_ptrs[layer, :, 2], conv)

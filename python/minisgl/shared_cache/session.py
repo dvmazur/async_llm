@@ -238,6 +238,7 @@ class SharedCacheSession:
             sc_rope_base = attn0._rope_base
             gdn0 = _first_gdn(engine)  # Qwen3_5GatedDeltaNet
             self.sc_gdn: SharedCacheGDN | None = SharedCacheGDN(
+                state_dtype=torch.bfloat16 if engine.config.shared_gdn_bf16_state else torch.float32,
                 num_heads=gdn0.num_v_heads,
                 head_k_dim=gdn0.head_k_dim,
                 head_v_dim=gdn0.head_v_dim,
@@ -438,6 +439,11 @@ class SharedCacheSession:
         for layer_idx in affine_layers:
             left_pair = left.linear_affine.get(layer_idx)
             right_pair = right.linear_affine.get(layer_idx)
+            if self.sc_gdn is not None and self.sc_gdn.state_dtype == torch.bfloat16:
+                # Also cover externally supplied FP32/debug states. Never let
+                # merge/self-append silently promote the stored summaries.
+                left_pair = tuple(t.to(torch.bfloat16) for t in left_pair) if left_pair else None
+                right_pair = tuple(t.to(torch.bfloat16) for t in right_pair) if right_pair else None
             if left_pair is None:
                 assert right_pair is not None
                 merged_affine[layer_idx] = (right_pair[0].clone(), right_pair[1].clone())

@@ -28,6 +28,9 @@ class EngineConfig:
     # Explicit full shared-prefill token-row capacities; None keeps prefill eager.
     # cuda_graph_max_bs=0 disables both phases, including these profiles.
     shared_cuda_graph_prefill_rows: List[int] | None = None
+    # Experimental shared GDN A/B and composed S storage. Compose uses BF16
+    # operands / FP32 accumulation; False preserves the FP32/IEEE path.
+    shared_gdn_bf16_state: bool = False
     page_size: int = 1
     memory_ratio: float = 0.9
     distributed_timeout: float = 60.0
