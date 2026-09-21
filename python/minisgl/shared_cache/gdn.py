@@ -86,16 +86,17 @@ class SharedCacheGDN:
             self.prefill_buffers.publish(success)
             self._prepared_prefill = False
 
-    def prepare_decode(self, layers: int, dtype: torch.dtype) -> None:
+    def prepare_decode(self, layers: int, dtype: torch.dtype, *, buffers=None) -> None:
         """Prepare addresses before entering the existing model forward."""
         from .gdn_decode import GDNDecodeBuffers
 
         depth = max(1, max(map(len, self.cache_structure), default=0))
-        buffers = self.decode_buffers
-        if (buffers is None or buffers.workers != self.num_workers
-                or buffers.depth < depth or buffers.layers != layers or buffers.dtype != dtype):
-            buffers = self.decode_buffers = GDNDecodeBuffers(
-                self, layers, self.num_workers, depth, dtype)
+        if buffers is None:
+            buffers = self.decode_buffers
+            if (buffers is None or buffers.workers != self.num_workers
+                    or buffers.depth < depth or buffers.layers != layers or buffers.dtype != dtype):
+                buffers = GDNDecodeBuffers(self, layers, self.num_workers, depth, dtype)
+        self.decode_buffers = buffers
         buffers.prepare(self.cache_structure, self.write_to)
         self._prepared_decode = True
 

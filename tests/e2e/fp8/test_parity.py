@@ -1,6 +1,10 @@
-"""Public pytest entry points; all full-model tests consume fresh session fixtures."""
-import pytest
+"""Fresh full-model checks with a TEMPORARY FRAGILE 2x TF-error tolerance.
+
+Passing this gate is not proof of task-quality equivalence; it may be revised/removed.
+BF16 chain controls have an explicit, equally fragile 2.2x prefill p95 TV exception.
+"""
 import json
+import pytest
 
 from .common import validate_current_mini
 from .comparison import compare
@@ -51,11 +55,38 @@ def test_moe_chain_external_parity(chain_moe_artifacts, mode):
 
 def test_shared_cache_external_parity(shared_cache_artifacts):
     result = _external_result(shared_cache_artifacts, "shared-cache")
-    # Preserve the full panel; the single temporary, fragile 2x TF-error gate
-    # is user-approved in comparison.py (not a task-quality guarantee).
+    # Original full-parity coverage; the shared numerical helper owns the gates.
     assert result["metrics"]["mini"]["decode"]["positions"] >= 400
     assert result["metrics"]["mini"]["prefill"]["positions"] >= 32
     assert result["passed"], result["metrics"]
+
+
+def test_shared_batched_external_parity(shared_batched_artifacts):
+    from .shared_batch import check_coverage
+    mode = 'shared-batched'
+    result = _external_result(shared_batched_artifacts, mode)
+    coverage = json.loads((shared_batched_artifacts.mini(mode)/'batch_coverage.json').read_text())
+    check_coverage(coverage)
+    assert result['metrics']['mini']['prefill']['positions'] >= 32
+    assert result['metrics']['mini']['decode']['positions'] >= 400
+    assert result['relative_tolerance_percent'] == 100
+    assert result['passed'], result['relative_error_delta_percent']
+
+
+@pytest.mark.parametrize('mode', ['shared-full-graph', 'shared-full-graph-software'])
+def test_full_graph_external_parity(full_graph_artifacts, mode):
+    from .shared_batch import check_coverage
+    result = _external_result(full_graph_artifacts, mode)
+    coverage = json.loads((full_graph_artifacts.mini(mode)/'batch_coverage.json').read_text())
+    check_coverage(coverage)
+    assert coverage['full_prefill_graph']
+    if mode.endswith('-software'):
+        storage = json.loads((full_graph_artifacts.mini(mode)/'storage.json').read_text())
+        assert storage['fp8_emulated'], 'requested software FP8 must actually execute'
+    assert result['metrics']['mini']['prefill']['positions'] >= 32
+    assert result['metrics']['mini']['decode']['positions'] >= 400
+    assert result['relative_tolerance_percent'] == 100
+    assert result['passed'], result['relative_error_delta_percent']
 
 
 @pytest.mark.parametrize("mode", ["mixed", "sequential"])

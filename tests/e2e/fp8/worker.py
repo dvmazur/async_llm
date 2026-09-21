@@ -238,7 +238,8 @@ def make_parser():
     p.add_argument('--cases',nargs='+',help='Select named fixture cases without changing token/image data')
     p.add_argument('--disable-fla',action='store_true',help='Mini-only test of the unchanged Torch scan fallback')
     p.add_argument('--mini-repo',type=Path)
-    p.add_argument('--mini-scheduling',choices=['shared-cache','mixed','sequential','shared-chains'],default='shared-cache',
+    p.add_argument('--mini-scheduling',choices=['shared-cache','mixed','sequential','shared-chains',
+        'shared-batched','shared-full-graph','shared-full-graph-software'],default='shared-cache',
         help='Mini adapter: shared-cache (existing parity) or ordinary text-only serving with/without mixing')
     p.add_argument('--quantization',choices=['fp8'])
     p.add_argument('--mem-fraction-static',type=float,default=.15,help='SGLang reference memory limit; use e.g. 0.6 for 35B on GB10')
@@ -282,6 +283,9 @@ def main(args=None):
     if args.engine=='mini':
         hashes=source_hashes(args.mini_repo or ROOT)
         if args.mini_scheduling=='shared-cache':mini(args,cases)
+        elif args.mini_scheduling in ('shared-batched','shared-full-graph','shared-full-graph-software'):
+            from .shared_batch import mini_shared_batch
+            mini_shared_batch(args,cases)
         elif args.mini_scheduling == 'shared-chains':
             from .chains import mini_chains
             mini_chains(args, cases)

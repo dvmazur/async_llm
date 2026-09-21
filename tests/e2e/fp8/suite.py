@@ -26,6 +26,11 @@ PROFILES = {
     "serving": Profile("serving", tuple(f"text_{i}" for i in range(8)), 12, ("mixed", "sequential")),
     "shared-cache": Profile("shared-cache", tuple(f"{kind}_{i}" for i in range(8)
                                                  for kind in ("text", "image")), 32, ("shared-cache",)),
+    "shared-batched": Profile("shared-batched", tuple(f"{kind}_{i}" for i in range(8)
+                                                     for kind in ("text", "image")), 32, ("shared-batched",)),
+    "shared-full-graph": Profile("shared-full-graph", tuple(f"{kind}_{i}" for i in range(8)
+                                                           for kind in ("text", "image")), 32,
+                                  ("shared-full-graph", "shared-full-graph-software")),
 }
 
 
@@ -169,6 +174,8 @@ def collect_profile(config, name, *, command_runner=run_command):
         env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(ROOT / "python"), str(ROOT), env.get("PYTHONPATH"))))
         env["TOKENIZERS_PARALLELISM"] = "false"
         env["MINISGL_DISABLE_OVERLAP_SCHEDULING"] = "0"
+        if mode == 'shared-full-graph-software':
+            env['MINISGL_FP8_EMULATE'] = '1'
         log = artifacts.root / f"{label}.log"
         print(f"FP8 {profile.name}: {label}; log: {log}", flush=True)
         command_runner(command, log, env, config.timeout)

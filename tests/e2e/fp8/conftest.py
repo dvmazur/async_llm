@@ -70,3 +70,13 @@ def serving_artifacts(fp8_config):
 @pytest.fixture(scope="session")
 def shared_cache_artifacts(fp8_config):
     return collect_profile(fp8_config, "shared-cache")
+
+
+@pytest.fixture(scope="session")
+def shared_batched_artifacts(fp8_config):
+    return collect_profile(fp8_config, "shared-batched")
+
+
+@pytest.fixture(scope="session")
+def full_graph_artifacts(fp8_config):
+    return collect_profile(fp8_config, "shared-full-graph")
