@@ -1,20 +1,23 @@
-# Speleo runner — Async с falsifier, одна среда
+# Speleo runner — одна среда, Async с falsifier или probe-only
 
-Одна модель на GPU, несколько параллельных pipeline. Подробное описание API,
+Одна модель и одна активная среда на GPU в этих экспериментах. Подробное описание API,
 ролей, телеметрии и тестов — [DOCUMENTATION.md](DOCUMENTATION.md).
 
-Текущая стратегия — **Async с falsifier из проверенного RTX-прогона 5×500**.
-Observer, planner и falsifier — фоновые корутины; executor управляет средой.
-Внутри одного пайплайна роли работают параллельно, но **среда одновременно одна**.
-Это не sequential и не один растущий чат со всеми картинками.
-
-Актуальный эксперимент — **1 среда × 500 действий × 105 повторов**:
+Два отдельных запуска, каждый **1 среда × 500 действий × 105 повторов**:
 
 ```bash
+# Async с falsifier: прежние роли и промпты, история событий
 python3 experiments/speleo_1x500_r105_falsifier_async.py
+
+# Probe-only: полный промпт change, два кадра, одно сэмплированное действие,
+# без истории; дополнительный asyncio.sleep(0.2) перед каждым шагом среды
+python3 experiments/speleo_1x500_r105_probe_only.py
 ```
 
-После подготовки окружения ниже укажите в этом файле `VENV` (созданный venv),
+Запускайте их **по очереди**, не одновременно на одной GPU/CPU.
+Probe-only — не sequential-диалог: его контекст каждый раз создаётся заново.
+
+После подготовки окружения ниже укажите в выбранном файле `VENV` (созданный venv),
 `MODEL` (папка весов), `RESULTS` (новая пустая папка результатов) и `GPUS=[0]`.
 Модель загружается один раз; каждый повтор получает новую среду, историю и seed.
 PNG/GIF выключены. После reset ожидается стабильный спавн; это ожидание не входит
@@ -98,19 +101,21 @@ Setup не нужно запускать заново перед каждым э
 
 ## 3. Настроить и запустить эксперимент
 
-Откройте `experiments/speleo_1x500_r105_falsifier_async.py` и проверьте настройки в начале файла:
+Откройте выбранный файл эксперимента и проверьте настройки. Например, для probe-only:
 
 ```python
 VENV = REPOSITORY / '.venvs' / 'minisgl'  # папка venv, созданная setup
 MODEL = REPOSITORY / 'models' / 'Qwen3.6-35B-A3B-FP8'  # скачанные веса
-RESULTS = REPOSITORY / 'results' / 'speleo_1x500_r105_falsifier_async'  # новый каталог
+RESULTS = REPOSITORY / 'results' / 'speleo_1x500_r105_probe_only_sleep02'  # новый каталог
 
 GPUS = [0]               # на каких GPU запускать
-PIPELINES_PER_GPU = 1     # одна среда на GPU; роли внутри неё остаются async
+PIPELINES_PER_GPU = 1     # одна среда на GPU
 REPEATS = 105            # независимые эпизоды по очереди, модель не перезагружается
 ACTIONS = 500            # максимум действий в одном эпизоде
 DUMP_IMAGES = False      # не сохранять PNG
 GIF_ON = False           # не сохранять GIF
+TEMPERATURE = 0.7        # только probe-only: сэмплирование действия
+ACTION_DELAY = 0.2       # только probe-only: дополнительная пауза перед действием
 ```
 
 `REPOSITORY` — папка запускалки. Если setup запускался с путями из раздела 2,
@@ -129,7 +134,7 @@ GIF_ON = False           # не сохранять GIF
 Сохраните файл и запустите на GPU-машине из папки запускалки:
 
 ```bash
-python3 experiments/speleo_1x500_r105_falsifier_async.py
+python3 experiments/speleo_1x500_r105_probe_only.py
 ```
 
 Активировать venv не нужно: Runner сам использует `VENV/bin/python`.
@@ -142,12 +147,12 @@ python3 experiments/speleo_1x500_r105_falsifier_async.py
 
 ## 4. Забрать результаты
 
-По умолчанию — `results/speleo_1x500_r105_falsifier_async/`. Summary печатается в терминале и записывается
+Папка задаётся своим `RESULTS` для каждого варианта. Summary печатается в терминале и записывается
 в `analysis/summary.json`: TPS, tokens/action, средние decode/prefill batches,
 выборочное среднее GPU util. Высота и действия сохраняются и без PNG/GIF.
 
 ```bash
-python3 -m experiment_runner.artifacts results/speleo_1x500_r105_falsifier_async results/speleo_1x500_r105_falsifier_async.zip
+python3 -m experiment_runner.artifacts results/speleo_1x500_r105_probe_only_sleep02 results/probe-only.zip
 ```
 
 BF16 GDN требует соответствующей ветки/флага, а не просто `dtype='bfloat16'`.

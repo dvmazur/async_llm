@@ -45,6 +45,43 @@ Position, velocity, pitch/yaw and `mt_dtime` are recorded, not passed to the mod
 `mt_dtime` is the last native frame only, not the summed time of eight frames.
 One world plus readiness checks does not prove fixed or identical simulation time.
 
+### Probe-only with explicit pacing
+
+`experiments/speleo_1x500_r105_probe_only.py` uses the same one-world105×500
+schedule, readiness wrapper, seeds0–104, disabled PNG/GIF and one model load.
+It is independent of `pipelines/speleo.py`: `pipelines/probe.py` contains the
+complete tested `change` prompt and two-frame interaction loop. The earlier
+prompt text is protected by a SHA256 regression test. The first pair repeats
+the ready reset image; subsequent pairs are the preceding/current observations.
+No history, previous actions, coordinates or rewards enter model input.
+
+`experiment_runner/probe_readout.py` uses Qwen's official non-thinking template
+with generation prompt, then samples one of seven action tokens atT=0.7,
+top_p1/top_k7 through FlashInfer. No generated explanation or autoregressive
+decode is performed. Static prompt KV caching remains disabled: the research
+split-prefix path failed its numerical check and is not included in this runner.
+
+The temporary block is freed immediately after readout. Then
+`await asyncio.sleep(ACTION_DELAY)` (default0.2 seconds) runs **before**
+`world.pass_action`. This is an added delay, not a total0.2-second action period
+and not a change to the simulation clock. `decision_seconds` excludes the pause;
+`pacing_seconds` and `action_delay` events record it separately. Full-run TPS/time
+include it.105×500×0.2 alone adds10500seconds (2h55m), plus inference, worlds,
+resets and initialization. Do not execute both experiments concurrently on one host
+when comparing their environment timing.
+
+Memory: complete input was440 rows with224×224 images in the completed research.
+Only this one request is live per pipeline; there is no per-episode growth.
+Prefill cap/profile512, context2048, graph worker capacity4 with one real worker,
+depth1.4096pages×16 slots×20KiB =1.25GiB global KV reserve for one~8.6MiB input.
+Repeats do not multiply this allocation. The native graph profiles/cap differ
+from the prior ×15 run; exact-logit equivalence or fresh GPU validation of this
+new configuration is not claimed. The matching prompt/readout path completed
+105000 actions before this packaging change. CPU tests verify sampling delegation,
+pause placement after KV release, cancellation/error cleanup,500 actions and105
+successive episodes. Context/profile limits must be recalculated if images/model
+are changed. They do not constitute a guarantee for arbitrary checkpoints.
+
 One model per GPU, independently repeating async pipeline slots. The engine owns
 batching. Pipeline code owns roles, history, its World and Recorder. No TP, image
 replay, profiler, hidden warmup episodes, or runtime package installation.
