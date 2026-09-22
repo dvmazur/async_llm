@@ -1,36 +1,30 @@
-# Speleo runner — fast async без falsifier
+# Speleo runner — Async с falsifier, одна среда
 
 Одна модель на GPU, несколько параллельных pipeline. Подробное описание API,
 ролей, телеметрии и тестов — [DOCUMENTATION.md](DOCUMENTATION.md).
 
-Текущая стратегия — **fast async V9 из `7d7ada7`, только без falsifier**.
-Observer, planner и executor остаются отдельными корутинами с живыми KV-блоками;
-executor стартует после одного токена observer, planner может продолжаться между
-действиями. Бюджеты — 18/60/16; planner запускается не чаще раза в 10 действий.
-Это **не sequential** и не один неограниченно растущий диалог со всеми картинками.
+Текущая стратегия — **Async с falsifier из проверенного RTX-прогона 5×500**.
+Observer, planner и falsifier — фоновые корутины; executor управляет средой.
+Внутри одного пайплайна роли работают параллельно, но **среда одновременно одна**.
+Это не sequential и не один растущий чат со всеми картинками.
 
-Актуальный эксперимент — **15 потоков × 150 действий × 7 эпизодов на слот**:
-
-```bash
-python3 experiments/minisgl_15x150_r7_fast_async.py
-```
-
-После подготовки окружения ниже укажите в этом файле свои `VENV`, `MODEL`,
-`RESULTS` и GPU. PNG/GIF выключены. Конфигурация буферов взята из успешного
-архивного H200 15×150×7: 49 152 KV-страницы по 16 токенов, контекст 32 768,
-prefill cap 1024, decode-графы [4,16,48,64], глубина 16.
-GPU-smoke 15×2 прошёл на RTX PRO 6000 с движком
-`bbe7abf55512342d56af61d4009dff0174d8896d` (07-cuda-graphs), без уменьшения
-этих буферов. Сам новый вариант без falsifier ещё не проходил полный 150-шаговый прогон.
-Для проверки с теми же буферами, не уменьшая число потоков:
+Актуальный эксперимент — **1 среда × 500 действий × 105 повторов**:
 
 ```bash
-python3 tools/gpu_smoke.py --experiment experiments/minisgl_15x150_r7_fast_async.py --results results/smoke-15x2
+python3 experiments/speleo_1x500_r105_falsifier_async.py
 ```
 
-Ниже сохранены короткие примеры и инструкция установки. Старые имена файлов
-`*_fast_falsifer.py` оставлены для совместимости; исполняемая стратегия в них
-тоже больше не содержит falsifier.
+После подготовки окружения ниже укажите в этом файле `VENV` (созданный venv),
+`MODEL` (папка весов), `RESULTS` (новая пустая папка результатов) и `GPUS=[0]`.
+Модель загружается один раз; каждый повтор получает новую среду, историю и seed.
+PNG/GIF выключены. После reset ожидается стабильный спавн; это ожидание не входит
+в 500 действий. Рекомендуемый движок — `cuda_graphs_minimal/07-cuda-graphs`,
+проверенная ревизия `bbe7abf55512342d56af61d4009dff0174d8896d`, FP8-веса A3B, FP32 GDN.
+Не меняйте `PIPELINES_PER_GPU`, пока не пересчитали память; несколько значений
+в `GPUS` запустят по одной среде на каждой GPU, а не один общий последовательный прогон.
+
+Подробный расчёт KV и границы проверок — в [DOCUMENTATION.md](DOCUMENTATION.md#single-world-long-runs).
+Остальные файлы `experiments/` — исторические конфигурации, не настройки этого запуска.
 
 ## 1. Выбрать движок
 
@@ -44,7 +38,7 @@ Setup принимает **существующую папку репозито�
 
 На GPU-машине нужны Linux, Python 3.11+ для setup, интернет, рабочий драйвер
 NVIDIA и совместимый CUDA toolkit с `nvcc`. Проверенный стек использовал CUDA 13.0.
-Пример 15×10 с FP8 A3B рассчитан на свободную GPU порядка 96 GB. Setup не ставит
+Эти настройки FP8 A3B рассчитаны на свободную GPU порядка 96 GB. Setup не ставит
 драйверы или CUDA. На постоянной CPU-машине setup не запускаем: окружение готовится
 на арендованной GPU.
 
@@ -104,17 +98,17 @@ Setup не нужно запускать заново перед каждым э
 
 ## 3. Настроить и запустить эксперимент
 
-Откройте `experiments/speleo_15x10_fast_falsifer.py` и проверьте настройки в начале файла:
+Откройте `experiments/speleo_1x500_r105_falsifier_async.py` и проверьте настройки в начале файла:
 
 ```python
 VENV = REPOSITORY / '.venvs' / 'minisgl'  # папка venv, созданная setup
 MODEL = REPOSITORY / 'models' / 'Qwen3.6-35B-A3B-FP8'  # скачанные веса
-RESULTS = REPOSITORY / 'results' / 'speleo_15x10_fast_falsifer'  # новый каталог результатов
+RESULTS = REPOSITORY / 'results' / 'speleo_1x500_r105_falsifier_async'  # новый каталог
 
 GPUS = [0]               # на каких GPU запускать
-PIPELINES_PER_GPU = 15    # сколько pipeline одновременно на каждой GPU
-REPEATS = 1              # сколько эпизодов выполнит каждый параллельный слот
-ACTIONS = 10             # максимум действий в одном эпизоде
+PIPELINES_PER_GPU = 1     # одна среда на GPU; роли внутри неё остаются async
+REPEATS = 105            # независимые эпизоды по очереди, модель не перезагружается
+ACTIONS = 500            # максимум действий в одном эпизоде
 DUMP_IMAGES = False      # не сохранять PNG
 GIF_ON = False           # не сохранять GIF
 ```
@@ -127,15 +121,15 @@ GIF_ON = False           # не сохранять GIF
 `'model_path': str(MODEL)` — достаточно изменить `MODEL` выше.
 Остальные настройки движка и ролей для этого запуска оставьте как в примере.
 
-По умолчанию получится **15 эпизодов по 10 действий на GPU 0**.
-При `REPEATS = 3` каждый слот выполнит три эпизода: всего 45.
+По умолчанию получится **105 эпизодов по 500 действий на GPU 0, по одному за раз**.
+При `REPEATS = 3` получится три последовательных эпизода.
 `GPUS = [0, 1]` повторит такую нагрузку независимо на каждой карте;
 на каждой GPU загружается одна модель, общая для её pipeline.
 
 Сохраните файл и запустите на GPU-машине из папки запускалки:
 
 ```bash
-python3 experiments/speleo_15x10_fast_falsifer.py
+python3 experiments/speleo_1x500_r105_falsifier_async.py
 ```
 
 Активировать venv не нужно: Runner сам использует `VENV/bin/python`.
@@ -148,12 +142,12 @@ python3 experiments/speleo_15x10_fast_falsifer.py
 
 ## 4. Забрать результаты
 
-По умолчанию — `results/speleo_15x10_fast_falsifer/`. Summary печатается в терминале и записывается
+По умолчанию — `results/speleo_1x500_r105_falsifier_async/`. Summary печатается в терминале и записывается
 в `analysis/summary.json`: TPS, tokens/action, средние decode/prefill batches,
 выборочное среднее GPU util. Высота и действия сохраняются и без PNG/GIF.
 
 ```bash
-python3 -m experiment_runner.artifacts results/speleo_15x10_fast_falsifer results/speleo_15x10_fast_falsifer.zip
+python3 -m experiment_runner.artifacts results/speleo_1x500_r105_falsifier_async results/speleo_1x500_r105_falsifier_async.zip
 ```
 
 BF16 GDN требует соответствующей ветки/флага, а не просто `dtype='bfloat16'`.

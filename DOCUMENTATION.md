@@ -1,6 +1,49 @@
-# Portable Speleo runner — fast async without falsifier
+# Portable Speleo runner — single-world long runs
 
-**Короткая инструкция установки и запуска 15×10: [README.md](README.md).**
+**Короткая инструкция установки и запуска: [README.md](README.md).**
+
+## Single-world long runs
+
+`experiments/speleo_1x500_r105_falsifier_async.py` runs one world at a time,
+500 actions per episode, 105 repeats (seeds0–104). Model and graph buffers load
+once per GPU. Repeats create fresh World/history/role RNGs and close their private
+blocks; only the immutable shared system prefix stays cached in the engine.
+Four async roles remain active inside that one pipeline. Their tested budgets
+and temperatures are18/.35,60/.65,16/.45,18/.45 for observer/planner/executor/falsifier.
+The original action readout remains argmax; role text is sampled. Planner starts
+at most once per ten actions and owns an independent snapshot of text history.
+History contains compact event records, not old images or every role answer.
+`history_size` now logs the exact token count after every append, including action500.
+
+Memory sizing for Qwen3.6-35B-A3B-FP8 with FP32 GDN on a free96-GB RTX PRO6000:
+
+- KV is BF16:10 attention layers×2(K/V)×2 heads×256 dimensions×2 bytes =20 KiB/token.
+- Completed5×500 histories at action490 were39382–42013 tokens each, about40–43k
+  at500. One growing history plus planner copy is about1.6–1.7 GiB KV per pipeline.
+- The new16384-page×16-token pool is262144 slots, exactly5 GiB, over three times
+  that observed long-history requirement; remaining capacity covers temporary blocks.
+  It is **not** a256k per-request context. Per-request limit is65536.
+- Eight request slots allow concurrent roles and preparations even though world
+  concurrency is1. Decode profiles[1,2,4,8], prefill[256,1024,4096], depth16.
+  `max_prefill_rows=4096` is new query rows per batch, not context length.
+-105 repeats do not multiply simultaneous KV/state memory. Do not retain previous
+  pipelines, blocks or logits in an external callback.
+
+The reference5×500 RTX run completed with a10-GiB pool,72.1 GiB allocated peak
+and76.3 GiB reserved. The single-world configuration reduces pool and active-state
+capacity; no fresh GPU measurement of this exact105-repeat configuration has been
+performed. CPU tests cover500 actions and105 successive short episodes with
+private-block cleanup. These are lifecycle/config tests, not model-quality tests
+or a mathematical worst-case memory guarantee for other checkpoints/backends.
+
+`SettledWorld` wraps reset: at least10 no-ops spaced0.1 seconds apart, require five
+consecutive canonical positions(24.3,5.5,-36.3), velocity norm<0.001, and a nonblank
+image. At120 no-ops or120 seconds it fails explicitly; it never starts from a known
+unready spawn. No-ops are outside policy action counts; native max_steps includes
+an extra120. Natural terminal events still end an episode early and are logged.
+Position, velocity, pitch/yaw and `mt_dtime` are recorded, not passed to the model.
+`mt_dtime` is the last native frame only, not the summed time of eight frames.
+One world plus readiness checks does not prove fixed or identical simulation time.
 
 One model per GPU, independently repeating async pipeline slots. The engine owns
 batching. Pipeline code owns roles, history, its World and Recorder. No TP, image
@@ -288,13 +331,15 @@ the `if __name__ == '__main__'` guard. The model-facing adapter lives in
 
 ### The coroutine protocol is one file: `pipelines/speleo.py`
 
-There are three persistent role tasks per episode:
+There are four persistent role tasks per episode:
 
 - `observer` receives previous/current frames and the last action, prepares the image
   KV block, chooses its input chain and generates a live description.
 - `planner` owns the ten-action start interval, freezes history, chooses its live inputs,
   and publishes completed plans at action boundaries. The executor reports observations;
   it does not construct planner prompts or decide when a plan is stale.
+- `falsifier` reads the growing executor intention after four tokens and generates
+  an objection. Executor awaits its completion before choosing the action.
 - `executor` drives the episode, generates one intention without a refine stage,
   selects an action and calls `await world.pass_action(...)`.
 
@@ -313,7 +358,7 @@ policy concurrency, not a second scheduler or a new engine abstraction.
 All queues, waits, read/write chains, planner publication, REPLAN decisions and
 environment steps are visible in that file. Waiting for one observer token
 exposes a live KV tail; planner can span environment actions.
-The action query reads the executor blocks exactly once.
+The action query reads the executor and falsifier blocks exactly once.
 
 The policy has `ROLE_PARAMS` defaults for direct use. Each supplied experiment
 declares its own complete `ROLE_PARAMETERS` (budgets, temperatures, top-k/top-p,
@@ -439,20 +484,21 @@ This is a separate single-run reference, not a matched ablation of the table abo
 
 Current V9 CPU tests control the live one-token wait, planner spanning actions
 with an unchanged history snapshot, failure cleanup and independent episode RNGs.
-The surviving role/system/history prompt hash is computed from `7d7ada7`;
-only the deleted role and objection-related action instructions differ.
+Role/system/history prompt hashes are checked against the historical fast
+falsifier policy. Falsifier and objection-related action instructions are restored.
 A 100-action fake-model test checks budgets, planner starts (also for
 EOS-only plans), exact readout block order, and historical RNG mapping. No GPU
 inference-quality claim is made for the modified policy from these CPU tests.
 
-Fast async without falsifier was GPU-smoke-tested on RTX PRO 6000 with engine
+Historical note (before the restoration in this revision): fast async without
+falsifier was GPU-smoke-tested on RTX PRO 6000 with engine
 `bbe7abf55512342d56af61d4009dff0174d8896d`: 15 pipelines x 2 actions completed,
 including background-role drain. The full long-run engine settings were retained:
 49,152 KV pages of 16 tokens, context 32,768, prefill cap 1024 and graph sizes
 [4,16,48,64]. These settings match the archived successful H200 15x150x7 run,
-apart from the deployment-specific model path. The current 15x150x7 entry point
-is `experiments/minisgl_15x150_r7_fast_async.py`; the full long run of this
-modified policy has not yet been executed.
+apart from the deployment-specific model path. That older no-falsifier result
+does not validate the new single-world parameters. Use the current entry point
+and validation scope in the Single-world long runs section above.
 
 ## Release tools
 

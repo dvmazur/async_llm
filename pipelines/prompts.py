@@ -65,8 +65,14 @@ Use the current images, recent outcomes and observer/planner drafts.
 State the next local intention and decisive evidence in one compact clause, about twelve words.
 Treat old plans as proposals, not fresh observations. If necessary include REPLAN.'''
 
+FALSIFIER = '''Role: FALSIFIER. Current observation {step}.
+Check the executor's growing intention against the current images and recorded outcomes.
+Give the strongest concrete objection that could change this decision, about twelve words.
+Distinguish visible contradiction from uncertainty; if neither supports an objection, say none.
+Do not invent an objection merely to disagree or prescribe a control sequence.'''
+
 def role_request(role, step, last_action='none', close_previous=True):
-    templates = {'observer': OBSERVER, 'planner': PLANNER, 'executor': EXECUTOR}
+    templates = {'observer': OBSERVER, 'planner': PLANNER, 'executor': EXECUTOR, 'falsifier': FALSIFIER}
     body = templates[role].format(step=step, last_action=last_action)
     return ('<|im_end|>\n' if close_previous else '') + message('user', body) + \
         '<|im_start|>assistant\n<think>\n\n</think>\n'
@@ -76,8 +82,8 @@ def action_request(contract, step):
     choices = ', '.join(name for name, _ in contract.actions)
     return '<|im_end|>\n' + message('user',
         f'Executor: choose the actual next action for observation {step} from [{choices}]. '
-        'Reassess the intention using current visual evidence. '
-        'Return exactly one action name.') + \
+        'Reassess the intention using current visual evidence and any supported objection above. '
+        'An unsupported objection does not override clear evidence. Return exactly one action name.') + \
         '<|im_start|>assistant\n<think>\n\n</think>\n'
 
 
