@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 import statistics
 import time
+from run_budget_sweep import retry_disk_full
 
 
 class ForwardCounter:
@@ -42,6 +43,7 @@ def summarize(condition, task, runs):
                 forwards_per_env_step_ci95_half_width=forward_half)
 
 
+@retry_disk_full
 def report(root):
     state_path = root / "status.json"
     variant = json.loads(state_path.read_text()).get("prompt_variant", "minimal") if state_path.exists() else "minimal"

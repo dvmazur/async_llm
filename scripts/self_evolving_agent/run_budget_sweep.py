@@ -57,6 +57,22 @@ def retry_disk_full(func):
 
 
 @retry_disk_full
+def atomic_text(path, text):
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    tmp.replace(path)
+
+
+@retry_disk_full
+def append_text(path, text):
+    """Single-writer log append without leaving a partial record on disk-full."""
+    path = Path(path)
+    existing = path.read_text() if path.exists() else ""
+    atomic_text(path, existing + text)
+
+
+@retry_disk_full
 def atomic_json(path, data):
     path = Path(path)
     tmp = path.with_suffix(".tmp")

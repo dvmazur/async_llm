@@ -13,7 +13,7 @@ import sys
 import time
 import threading
 
-from run_budget_sweep import atomic_json, report, seed_for, file_lock
+from run_budget_sweep import atomic_json, report, seed_for, file_lock, retry_disk_full
 from tasks.realtime_vizdoom import realtime_options, game_mode, game_tic_limits
 
 HERE = Path(__file__).resolve().parent
@@ -27,6 +27,7 @@ def evolution_variant():
     return variant
 
 
+@retry_disk_full
 def evolution_report(root):
     variant = evolution_variant()
     from scipy.stats import t
@@ -47,15 +48,19 @@ def evolution_report(root):
             half = float(t.ppf(.975, n-1)) * statistics.stdev(values) / math.sqrt(n) if n > 1 else None
             rows.append(dict(task=task, valid_round=rnd, completed_runs=n,
                              mean_reward=mean, ci95_half_width=half))
-    with (root / "evolution_summary.csv").open("w", newline="") as f:
+    tmp = root / "evolution_summary.csv.tmp"
+    with tmp.open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+    tmp.replace(root / "evolution_summary.csv")
     lines = [f"# {game_mode().capitalize()} {variant} self-evolution", "", "Mean of five-episode run means ± 95% Student-t CI across independent runs.", "",
              "| Environment | Valid round | Runs | Reward ± 95% CI |", "|---|---:|---:|---:|"]
     for r in rows:
         value = "—" if r["mean_reward"] is None else f"{r['mean_reward']:.3f}"
         half = "—" if r["ci95_half_width"] is None else f"{r['ci95_half_width']:.3f}"
         lines.append(f"| {r['task']} | {r['valid_round']} | {r['completed_runs']}/10 | {value} ± {half} |")
-    (root / "evolution_report.md").write_text("\n".join(lines)+"\n")
+    tmp = root / "evolution_report.md.tmp"
+    tmp.write_text("\n".join(lines)+"\n")
+    tmp.replace(root / "evolution_report.md")
     return rows
 
 

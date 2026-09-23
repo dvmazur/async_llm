@@ -41,6 +41,15 @@ from self_edit_env import SelfEditEnv
 from tasks.doom_env import DoomEnv
 from tasks.health_gathering_env import HealthGatheringEnv
 from tasks.my_way_home_env import MyWayHomeEnv
+from run_budget_sweep import retry_disk_full, atomic_json, append_text
+from builtins import print as _print
+
+# stdout is a campaign file; disk pressure must not abort live GPU generation.
+def print(*args, **kwargs):
+    global _last_progress
+    result = retry_disk_full(_print)(*args, **kwargs)
+    _last_progress = time.monotonic()
+    return result
 
 # Plug-and-play task envs selectable via argv[3] -- each must follow the
 # shared reset()/step()/restart() shape (see tasks/doom_env.py etc).
@@ -93,9 +102,9 @@ logging.basicConfig(
 
 # Plain append-only, line-buffered dumps (not routed through `logging` --
 # these are structured records for grepping/tailing, not diagnostics).
-_thoughts_f = open(LOGS_DIR / "thoughts.log", "a", buffering=1)
-_tool_results_f = open(LOGS_DIR / "tool_results.log", "a", buffering=1)
-_task_results_f = open(LOGS_DIR / "task_results.log", "a", buffering=1)
+_thoughts_path = LOGS_DIR / "thoughts.log"
+_tool_results_path = LOGS_DIR / "tool_results.log"
+_task_results_path = LOGS_DIR / "task_results.log"
 
 print(f"[run {RUN_ID}] logging to {LOGS_DIR}", flush=True)
 
@@ -164,9 +173,8 @@ def on_thought_token(token: str) -> None:
 
 
 def on_completion(completion: str) -> None:
-    _thoughts_f.write(f"===== step {_step} @ {_ts()} ({len(completion)} chars) =====\n")
-    _thoughts_f.write(completion)
-    _thoughts_f.write("\n\n")
+    append_text(_thoughts_path, f"===== step {_step} @ {_ts()} ({len(completion)} chars) =====\n{completion}\n\n")
+    _touch_progress()
 
 
 def on_tool_result(r: dict) -> None:
@@ -182,7 +190,8 @@ def on_tool_result(r: dict) -> None:
         record["error"] = r.get("error")
     if r.get("changed"):
         record["changed"] = r["changed"]
-    _tool_results_f.write(json.dumps(record) + "\n")
+    append_text(_tool_results_path, json.dumps(record) + "\n")
+    _touch_progress()
 
 
 def on_task_result(result: dict) -> None:
@@ -196,7 +205,8 @@ def on_task_result(result: dict) -> None:
         "actions_per_forward": result.get("actions_per_forward"),
         "forwards_per_env_step": result.get("forwards_per_env_step"),
     }
-    _task_results_f.write(json.dumps(record) + "\n")
+    append_text(_task_results_path, json.dumps(record) + "\n")
+    _touch_progress()
 
 
 def on_episode_start() -> None:
@@ -249,14 +259,18 @@ def _task_avg_act_latency_ms(task: Optional[dict]) -> Optional[float]:
     return sum(latencies) / len(latencies) * 1000
 
 
+@retry_disk_full
 def _write_metrics_csv() -> None:
-    with open(LOGS_DIR / "round_metrics.csv", "w", newline="") as f:
+    tmp = LOGS_DIR / "round_metrics.csv.tmp"
+    with tmp.open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["round", "score", "delay_s", "avg_act_latency_ms", "round_crashed",
                     "round_compile_failed", "valid_round", "invalid_reason"])
         for m in _metrics:
             w.writerow([m["round"], m["score"], m["delay_s"], m.get("avg_act_latency_ms"),
                         m.get("round_crashed", False), m.get("round_compile_failed", False), m["valid_round"], m["invalid_reason"]])
+    tmp.replace(LOGS_DIR / "round_metrics.csv")
+    _touch_progress()
 
 
 def on_step_result(result: dict) -> None:
@@ -378,18 +392,15 @@ async def main(target_valid_steps: int, max_new_tokens: int, max_attempts: int) 
         watchdog.cancel()
         if agent._history.block is not None:
             await llm.free_block(agent._history.block)
-        for f in (_thoughts_f, _tool_results_f, _task_results_f):
-            f.close()
         try:
             plot_metrics(_metrics, LOGS_DIR)
         except Exception:
             logging.exception("failed to plot round metrics")
         await llm.close()
         _snapshot_engine("final")
-        with open(LOGS_DIR / "completion.json", "w") as f:
-            json.dump({"valid_rounds": getattr(agent, "valid_steps", 0),
+        atomic_json(LOGS_DIR / "completion.json", {"valid_rounds": getattr(agent, "valid_steps", 0),
                        "target_valid_rounds": target_valid_steps,
-                       "complete": getattr(agent, "valid_steps", 0) == target_valid_steps}, f)
+                       "complete": getattr(agent, "valid_steps", 0) == target_valid_steps})
 
 
 if __name__ == "__main__":
