@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import importlib.metadata
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -54,7 +57,33 @@ def arguments():
     p.add_argument("--top-p", type=float, default=.95)
     p.add_argument("--top-k", type=int, default=20)
     p.add_argument("--seed", type=int, default=42)
-    return p.parse_args()
+    p.add_argument("--kv-tokens", type=int, default=98304)
+    p.add_argument("--max-prefill-rows", type=int, default=256)
+    p.add_argument("--max-seq-len", type=int, default=65536)
+    a = p.parse_args()
+    if not -1 <= a.k_steps < a.budget or a.budget <= 0 or a.probe_period <= 0:
+        p.error('Require budget>0, probe-period>0, and -1 <= k-steps < budget')
+    return a
+
+
+def save(path, value):
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(json.dumps(value, indent=2))
+    temporary.replace(path)
+
+
+def run_config(args):
+    dataset = Path(args.dataset_path)
+    files = [Path(__file__), Path(__file__).with_name('math500_async_eval.py'),
+             ASYNC_THOUGHTS / 'async_thoughts/demo.py', ASYNC_THOUGHTS / 'async_thoughts/engine.py']
+    return {'arguments': vars(args), 'protocol': 'text_live_blocks_c6b2721',
+            'dataset_files': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                              for p in sorted(dataset.iterdir()) if p.is_file()},
+            'source_files': {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in files},
+            'packages': {p: importlib.metadata.version(p) for p in
+                         ('torch', 'transformers', 'datasets', 'pyarrow', 'math-verify')},
+            'cuda_visible_devices': os.environ.get('CUDA_VISIBLE_DEVICES'),
+            'hf_home': os.environ.get('HF_HOME')}
 
 
 def forbidden(tokenizer, names):
@@ -204,15 +233,24 @@ async def generate(llm, tokenizer, first, second, k_steps, budget, probe_period,
 async def run(args):
     data = load_from_disk(args.dataset_path)
     end = args.end if args.end is not None else len(data)
+    if not 0 <= args.start < end <= len(data):
+        raise ValueError('Invalid sample range')
     out_dir = Path(args.path_to_results) / f"k_{args.k_steps}"
     out_dir.mkdir(parents=True, exist_ok=True)
+    config = run_config(args)
+    if (out_dir / 'config.json').exists() and json.loads((out_dir / 'config.json').read_text()) != config:
+        raise ValueError('Run configuration changed; choose a fresh output directory')
+    if list(out_dir.glob('*.error.json')):
+        raise ValueError('Saved sample errors require investigation before resuming')
+    save(out_dir / 'config.json', config)
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
     llm = AsyncLLM(args.model_name, dtype=torch.bfloat16, max_running_req=4,
                    cuda_graph_bs=[1, 2], cuda_graph_max_bs=2,
                    memory_ratio=args.memory_ratio, page_size=args.page_size,
                    # Probe input includes both live streams plus its own prompt,
                    # so it can be longer than either stream's generation budget.
-                   max_seq_len_override=65536,
+                   max_seq_len_override=args.max_seq_len,
+                   num_page_override=args.kv_tokens, max_prefill_rows=args.max_prefill_rows,
                    distributed_addr=f"tcp://127.0.0.1:{args.distributed_port}")
     correct = total = 0
     try:
@@ -223,6 +261,8 @@ async def run(args):
                 continue
             item = data[idx]
             try:
+                started = time.monotonic()
+                print(f'[{idx}] starting', flush=True)
                 torch.manual_seed(args.seed + idx)
                 torch.cuda.manual_seed_all(args.seed + idx)
                 response, thoughts, injected = await generate(
@@ -240,12 +280,14 @@ async def run(args):
                                       "writer": "deferred_reminder" if args.defer_writer_reminder else "reminder"},
                           "sampling": {"temperature": args.temperature, "top_p": args.top_p,
                                        "top_k": args.top_k, "seed": args.seed + idx}}
-                path.write_text(json.dumps(result, indent=2))
+                result['elapsed_seconds'] = time.monotonic() - started
+                save(path, result)
                 correct += int(equal); total += 1
                 print(f"[{idx}] correct={equal} accuracy={correct/total:.3f}", flush=True)
             except Exception as exc:
                 print(f"ERROR sample {idx}: {exc}", flush=True)
-                import traceback; traceback.print_exc()
+                save(out_dir / f'sample_{idx}.error.json', {'idx': idx, 'error': repr(exc)})
+                raise
     finally:
         await llm.close()
     summary = {"k_steps": args.k_steps, "accuracy": correct / total if total else 0,
@@ -253,7 +295,7 @@ async def run(args):
                "correct": correct, "total": total, "model": args.model_name,
                "routing": {"prompt": "shard", "thinker": "shard",
                            "writer": "deferred_reminder" if args.defer_writer_reminder else "reminder"}}
-    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    save(out_dir / "summary.json", summary)
 
 
 if __name__ == "__main__":
