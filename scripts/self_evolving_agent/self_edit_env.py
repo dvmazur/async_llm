@@ -203,6 +203,7 @@ class SelfEditEnv:
         result["episode_steps_total"] = sum(e.get("steps", 0) for e in result["episodes"])
         from action_efficiency import ratio
         result["actions_per_forward"] = ratio(result["episode_steps_total"], result["llm_forward_calls"])
+        result["forwards_per_env_step"] = ratio(result["llm_forward_calls"], result["episode_steps_total"])
         self.last_task_result = result
         logger.info("start_task on %s: avg_reward=%.3f, llm_forward_calls=%d over %d env steps",
                     result["env"], result["avg_reward"], result["llm_forward_calls"],

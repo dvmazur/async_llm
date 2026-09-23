@@ -194,6 +194,7 @@ def on_task_result(result: dict) -> None:
         "episodes": result["episodes"],
         "llm_forward_calls": result.get("llm_forward_calls", 0),
         "actions_per_forward": result.get("actions_per_forward"),
+        "forwards_per_env_step": result.get("forwards_per_env_step"),
     }
     _task_results_f.write(json.dumps(record) + "\n")
 

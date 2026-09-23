@@ -1,5 +1,26 @@
 # Real-time evaluation protocol (hold-last update)
 
+## Synchronous minimal vs detailed evolution (September 23)
+
+Launch separate fresh roots with `--evolution-only --game-mode synchronous
+--doom-tics 100 --health-tics 1000 --prompt-variant minimal --gpus 0` and the
+same options with `--prompt-variant detailed --gpus 2`. No baseline jobs are
+queued. Each variant has 10 independent runs per environment, five valid
+evolution rounds per run, and five paired-seed evaluation episodes per round:
+500 scored episodes per variant, excluding diagnostic/invalid attempts.
+Each run starts from the common engine seed and its selected prompt seed.
+Minimal provides the basic tool contract; detailed adds API guidance and examples.
+Both retain task notes. Evolution generation uses 32,000 tokens and a 20-attempt
+limit to obtain five valid rounds; failures remain explicit and incomplete.
+
+Reward is the optimization outcome, reported separately at each valid round
+using run means and 95% Student-t CIs. Interactivity is evaluation forward calls
+per completed environment step, excluding self-editing/code-generation and
+warm-up calls. `interactivity.csv` / `.md` and `evolution_summary.csv` /
+`evolution_report.md` update live. Each variant uses its own output subdirectory,
+mutable engine/prompt files, model, and port. Do not merge variant results or
+modify the already-running GPU 1 baseline campaign.
+
 ## Synchronous baseline rerun (September 17)
 
 Use `run_async_campaign.py --baselines-only --game-mode synchronous --gpus 1 --doom-tics 100 --health-tics 1000`

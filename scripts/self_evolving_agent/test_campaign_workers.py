@@ -8,6 +8,27 @@ from unittest.mock import patch
 import run_async_campaign as campaign
 
 class WorkerTests(unittest.TestCase):
+    def test_detailed_worker_installs_detailed_seed_in_isolated_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calls = []
+            def command(cmd, env, log):
+                out = Path(env['SEA_LOG_DIR'])
+                self.assertEqual(cmd[-2], 'detailed')
+                self.assertEqual((out/'mutable/prompt.py').read_text(),
+                                 (campaign.HERE/'seeds/prompt_seed.py').read_text())
+                self.assertEqual(env['CUDA_VISIBLE_DEVICES'], '2')
+                self.assertEqual(env['SEA_GAME_MODE'], 'synchronous')
+                calls.append(out)
+                (out/'completion.json').write_text(json.dumps({'complete':True}))
+            campaign.STOP.clear()
+            with patch.dict(campaign.os.environ, SEA_PROMPT_VARIANT='detailed', SEA_GAME_MODE='synchronous'), \
+                 patch.object(campaign, 'command', command):
+                campaign.evolution_worker(root, '2', {})
+            self.assertEqual(len(set(calls)), 20)
+            self.assertTrue(all(p.relative_to(root).parts[0] == 'detailed' for p in calls))
+            self.assertFalse((root/'minimal').exists())
+
     def test_single_gpu_synchronous_baselines_propagate_mode(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

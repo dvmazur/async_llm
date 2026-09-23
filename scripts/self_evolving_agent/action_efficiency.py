@@ -43,11 +43,13 @@ def summarize(condition, task, runs):
 
 
 def report(root):
+    state_path = root / "status.json"
+    variant = json.loads(state_path.read_text()).get("prompt_variant", "minimal") if state_path.exists() else "minimal"
     rows = []
     for task in ('doom', 'health_gathering'):
         by_round = {i: [] for i in range(1, 6)}
         for run in range(10):
-            out = root / 'minimal' / task / f'run{run:02}'
+            out = root / variant / task / f'run{run:02}'
             if not (out / 'round_metrics.csv').exists() or not (out / 'task_results.log').exists():
                 continue
             results = {}
@@ -65,7 +67,7 @@ def report(root):
                     if result and len(result['episodes']) == 5 and 'llm_forward_calls' in result:
                         by_round[int(row['valid_round'])].append((
                             sum(e['steps'] for e in result['episodes']), result['llm_forward_calls']))
-        rows.extend(summarize(f'minimal_round_{rnd}', task, runs) for rnd, runs in by_round.items())
+        rows.extend(summarize(f'{variant}_round_{rnd}', task, runs) for rnd, runs in by_round.items())
     for name in ('reasoning', 'logit', 'no_think', 'random'):
         out = root / name
         if not (out / 'config.json').exists():

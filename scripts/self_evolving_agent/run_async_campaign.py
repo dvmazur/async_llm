@@ -20,14 +20,22 @@ HERE = Path(__file__).resolve().parent
 STOP = threading.Event()
 
 
+def evolution_variant():
+    variant = os.environ.get("SEA_PROMPT_VARIANT", "minimal")
+    if variant not in {"minimal", "detailed"}:
+        raise ValueError(f"Unknown evolution prompt variant: {variant}")
+    return variant
+
+
 def evolution_report(root):
+    variant = evolution_variant()
     from scipy.stats import t
     rows = []
     for task in ("doom", "health_gathering"):
         for rnd in range(1, 6):
             values = []
             for run in range(10):
-                path = root / "minimal" / task / f"run{run:02}" / "round_metrics.csv"
+                path = root / variant / task / f"run{run:02}" / "round_metrics.csv"
                 if path.exists():
                     with path.open() as f:
                         scores = [float(r["score"]) for r in csv.DictReader(f)
@@ -41,7 +49,7 @@ def evolution_report(root):
                              mean_reward=mean, ci95_half_width=half))
     with (root / "evolution_summary.csv").open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
-    lines = ["# Asynchronous minimal self-evolution", "", "Mean of five-episode run means ± 95% Student-t CI across independent runs.", "",
+    lines = [f"# {game_mode().capitalize()} {variant} self-evolution", "", "Mean of five-episode run means ± 95% Student-t CI across independent runs.", "",
              "| Environment | Valid round | Runs | Reward ± 95% CI |", "|---|---:|---:|---:|"]
     for r in rows:
         value = "—" if r["mean_reward"] is None else f"{r['mean_reward']:.3f}"
@@ -77,6 +85,7 @@ def process_running(pid):
 
 
 def evolution_worker(root, gpu, adoptions):
+    variant = evolution_variant()
     env = dict(os.environ, CUDA_VISIBLE_DEVICES=gpu, HF_HOME="/mnt/LLM",
                SEA_LLM_PORT=str(2490+int(gpu)), SEA_GAME_TICRATE="35", SEA_INFERENCE_ACTION=realtime_options()["action_policy"])
     jobs = [(task, run) for run in range(10) for task in ("doom", "health_gathering")]
@@ -87,7 +96,7 @@ def evolution_worker(root, gpu, adoptions):
         adoption = adoptions.get(f"{task}/{run}")
         if adoption and adoption["gpu"] != gpu:
             continue
-        out = root / "minimal" / task / f"run{run:02}"
+        out = root / variant / task / f"run{run:02}"
         out.mkdir(parents=True, exist_ok=True)
         with file_lock(out / "worker.lock", blocking=False) as claimed:
             if not claimed:
@@ -96,7 +105,7 @@ def evolution_worker(root, gpu, adoptions):
             if complete.exists() and json.loads(complete.read_text())["complete"]:
                 continue
             if adoption:
-                print(f"ADOPT minimal {task} run={run+1} GPU={gpu} PID={adoption['pid']}", flush=True)
+                print(f"ADOPT {variant} {task} run={run+1} GPU={gpu} PID={adoption['pid']}", flush=True)
                 while process_running(adoption["pid"]):
                     if STOP.wait(5):
                         return
@@ -107,15 +116,15 @@ def evolution_worker(root, gpu, adoptions):
                 mutable = out / "mutable"
                 mutable.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(HERE / "seeds/engine_seed.py", mutable / "engine.py")
-                shutil.copyfile(HERE / "seeds/prompt_seed_minimal.py", mutable / "prompt.py")
+                shutil.copyfile(HERE / ("seeds/prompt_seed_minimal.py" if variant == "minimal" else "seeds/prompt_seed.py"), mutable / "prompt.py")
                 env.update(SEA_MUTABLE_DIR=str(mutable), SEA_LOG_DIR=str(out), SEA_RUN_INDEX=str(run),
                            SEA_RUN_SEED=str(seed_for(20260915, task+":evolution", run, 0)))
-                print(f"START minimal {task} run={run+1} GPU={gpu}", flush=True)
-                command([sys.executable, str(HERE / "run_persistent.py"), "5", "32000", task, "minimal", "20"], env, out / "process.log")
+                print(f"START {variant} {task} run={run+1} GPU={gpu}", flush=True)
+                command([sys.executable, str(HERE / "run_persistent.py"), "5", "32000", task, variant, "20"], env, out / "process.log")
             if not complete.exists() or not json.loads(complete.read_text())["complete"]:
                 STOP.set()
                 raise RuntimeError(f"Evolution did not reach five valid rounds: {out}")
-            print(f"DONE minimal {task} run={run+1}", flush=True)
+            print(f"DONE {variant} {task} run={run+1}", flush=True)
 
 
 def baseline_worker(root, gpu, plans):
@@ -136,9 +145,9 @@ def main(root, gpus, adoptions, baselines_only=False, evolution_only=False):
     with file_lock(root / "campaign.lock", blocking=False) as owner:
         if not owner:
             raise RuntimeError("Campaign already running")
-        state = dict(pid=os.getpid(), status="running", phase="baselines" if baselines_only else "minimal", gpus=[int(g) for g in gpus],
+        state = dict(pid=os.getpid(), status="running", phase="baselines" if baselines_only else evolution_variant(), gpus=[int(g) for g in gpus],
                      runs=10, episodes=5, valid_rounds=5, ticrate=35, action_policy="step" if game_mode() == "synchronous" else realtime_options()["action_policy"],
-                     game_mode=game_mode(), game_tic_limits=game_tic_limits())
+                     game_mode=game_mode(), game_tic_limits=game_tic_limits(), prompt_variant=evolution_variant())
         atomic_json(root / "status.json", state)
         from action_efficiency import report as efficiency_report
         try:
@@ -156,7 +165,7 @@ def main(root, gpus, adoptions, baselines_only=False, evolution_only=False):
                 evolution_report(root)
                 efficiency_report(root)
             if evolution_only:
-                state.update(status="complete", phase="minimal_complete")
+                state.update(status="complete", phase=f"{evolution_variant()}_complete")
                 return
             state.update(phase="baselines", updated=time.time()); atomic_json(root / "status.json", state)
             from action_efficiency import report as efficiency_report
@@ -192,15 +201,17 @@ if __name__ == "__main__":
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--doom-tics", type=int, default=game_tic_limits()["doom"])
     p.add_argument("--health-tics", type=int, default=game_tic_limits()["health_gathering"])
+    p.add_argument("--prompt-variant", choices=["minimal", "detailed"], default=evolution_variant())
     p.add_argument("--game-mode", choices=["asynchronous", "synchronous"], default=game_mode())
     p.add_argument("--action-policy", choices=["hold_last", "wait"], default=realtime_options()["action_policy"])
     p.add_argument("--gpus", nargs="+", default=["5", "6"])
     p.add_argument("--adopt", type=Path, help="Explicit task/run -> live PID and GPU mapping")
-    p.add_argument("--evolution-only", action="store_true", help="Run minimal evolution only; do not queue baselines")
+    p.add_argument("--evolution-only", action="store_true", help="Run the selected evolution variant only; do not queue baselines")
     p.add_argument("--baselines-only", action="store_true", help="Skip evolution and run the agreed seven baseline conditions")
     args = p.parse_args()
     os.environ["SEA_INFERENCE_ACTION"] = args.action_policy
     os.environ["SEA_GAME_MODE"] = args.game_mode
+    os.environ["SEA_PROMPT_VARIANT"] = args.prompt_variant
     if args.doom_tics <= 0 or args.health_tics <= 0:
         p.error("Game tic limits must be positive")
     os.environ["SEA_DOOM_TIC_LIMIT"] = str(args.doom_tics)

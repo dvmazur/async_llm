@@ -6,6 +6,19 @@ import unittest
 from action_efficiency import ForwardCounter, ratio, report, summarize
 
 class EfficiencyTests(unittest.TestCase):
+    def test_detailed_evolution_report_reads_selected_variant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'status.json').write_text(json.dumps({'prompt_variant':'detailed'}))
+            out = root/'detailed/doom/run00'
+            out.mkdir(parents=True)
+            (out/'round_metrics.csv').write_text('round,valid_round,invalid_reason\n1,1,\n')
+            (out/'task_results.log').write_text(json.dumps({'step':1, 'llm_forward_calls':40,
+                                                           'episodes':[{'steps':2}]*5}))
+            row = next(r for r in report(root) if r['condition']=='detailed_round_1' and r['task']=='doom')
+            self.assertEqual(row['completed_runs'], 1)
+            self.assertEqual(row['mean_forwards_per_env_step'], 4)
+
     def test_forwards_per_step_averages_run_ratios_and_random_is_zero(self):
         row = summarize('test', 'doom', [(10, 20), (20, 100)])
         self.assertEqual(row['mean_forwards_per_env_step'], 3.5)
