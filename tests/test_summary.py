@@ -34,7 +34,7 @@ def test_overlapping_episodes_global_denominator(tmp_path, legacy_readout_events
         if legacy_readout_events:
             generation.emit(kind='action_readout', episode_id=str(i), action='wait')
         steps.emit(kind='observation', step=0, height=2.)
-        steps.emit(kind='action', step=1, height=-3.)
+        steps.emit(kind='action', step=1, height=-3., reward=1.)
         events.close(); steps.close()
         for _ in range(tokens):
             generation.emit(kind='sample', episode_id=str(i))
@@ -52,7 +52,32 @@ def test_overlapping_episodes_global_denominator(tmp_path, legacy_readout_events
     assert s['workers'][0]['action_readouts'] == 2
     assert s['workers'][0]['output_tokens_including_readouts_tps'] == 302/20
     assert all(e['action_readouts'] == 1 for e in s['episodes'])
+    assert all(e['total_reward'] == 1. for e in s['episodes'])
     assert Summary(tmp_path).compute() == s
     atomic(gpu/'engine-totals.json', {counter_name: 999})
     with pytest.raises(ValueError, match='action readout accounting mismatch'):
         Summary(tmp_path).compute()
+
+
+def test_generated_action_is_not_counted_again_as_a_readout(tmp_path):
+    gpu = tmp_path/'gpu-000'
+    ep = gpu/'slot-000/repeat-000'
+    ep.mkdir(parents=True)
+    atomic(gpu/'status.json', dict(status='completed'))
+    atomic(gpu/'engine-totals.json', dict(restricted_readouts=0, sampled_tokens=3))
+    atomic(ep/'context.json', dict(episode_id='one', model_seed=0, world_seed=0))
+    atomic(ep/'completion.json', dict(status='completed', workload_start=0., workload_end=2.))
+    events = JsonlWriter(ep/'events.jsonl')
+    events.emit(kind='assessment', output_tokens=3)
+    events.emit(kind='decision', mode='generated', action='dig')
+    events.close()
+    steps = JsonlWriter(ep/'steps.jsonl')
+    steps.emit(kind='action', step=1, reward=1.)
+    steps.close()
+    generation = JsonlWriter(gpu/'generation.jsonl')
+    for _ in range(3): generation.emit(kind='sample')
+    generation.close()
+    report = Summary(tmp_path).compute()
+    assert report['generated_tokens'] == 3 and report['tokens_per_action'] == 3
+    assert report['workers'][0]['action_readouts'] == 0
+    assert report['workers'][0]['output_tokens_including_readouts_tps'] == 1.5

@@ -1,4 +1,4 @@
-"""Two frames, fresh prefill, one sampled action. No history or role generations."""
+"""Fresh visual decision: one-token probe or one assessment/action completion."""
 import asyncio
 import hashlib
 import json
@@ -29,16 +29,23 @@ Return exactly one of: wait, forward, jump, right, left, up, down.
 Return only the action, without explanation.'''
 
 
-def messages_for(previous, current):
-    return [dict(role='system', content=PROMPT), dict(role='user', content=[
+def messages_for(previous, current, prompt=PROMPT, *, last_action=None, feedback=None):
+    content = [
         dict(type='text', text='Previous observation:'), dict(type='image', image=previous),
-        dict(type='text', text='Current observation:'), dict(type='image', image=current),
-        dict(type='text', text='Choose the next action.')])]
+        dict(type='text', text='Current observation:'), dict(type='image', image=current)]
+    if last_action is not None:
+        content.append(dict(type='text', text=f'Action between these observations: {last_action}.'))
+    if feedback is not None:
+        content.append(dict(type='text', text='Recent interaction feedback: ' + feedback))
+    content.append(dict(type='text', text='Choose the next action.'))
+    return [dict(role='system', content=prompt), dict(role='user', content=content)]
 
 
 class ProbePipeline:
     def __init__(self, world, recorder, engine, *, context, max_actions=500,
-                 temperature=.7, action_delay=.2):
+                 temperature=.7, action_delay=.2, prompt=PROMPT,
+                 action_names=None, variant='change', include_last_action=False, feedback=None,
+                 vision='plain', demonstrations=None):
         if type(max_actions) is not int or max_actions < 1:
             raise ValueError('max_actions must be a positive integer')
         if not math.isfinite(temperature) or temperature <= 0:
@@ -47,21 +54,36 @@ class ProbePipeline:
             raise ValueError('action_delay must be finite and nonnegative')
         self.world, self.recorder, self.engine, self.context = world, recorder, engine, context
         self.max_actions, self.temperature, self.action_delay = max_actions, temperature, action_delay
+        self.prompt, self.variant = prompt, variant
+        self.include_last_action = include_last_action
+        self.feedback = feedback
+        if vision not in ('plain', 'aim', 'crop', 'current-large'):
+            raise ValueError('unknown vision presentation')
+        self.vision = vision
+        self.demonstrations = list(demonstrations or [])
+        self.action_names = tuple(action_names) if action_names is not None else tuple(n for n, _ in SPELEO.actions)
+        if not self.action_names or len(set(self.action_names)) != len(self.action_names):
+            raise ValueError('action_names must be nonempty and distinct, in world action-index order')
         self.stop_requested = lambda: False
 
     async def run(self):
         status, start = 'failed', None
         try:
-            names = [name for name, _ in SPELEO.actions]
+            names = list(self.action_names)
             ids = [self.engine.encode(name) for name in names]
             if not all(len(x)==1 for x in ids) or len({x[0] for x in ids}) != len(names):
                 raise ValueError('actions must be distinct single tokens')
             ids = [x[0] for x in ids]
             seed = 1_000_003*(self.context.model_seed+1)+5
             rng = self.engine.new_generator(seed)
-            self.recorder.log('policy',dict(variant='change',prompt=PROMPT,seed=seed,
-                temperature=self.temperature,top_p=1.,top_k=len(names),action_names=names,
-                action_ids=ids,history=False,feedback_input=False,action_delay=self.action_delay))
+            self.recorder.log('policy',dict(variant=self.variant,prompt=self.prompt,seed=seed,
+                temperature=self.temperature,top_p=1.,
+                top_k=None if hasattr(self.engine, 'generate_action') else len(names),action_names=names,
+                action_ids=ids,history=False,feedback_input=self.feedback is not None,action_delay=self.action_delay,
+                last_action_input=self.include_last_action, vision=self.vision,
+                demonstration_messages=len(self.demonstrations)))
+            if hasattr(self.engine, 'policy_metadata'):
+                self.recorder.log('decision_backend', self.engine.policy_metadata)
             await self.recorder.event('reset_started')
             initial = await self.world.reset()
             self.recorder.log('world_metadata',getattr(self.world,'metadata',{}))
@@ -70,27 +92,49 @@ class ProbePipeline:
                 height=info.get('player_pos',[None,None,None])[1])
             await self.recorder.event('reset_finished')
             previous = current = initial.image
+            last_action = 'none (episode start)'
             start = time.monotonic()
             await self.recorder.event('workload_started')
             for step in range(self.max_actions):
                 if self.stop_requested():
                     break
                 before = time.perf_counter()
-                messages = messages_for(previous,current)
+                feedback = self.feedback.text() if self.feedback is not None else None
+                messages = messages_for(previous,current,self.prompt,
+                    last_action=last_action if self.include_last_action else None, feedback=feedback)
+                if self.vision != 'plain':
+                    from .probe_vision import aim_messages
+                    messages = aim_messages(messages, current, self.vision)
+                if self.demonstrations:
+                    from .probe_demonstrations import add_demonstrations
+                    messages = add_demonstrations(messages, self.demonstrations)
+                model_frames=[part['image'] for msg in messages if isinstance(msg['content'],list)
+                              for part in msg['content'] if part['type']=='image']
                 self.recorder.log('model_image_input',dict(observation=step,
-                    frame_steps=[max(0,step-1),step],conversation_tokens_before=0,
+                    frame_steps=[step] if self.vision=='current-large' else [max(0,step-1),step],conversation_tokens_before=0,
+                    last_action=last_action if self.include_last_action else None,
+                    feedback=feedback,vision=self.vision,
+                    model_image_shapes=[list(x.shape) for x in model_frames],
+                    model_image_sha256=[hashlib.sha256(x.tobytes()).hexdigest() for x in model_frames],
                     sha256=[hashlib.sha256(x.tobytes()).hexdigest() for x in (previous,current)]))
                 async with await BlockHandle.create(self.engine,'probe/action') as block:
-                    output, input_rows = await self.engine.prefill_action(messages,block)
-                    index, probs = self.engine.sample_action(output,ids,generator=rng,
-                                                           temperature=self.temperature)
-                del output  # no reusable logits/state references held during the pause
+                    if hasattr(self.engine, 'generate_action'):
+                        index, input_rows = await self.engine.generate_action(
+                            messages, block, generator=rng, temperature=self.temperature)
+                        probs = None  # a sampled completion is not a first-token readout
+                    else:
+                        output, input_rows = await self.engine.prefill_action(messages,block)
+                        index, probs = self.engine.sample_action(output,ids,generator=rng,
+                                                               temperature=self.temperature)
+                        del output  # no logits/scratch references held during the pause
                 decision_seconds = time.perf_counter()-before
                 self.recorder.log('decision',dict(observation=step,action=names[index],action_index=index,
-                    action_probabilities=dict(zip(names,probs)),probabilities_temperature=self.temperature,
+                    mode='generated' if hasattr(self.engine, 'generate_action') else 'readout',
+                    action_probabilities=dict(zip(names,probs)) if probs is not None else None,
+                    probabilities_temperature=self.temperature,
                     input_rows=input_rows,decision_seconds=decision_seconds,
-                    entropy_nats=-sum(p*math.log(p) for p in probs if p>0),
-                    nonargmax=index != max(range(len(probs)),key=probs.__getitem__)))
+                    entropy_nats=-sum(p*math.log(p) for p in probs if p>0) if probs is not None else None,
+                    nonargmax=index != max(range(len(probs)),key=probs.__getitem__) if probs is not None else None))
                 before = time.perf_counter()
                 if self.action_delay:
                     await asyncio.sleep(self.action_delay)
@@ -100,6 +144,8 @@ class ProbePipeline:
                 before = time.perf_counter()
                 observation = await self.world.pass_action(index)
                 world_seconds = time.perf_counter()-before
+                if self.feedback is not None:
+                    self.feedback.observe(names[index], observation.reward)
                 info = physics_info(observation.info)
                 height = info.get('player_pos',[None,None,None])[1]
                 await self.recorder.step(step=step+1,image=observation.image,action=names[index],
@@ -108,6 +154,7 @@ class ProbePipeline:
                 print('ACTION',json.dumps(dict(episode=self.context.episode_id,step=step+1,
                                               action=names[index],height=height)),flush=True)
                 previous, current = current, observation.image
+                last_action = names[index]
                 if observation.done:
                     break
             status = 'stopped' if self.stop_requested() else 'completed'

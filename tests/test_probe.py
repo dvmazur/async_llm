@@ -97,6 +97,19 @@ def test_probe_500_actions_no_retained_kv(tmp_path):
     assert engine.samples==500 and len(engine.frames)==500
 
 
+def test_hosted_completion_can_supply_action_without_probability_distribution(tmp_path):
+    class Hosted(Engine):
+        def sample_action(self,output,ids,*,generator,temperature):
+            self.samples+=1
+            return 3,None
+    engine=Hosted();world=World(engine)
+    asyncio.run(make(tmp_path,engine,world,max_actions=2,action_delay=0).run())
+    events=[e for e in read_jsonl(tmp_path/'events.jsonl') if e['kind']=='decision']
+    assert len(events)==2 and world.i==2 and engine.samples==2
+    assert all(e['action']=='right' and e['action_probabilities'] is None and
+               e['entropy_nats'] is None and e['nonargmax'] is None for e in events)
+
+
 def test_probe_repeated_episodes_do_not_accumulate_state(tmp_path):
     async def run():
         engine=Engine()

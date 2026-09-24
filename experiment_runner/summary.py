@@ -38,14 +38,16 @@ class Summary:
                 steps = list(read_jsonl(path.parent / "steps.jsonl"))
                 events = list(read_jsonl(path.parent / "events.jsonl"))
                 tokens = sum(e.get("sampled_tokens", 0) for e in events if e["kind"] == "stream")
+                tokens += sum(e.get('output_tokens', 0) for e in events if e['kind'] == 'assessment')
                 # Client already records each completed action readout through
                 # this episode's Recorder, before asking World to execute it.
-                readouts = sum(e['kind'] == 'decision' for e in events)
+                readouts = sum(e['kind'] == 'decision' and e.get('mode') != 'generated' for e in events)
                 actions = sum(s["kind"] == "action" for s in steps)
                 row = dict(episode_id=context["episode_id"], status=data["status"],
                     model_seed=context["model_seed"], world_seed=context["world_seed"],
                     tokens=tokens, actions=actions, action_readouts=readouts, start=data.get("workload_start"),
                     end=data.get("workload_end"), tokens_per_action=divide(tokens, actions),
+                    total_reward=sum(s.get('reward', 0.) for s in steps if s['kind'] == 'action'),
                     heights=[dict(step=s["step"], height=s.get("height")) for s in steps])
                 episodes.append(row)
                 local.append(row)

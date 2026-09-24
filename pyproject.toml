@@ -11,6 +11,7 @@ addopts = ""
 
 [dependency-groups]
 runtime = ["pillow>=10", "gymnasium==0.29.1", "pygame==2.6.1"]
+assessment = ["xgrammar==0.2.7"]
 plot = ["matplotlib>=3.8"]
 test = ["pytest>=8", "numpy==2.4.4", "pillow>=10"]
 
