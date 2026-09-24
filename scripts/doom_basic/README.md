@@ -47,5 +47,3 @@ for i in range(100):
     plt.show()
     if done: break
 ```
-
-Based on HF proof of concept https://gist.github.com/justheuristic/7aa895bc00bc31c33f950ff64c04c4ca .

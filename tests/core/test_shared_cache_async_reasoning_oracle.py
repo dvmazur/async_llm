@@ -35,7 +35,7 @@ Layers compared:
      Both should produce equivalent last-token logits per worker.
 
 Setup:
-  AsyncReasoning is cloned locally at /home/dvmazur/AsyncReasoning .  Its
+  AsyncReasoning is cloned locally at ~/AsyncReasoning ($HOME/AsyncReasoning). Its
   ``shared_cache`` package is added to sys.path below.  Triton/torch.compile
   paths are disabled before import so the CPU kernel tests work without
   CUDA.
@@ -66,6 +66,7 @@ os.environ.setdefault("USE_TORCH_COMPILE", "0")
 
 import gc
 import sys
+from pathlib import Path
 from typing import List
 
 import pytest
@@ -73,7 +74,7 @@ import torch
 
 # AsyncReasoning is cloned locally; add the repo root to sys.path so
 # `import shared_cache` finds yandex-research/AsyncReasoning's package.
-_ASYNC_REASONING_ROOT = "/home/dvmazur/AsyncReasoning"
+_ASYNC_REASONING_ROOT = str(Path.home() / "AsyncReasoning")
 if _ASYNC_REASONING_ROOT not in sys.path:
     sys.path.insert(0, _ASYNC_REASONING_ROOT)
 

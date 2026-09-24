@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "minisgl"
 version = "0.1.0"
 description = "What is this?"
-readme = "README.md"
+readme = "README.mini-sglang.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 classifiers = [
