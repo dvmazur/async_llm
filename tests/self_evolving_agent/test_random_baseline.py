@@ -1,3 +1,5 @@
+
+import _self_evolving_bootstrap  # noqa: F401
 import asyncio
 import csv
 from pathlib import Path

@@ -49,3 +49,6 @@ baseline beats (doom/minimal, health_gathering/detailed). doom/detailed is the e
 result rests on a single usable rep and shouldn't be read as a confirmed regression. This view
 doesn't capture the round-3->round-5 decay seen in both health_gathering variants in the full
 round-1/3/5 report — see `reports/draft_round135_v2.md` for that.
+
+Historical launcher note: `run_repeat_batch_round135_allgpu.sh` has been removed.
+These results describe the original batch; use `run_async_campaign.py` for new campaigns.

@@ -1,4 +1,6 @@
 """GPU integration check: terminate an in-flight real reasoning call, then reuse LLM."""
+
+import _self_evolving_bootstrap  # noqa: F401
 import asyncio
 import os
 import torch

@@ -50,7 +50,7 @@ ratio and decision traces include forward counts. This is not the inverse of
 the mean actions/forward ratio. Existing action-efficiency reports are retained.
 
 Validate native clock pausing and exact horizons with `test_synchronous.py`,
-and run `smoke_synchronous.py` with `SEA_GAME_MODE=synchronous` on an authorized
+and run `tests/self_evolving_agent/smoke_synchronous.py` with `SEA_GAME_MODE=synchronous` on an authorized
 GPU before launching scored episodes. Warm-up remains outside evaluation.
 
 This replaces the synchronous September 15 campaign. Old results are preserved

@@ -1,4 +1,6 @@
 """Exercise actual GPU inference and both template modes before a long sweep."""
+
+import _self_evolving_bootstrap  # noqa: F401
 import asyncio
 import os
 import time

@@ -1,3 +1,5 @@
+
+import _self_evolving_bootstrap  # noqa: F401
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path

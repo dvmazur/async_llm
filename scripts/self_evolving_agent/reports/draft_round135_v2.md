@@ -106,3 +106,6 @@ flagging as borderline-fast rather than squarely in the ~2000-6000ms/call range 
 4. Per the governing directive's requirements (non-degrading scores, beats baseline, genuine LLM
    usage, both envs): **only doom/minimal fully satisfies all of them in this batch**, and does so
    more convincingly under the corrected filter than it appeared to before.
+
+Historical launcher note: `run_repeat_batch_round135_allgpu.sh` has been removed.
+These results describe the original batch; use `run_async_campaign.py` for new campaigns.

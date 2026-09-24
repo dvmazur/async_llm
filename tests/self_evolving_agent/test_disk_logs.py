@@ -1,3 +1,5 @@
+
+import _self_evolving_bootstrap  # noqa: F401
 import errno
 from pathlib import Path
 import tempfile

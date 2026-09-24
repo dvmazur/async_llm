@@ -1,4 +1,6 @@
 """Run with the project Python; native tests require ViZDoom runtime access."""
+
+import _self_evolving_bootstrap  # noqa: F401
 import asyncio
 import time
 import unittest

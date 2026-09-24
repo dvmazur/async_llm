@@ -1,3 +1,5 @@
+
+import _self_evolving_bootstrap  # noqa: F401
 import unittest
 from round_validity import invalid_reason
 

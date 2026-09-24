@@ -1,4 +1,6 @@
 """CPU checks for budget boundaries and run-level uncertainty calculation."""
+
+import _self_evolving_bootstrap  # noqa: F401
 import asyncio
 import errno
 from pathlib import Path
