@@ -21,12 +21,6 @@ class ProbeReadout:
         inputs = self.backend.llm.processor.apply_chat_template(messages,
             add_generation_prompt=True, enable_thinking=False, tokenize=True,
             return_dict=True, return_tensors='pt')
-        # HF also emits an all-zero modality table for text-only messages. The
-        # engine expects all three image fields together, or none for plain text.
-        if inputs.get('pixel_values') is None and inputs.get('image_grid_thw') is None:
-            modalities = inputs.pop('mm_token_type_ids', None)
-            if modalities is not None and bool(modalities.any()):
-                raise ValueError('non-text modality IDs without image inputs')
         # No system-prefix cache: the earlier split-prefix numerical check failed.
         result = await self.backend.llm(**inputs, cache_view=[target.raw])
         return result, inputs['input_ids'].numel()
