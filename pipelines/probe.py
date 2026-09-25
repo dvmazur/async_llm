@@ -129,7 +129,8 @@ class ProbePipeline:
                         del output  # no logits/scratch references held during the pause
                 decision_seconds = time.perf_counter()-before
                 self.recorder.log('decision',dict(observation=step,action=names[index],action_index=index,
-                    mode='generated' if hasattr(self.engine, 'generate_action') else 'readout',
+                    mode=getattr(self.engine, 'decision_mode',
+                        'generated' if hasattr(self.engine, 'generate_action') else 'readout'),
                     action_probabilities=dict(zip(names,probs)) if probs is not None else None,
                     probabilities_temperature=self.temperature,
                     input_rows=input_rows,decision_seconds=decision_seconds,
