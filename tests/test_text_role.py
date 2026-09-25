@@ -6,6 +6,30 @@ import pytest
 from experiment_runner.text_role import TextRole
 
 
+def test_borrowed_conversation_retains_last_token_and_does_not_free_it():
+    class Backend:
+        def __init__(self):
+            self.decodes=[]
+            self.llm=SimpleNamespace(engine=SimpleNamespace(config=SimpleNamespace(
+                model_config=SimpleNamespace(vocab_size=100))),
+                tokenizer=SimpleNamespace(decode=lambda ids,**kw:'abc'))
+        def sample(self,output,**kw):return len(self.decodes)+1,'x',False
+        async def decode(self,token,deps,target):
+            self.decodes.append((token,target));return object()
+        async def create_block(self):raise AssertionError('caller owns the conversation')
+        async def free_block(self,block):raise AssertionError('caller owns the conversation')
+    backend=Backend();target=object()
+    role=TextRole(backend,SimpleNamespace(log=lambda *a:None),'planner')
+    async def prefill(messages,block):
+        assert block is target
+        return object(),20
+    role.readout.prefill_action=prefill
+    result=asyncio.run(role.on_block([dict(role='user',content='continue')],target,
+        generator=17,temperature=.7,max_tokens=3))
+    assert result==('abc',20)
+    assert backend.decodes==[(1,target),(2,target),(3,target)]
+
+
 @pytest.mark.parametrize('ending',['length','eos','boundary','error','cancel'])
 def test_plain_role_length_is_normal_and_kv_always_freed(ending):
     class Backend:

@@ -79,7 +79,8 @@ class ProbePipeline:
             self.recorder.log('policy',dict(variant=self.variant,prompt=self.prompt,seed=seed,
                 temperature=self.temperature,top_p=1.,
                 top_k=None if hasattr(self.engine, 'generate_action') else len(names),action_names=names,
-                action_ids=ids,history=False,feedback_input=self.feedback is not None,action_delay=self.action_delay,
+                action_ids=ids,history=getattr(self.engine,'has_history',False),
+                feedback_input=self.feedback is not None,action_delay=self.action_delay,
                 last_action_input=self.include_last_action, vision=self.vision,
                 demonstration_messages=len(self.demonstrations)))
             if hasattr(self.engine, 'policy_metadata'):
@@ -111,7 +112,8 @@ class ProbePipeline:
                 model_frames=[part['image'] for msg in messages if isinstance(msg['content'],list)
                               for part in msg['content'] if part['type']=='image']
                 self.recorder.log('model_image_input',dict(observation=step,
-                    frame_steps=[step] if self.vision=='current-large' else [max(0,step-1),step],conversation_tokens_before=0,
+                    frame_steps=[step] if self.vision=='current-large' else [max(0,step-1),step],
+                    conversation_tokens_before=getattr(self.engine,'history_tokens',0),
                     last_action=last_action if self.include_last_action else None,
                     feedback=feedback,vision=self.vision,
                     model_image_shapes=[list(x.shape) for x in model_frames],
@@ -165,7 +167,15 @@ class ProbePipeline:
                 try:
                     await self.recorder.event('workload_finished',status=status)
                 finally:
-                    await self.world.aclose()
+                    try:
+                        close_episode=getattr(self.engine,'close_episode',None)
+                        if close_episode is not None:
+                            await close_episode()
+                    finally:
+                        await self.world.aclose()
+            except BaseException:
+                status = 'failed'
+                raise
             finally:
                 try:
                     await self.recorder.finish()

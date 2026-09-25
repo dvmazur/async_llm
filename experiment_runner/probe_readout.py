@@ -17,7 +17,7 @@ class ProbeReadout:
     async def free_block(self, block):
         await self.backend.free_block(block)
 
-    async def prefill_action(self, messages, target):
+    def prepare_inputs(self, messages):
         inputs = self.backend.llm.processor.apply_chat_template(messages,
             add_generation_prompt=True, enable_thinking=False, tokenize=True,
             return_dict=True, return_tensors='pt')
@@ -27,6 +27,10 @@ class ProbeReadout:
             modalities = inputs.pop('mm_token_type_ids', None)
             if modalities is not None and bool(modalities.any()):
                 raise ValueError('non-text modality IDs without image inputs')
+        return inputs
+
+    async def prefill_action(self, messages, target):
+        inputs = self.prepare_inputs(messages)
         # No system-prefix cache: the earlier split-prefix numerical check failed.
         result = await self.backend.llm(**inputs, cache_view=[target.raw])
         return result, inputs['input_ids'].numel()
