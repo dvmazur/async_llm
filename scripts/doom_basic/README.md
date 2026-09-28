@@ -1,5 +1,30 @@
 # Minimal DoomBasic demo
 
+## Install
+
+First install `minisgl` following the repository's
+[environment setup](../../README.md#environment-setup). Then, from the repository
+root, install the demo dependencies into the same environment:
+
+```bash
+source .venv/bin/activate
+uv pip install gymnasium vizdoom matplotlib jupyterlab ipykernel
+```
+
+This installs Gymnasium, ViZDoom, Matplotlib, and the Jupyter tools used below.
+
+## Run
+
+Start JupyterLab from the activated environment:
+
+```bash
+jupyter lab
+```
+
+Create a Python notebook using that environment's kernel and run the following
+example in a cell. It uses `%matplotlib inline` and top-level `await`, and requires
+an NVIDIA GPU with enough memory for the selected model.
+
 ```python
 import torch
 import minisgl.llm
