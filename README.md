@@ -116,7 +116,14 @@ async-thoughts --problem "What is 17 * 23?"
 async-thoughts --model /path/to/Qwen3.5-0.8B --max-steps 140 --probe-period 20   # quick demo
 ```
 
-**TODO: asynchronous Doom agent (background thinker + fast action probe)**
+### Coming soon 🚧
+
+More demos from the paper are on the way, all built on the same Qwen 3.x models with no fine-tuning:
+
+- 🎮 **Doom agents** that plan in the background while a fast probe picks actions frame by frame
+- 🎥 **Streaming video commentary** that watches, thinks, and speaks up when something happens
+- 🖥️ **System monitoring** that reads live logs and flags anomalies as they happen
+- 🤖 **Self-defined agents**, where the model writes its own AsyncLLM coroutines
 
 ## Cite
 
