@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="AsyncLLM: training-free asynchronous LLM agents built from asyncio coroutines with shared memory.">
+<meta property="og:title" content="LLMs are General Asynchronous Agents">
+<meta property="og:description" content="AsyncLLM: training-free asynchronous LLM agents built from asyncio coroutines with shared memory.">
+<meta property="og:image" content="https://dvmazur.github.io/async_llm/doom-poster.jpg">
+<meta property="og:url" content="https://dvmazur.github.io/async_llm/">
+<meta name="twitter:card" content="summary_large_image">
+<title>LLMs are General Asynchronous Agents</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500&family=Merriweather:ital,wght@0,300;0,400;1,300&display=swap">
+<style>
+/* Layout: Academic Project Page Template (Nerfies / Hogwild!) structure, restyled to the brandbook: YS Text (Golos Text fallback) for UI and headings, Merriweather Light for leads, captions and tables; black / white / #F6F6F6 with yellow #FED42B reserved for interactive and key elements; no shadows, gradients or textures. Light-only. */
+:root {
+  --bg: #ffffff;
+  --band: #f6f6f6;
+  --footer: #f6f6f6;
+  --text: #000000;
+  --strong: #000000;
+  --muted: rgba(0, 0, 0, 0.6);
+  --link: #000000;
+  --author: #000000;
+  --dark: #000000;
+  --border: #dddddd;
+  --accent: #fed42b;
+  --accent-deep: #fecb01;
+  --think: #3273dc;
+  --think-tint: #e8f0fc;
+  --act: #4a4a4a;
+  --act-tint: #eeeeee;
+  --prompt: #946c00;
+  --prompt-tint: #fbf3db;
+  --font-display: "YS Text", "Golos Text", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "YS Text", "Golos Text", "Helvetica Neue", Arial, sans-serif;
+  --font-editorial: "Merriweather", Georgia, "Times New Roman", serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.5;
+  margin: 0;
+}
+a { color: var(--link); text-decoration: underline; text-decoration-color: rgba(0, 0, 0, 0.3); text-underline-offset: 0.18em; }
+a:hover { text-decoration-color: currentColor; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--dark); outline-offset: 3px; border-radius: 4px; }
+b, strong { color: var(--strong); }
+
+.container { width: 100%; max-width: 960px; margin-inline: auto; padding-inline: 16px; }
+.section { padding-block: 3rem; }
+.centered { text-align: center; }
+
+h1, h2, .subtitle { font-family: var(--font-display); margin: 0; text-wrap: balance; }
+.title-1 { font-size: 3rem; font-weight: 500; letter-spacing: -0.01em; line-height: 1.125; color: var(--strong); }
+.title-3 { font-size: 2rem; font-weight: 500; line-height: 1.125; color: var(--strong); margin-bottom: 1.5rem; }
+.subtitle { font-family: var(--font-editorial); font-size: 1.1rem; font-weight: 300; line-height: 1.6; color: var(--text); }
+
+/* Hero */
+.hero { padding-block: 3rem 1.5rem; }
+.hero .title-1 { margin-bottom: 1.25rem; }
+.authors { font-family: var(--font-display); font-size: 1.2rem; }
+.author-block { display: inline-block; margin-inline: 0.2rem; }
+.authors a { color: var(--author); }
+.authors sup { font-size: 0.7em; }
+.eql { display: block; font-size: 0.875rem; margin-top: 0.25rem; color: var(--muted); }
+.tags { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.4rem; margin-top: 1rem; }
+.tag { background: var(--band); border-radius: 290486px; padding: 0.2rem 0.75rem; font-size: 0.85rem; }
+.links { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.5rem; margin-top: 1.25rem; }
+.button {
+  display: inline-flex; align-items: center; gap: 0.5em;
+  background: var(--dark); color: #fff; border-radius: 290486px;
+  padding: calc(0.5em - 1px) 1.25em; font-size: 1rem; line-height: 1.5;
+  font-family: var(--font-body);
+}
+.button { text-decoration: none; }
+.button:hover { background: #2b2b2b; color: #fff; }
+.button svg { width: 1.1em; height: 1.1em; fill: currentColor; }
+
+/* Abstract band */
+.band { background: var(--band); }
+.narrow { max-width: 768px; margin-inline: auto; }
+.justified { text-align: left; font-family: var(--font-editorial); font-weight: 300; font-size: 1.05rem; line-height: 1.75; }
+.justified p { margin: 0 0 1em; }
+.justified p:last-child { margin-bottom: 0; }
+
+/* Media */
+video, .figure img {
+  display: block; width: 100%; max-width: 100%; height: auto;
+  border-radius: 0; background: var(--band);
+}
+.teaser { padding-block: 3rem 1rem; }
+.teaser .subtitle { margin-top: 1rem; }
+/* Self-defining agents loop */
+.more { margin: 1rem 0 0; font-size: 1rem; }
+.self-loop { background: var(--bg); padding: 1.5rem 1.5rem 1rem; text-align: left; }
+.loop { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr) 2rem minmax(0, 1fr) 2rem minmax(0, 1fr) 2rem minmax(0, 1fr); align-items: start; gap: 0.5rem; }
+.loop li { display: grid; gap: 0.35rem; align-content: start; min-width: 0; }
+.loop b { font-weight: 500; font-size: 1.05rem; }
+.loop span:not(.num) { font-size: 0.9rem; line-height: 1.45; color: var(--muted); }
+.loop code { font-size: 0.85em; color: var(--strong); }
+.loop .num { width: 1.9rem; height: 1.9rem; border-radius: 50%; border: 1px solid #000; display: inline-grid; place-items: center; font-size: 0.85rem; }
+.loop li:first-child .num { background: var(--accent); border-color: var(--accent); }
+.loop .sep { padding-top: 0.45rem; color: #000; }
+.arr { width: 100%; height: 12px; }
+.loop-back { position: relative; margin: 0.9rem 0 0; color: #000; }
+.loop-back svg { display: block; width: 100%; height: 12px; }
+.loop-back span { position: absolute; left: 50%; top: 2px; transform: translateX(-50%); background: var(--bg); padding: 0 0.5rem; font-size: 0.8rem; color: var(--muted); }
+@media (max-width: 760px) {
+  .loop { grid-template-columns: minmax(0, 1fr); }
+  .loop .sep { display: none; }
+  .loop-back { display: none; }
+}
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; align-items: start; margin-top: 2rem; }
+.pair video { max-height: 44rem; object-fit: contain; }
+.pair p { margin-top: 0.75rem; font-size: 1rem; text-align: center; }
+
+/* Overview figure */
+.lane { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.blk { font-family: var(--font-mono); font-size: 0.8rem; padding: 0.4rem 0.55rem; border-radius: 5px; line-height: 1.2; white-space: nowrap; }
+.blk.s { background: var(--prompt-tint); color: var(--prompt); }
+.blk.a { background: var(--think-tint); color: var(--think); }
+.blk.b { background: var(--act-tint); color: var(--act); }
+.who { font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); width: 4.5rem; }
+.fig-box { border: 1px solid var(--border); border-radius: 0; padding: 1.5rem; }
+.caption { margin-top: 1rem; }
+.lead { max-width: 46rem; margin: 0 auto 1.75rem; }
+
+/* Code + BibTeX (Bulma .content pre) */
+pre {
+  background: var(--band); color: var(--text); font-family: var(--font-mono);
+  font-size: 0.875em; line-height: 1.55; padding: 1.25em 1.5em;
+  overflow-x: auto; white-space: pre; margin: 0; text-align: left;
+}
+pre .c { color: var(--muted); }
+pre .k { color: var(--think); }
+pre .s { color: var(--prompt); }
+
+/* Notebook cells, as in the paper's Figure 1 */
+.nb { display: grid; gap: 0.6rem; text-align: left; }
+.cell { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); align-items: start; }
+.prompt { font-family: var(--font-mono); font-size: 0.85rem; color: var(--muted); text-align: right; padding: 0.95em 0.75em 0 0; white-space: nowrap; }
+.cell pre { background: var(--band); border: 1px solid var(--border); border-radius: 0; padding: 0.8em 1em; font-size: 0.85em; }
+.cell.running pre { border-color: var(--dark); border-left: 4px solid var(--accent); }
+@media (max-width: 600px) {
+  .cell { grid-template-columns: minmax(0, 1fr); }
+  .prompt { text-align: left; padding: 0 0 0.25rem; }
+}
+
+/* Figure 1: code cells beside the memory views they use.
+   Only cache blocks carry color, from the brand infographics palette: prompt = grey C6C6C6, thinker = blue 6A88F6, writer = yellow FECB01. Syntax is monochrome. */
+.fig1 { --blk-s: #c6c6c6; --blk-s-bg: #dddddd; --blk-t: #6a88f6; --blk-t-bg: #dde4fd; --blk-w: #fecb01; --blk-w-bg: #fff0b3; --blk-w-soft: #fee78a;
+  display: grid; gap: 1.5rem; text-align: left; background: var(--bg); }
+.fig-head { display: grid; grid-template-columns: minmax(0, 1fr) 13rem; gap: 0 1.5rem; font-family: var(--font-display); font-weight: 400; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.6; color: var(--strong); }
+.fig-head span:first-child { padding-left: 5.5rem; }
+.frow { display: grid; grid-template-columns: minmax(0, 1fr) 13rem; gap: 1.5rem; align-items: start; }
+.fig1 .cell pre { background: var(--band); color: var(--strong); font-size: 0.84em; white-space: pre-wrap; overflow-wrap: anywhere; }
+.fig1 pre .k { color: var(--strong); font-weight: 600; }
+.fig1 pre .s { color: #6a6a6a; }
+.fig1 pre .c { color: #818181; font-style: italic; }
+.view, .engine { display: grid; gap: 0.5rem; align-content: start; }
+.view { padding-top: 0.55rem; }
+.view p, .engine p { margin: 0; font-size: 0.9rem; line-height: 1.45; }
+.view-name { font-family: var(--font-display); font-weight: 500; font-size: 0.95rem; color: var(--strong); }
+.engine { border-bottom: 1px solid var(--border); padding-bottom: 1.25rem; }
+.key { display: flex; align-items: center; gap: 0.5rem; font-family: var(--font-mono); font-size: 0.82rem; }
+.fig1 .blk { font-weight: 600; min-width: 2rem; text-align: center; color: #000; }
+.fig1 .blk.s { background: var(--blk-s); }
+.fig1 .blk.t { background: var(--blk-t); }
+.fig1 .blk.w { background: var(--blk-w); }
+.fig1 .blk.wr { outline: 2px solid #000; outline-offset: -2px; }
+.fig1 .ref { font-weight: 600; border-radius: 3px; padding: 0 3px; color: #000; }
+.fig1 .ref.s { background: var(--blk-s-bg); }
+.fig1 .ref.t { background: var(--blk-t-bg); }
+.fig1 .ref.w { background: var(--blk-w-bg); }
+.fig1 .who { width: 4.5rem; }
+[data-block] { transition: box-shadow 0.12s; }
+.fig1.hl-s [data-block="s"], .fig1.hl-t [data-block="t"], .fig1.hl-w [data-block="w"] { box-shadow: 0 0 0 2px #000; }
+@media (prefers-reduced-motion: reduce) { [data-block] { transition: none; } }
+@media (max-width: 760px) {
+  .fig-head { display: none; }
+  .frow { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
+  .view { padding-top: 0; }
+}
+
+/* Animation: token rows, live code lines, batching timeline */
+.fig1 { position: relative; }
+.engine-head { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.controls { margin-left: auto; display: flex; align-items: center; gap: 0.4rem; }
+.ctl { display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem; height: 2.4rem; min-width: 2.4rem;
+  border-radius: 290486px; border: 1px solid var(--border); background: var(--bg); color: var(--strong); cursor: pointer;
+  font: 500 0.95rem var(--font-body); padding: 0 0.7rem; }
+.ctl svg { width: 1rem; height: 1rem; fill: currentColor; }
+.ctl:hover { border-color: #000; }
+.ctl.primary { background: var(--accent); border-color: var(--accent); color: #000; padding: 0 1.2rem 0 1rem; min-width: 7rem; }
+.ctl.primary:hover { background: var(--accent-deep); border-color: var(--accent-deep); }
+.ctl:disabled { opacity: 0.35; cursor: default; }
+.brow { display: flex; align-items: center; gap: 0.4rem; min-height: 1.75rem; font-family: var(--font-mono); font-size: 0.82rem; }
+.toks { display: inline-flex; flex-wrap: wrap; gap: 2px; min-width: 0; }
+.toks i { width: 4px; height: 14px; border-radius: 1px; display: block; }
+.toks.s i { background: #afafaf; opacity: 0.8; }
+.toks.t i { background: var(--blk-t); opacity: 0.6; }
+.toks.w i { background: #d0a701; opacity: 0.6; }
+.toks i.new { opacity: 1; }
+.line { display: inline-block; width: 100%; border-radius: 3px; transition: background 0.15s; }
+.line.t.live { background: var(--blk-t-bg); }
+.line.w.live { background: var(--blk-w-bg); }
+.line.pulse { background: var(--blk-t); color: #000; }
+.line.pulse .c { color: #000; }
+.stepno { font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); }
+.timeline { display: flex; gap: 1px; align-items: flex-end; min-height: 40px; overflow-x: auto; padding: 3px; }
+.timeline .col { display: grid; gap: 2px; grid-template-rows: 14px 14px; padding: 3px 2px; border-radius: 4px; cursor: pointer; }
+.timeline .col.future .tk { opacity: 0.2; }
+.timeline .col.cur { outline: 2px solid #000; }
+.timeline .col:hover { background: var(--band); }
+.tk { display: inline-block; width: 12px; height: 14px; border-radius: 2px; }
+.tk.t { background: var(--blk-t); grid-row: 1; }
+.tk.w { background: var(--blk-w); grid-row: 2; }
+.tk.wp { background: var(--blk-w-soft); grid-row: 2; outline: 1px solid var(--blk-w); outline-offset: -1px; }
+.tl-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.5rem; font-size: 0.85rem; color: var(--muted); }
+.tl-legend .tk { margin-left: 0.5rem; }
+.tl-legend .tk:first-child { margin-left: 0; }
+@media (prefers-reduced-motion: reduce) { .line { transition: none; } }
+
+/* Two-column dashboard: code on the left, everything that moves on the right */
+.container.wide { max-width: 1240px; }
+.fig1 { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 2rem; padding: 1.25rem 1.5rem 1.5rem; align-items: start; }
+.col-label { font-family: var(--font-body); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.code-col { display: grid; gap: 0.6rem; min-width: 0; }
+.fig1 .cell { grid-template-columns: 4rem minmax(0, 1fr); }
+.fig1 .prompt { padding-top: 0.8em; font-size: 0.78rem; }
+.fig1 .cell pre { font-size: 0.78em; line-height: 1.42; padding: 0.55em 0.85em; }
+.live-col { display: grid; gap: 1rem; min-width: 0; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 1rem); }
+.live-head { display: flex; align-items: baseline; gap: 0.75rem; }
+.live-col .controls { margin-left: 0; }
+.live-block { display: grid; gap: 0.4rem; align-content: start; padding-top: 0.9rem; border-top: 1px solid var(--border); }
+.live-block p { margin: 0; font-size: 0.85rem; line-height: 1.45; color: var(--muted); }
+.keys { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; }
+.views2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; }
+.views2 .view { padding-top: 0.9rem; }
+.muted-note { font-family: var(--font-mono); font-size: 0.75rem; font-weight: 400; color: var(--muted); margin-left: 0.35rem; }
+.fig1 .brow { min-height: 1.5rem; }
+@media (max-width: 900px) {
+  .fig1 { grid-template-columns: minmax(0, 1fr); }
+  .live-col { position: static; order: -1; }
+}
+@media (max-width: 600px) {
+  .fig1 .cell { grid-template-columns: minmax(0, 1fr); }
+  .views2 { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Tables (Bulma .table) */
+.tables { display: grid; gap: 2.5rem; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; color: var(--strong); font-family: var(--font-editorial); font-weight: 300; }
+thead th { font-family: var(--font-body); font-weight: 500; }
+th, td { border-bottom: 1px solid var(--border); padding: 0.5em 0.75em; text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th { border-bottom: 1px solid #000; }
+thead tr.group th { border-bottom: 1px solid var(--border); text-align: center; }
+tbody tr:last-child td { border-bottom: none; }
+td.best { background: var(--accent); font-weight: 400; }
+tr.base td { color: var(--muted); }
+
+/* BibTeX */
+.bib { position: relative; }
+.copy {
+  position: absolute; top: 0.6rem; right: 0.6rem; font: 0.8rem var(--font-body);
+  padding: 0.3rem 0.8rem; border-radius: 290486px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--strong); cursor: pointer;
+}
+
+footer { background: var(--footer); padding-block: 3rem 4rem; font-size: 0.95rem; }
+footer .narrow { max-width: 640px; }
+
+@media (max-width: 768px) {
+  .title-1 { font-size: 2.1rem; }
+  .title-3 { font-size: 1.6rem; }
+  .authors, .subtitle { font-size: 1.1rem; }
+  .pair { grid-template-columns: minmax(0, 1fr); }
+}
+</style>
+</head>
+<body>
+<section class="hero">
+  <div class="container centered">
+    <h1 class="title-1">LLMs are General Asynchronous Agents</h1>
+    <div class="authors">
+      <span class="author-block">George Yakushev<sup>*</sup>,</span>
+      <span class="author-block">Denis Mazur<sup>*</sup>,</span>
+      <span class="author-block">Vladimir Bartenev,</span>
+      <span class="author-block">Vyacheslav Zhdanovskiy,</span>
+      <span class="author-block">Timofey Byzov,</span>
+      <span class="author-block">Vladimir Kaurkin,</span>
+      <span class="author-block">Vadim Pastushenko</span>
+      <span class="eql"><sup>*</sup>Indicates Equal Contribution</span>
+    </div>
+    <div class="tags"><span class="tag">Asynchronous agents</span><span class="tag">Shared-memory inference</span><span class="tag">Training-free</span></div>
+    <div class="links">
+      <a class="button" href="https://arxiv.org/pdf/2609.35427">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 0h5.6L14 4.4V16H2V0h2zm5 1.5V5h3.5L9 1.5zM4.5 8v1.3h7V8h-7zm0 2.6v1.3h7v-1.3h-7z"/></svg>
+        <span>Paper</span>
+      </a>
+      <a class="button" href="https://github.com/dvmazur/async_llm">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span>Code</span>
+      </a>
+      <a class="button" href="https://arxiv.org/abs/2609.35427">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.2 1h2.4l3.4 5.2L11.4 1h2.4L9.2 8l4.6 7h-2.4L8 9.8 4.6 15H2.2l4.6-7z"/></svg>
+        <span>arXiv</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<section class="section band">
+  <div class="container">
+    <div class="narrow centered">
+      <h2 class="title-3">Abstract</h2>
+      <div class="justified">
+        <p>Modern LLMs are increasingly capable as autonomous agents, but they follow sequential interaction cycles: read, think, reply or call tools, repeat. Many real-world use cases are not sequential: voice assistants, embodied agents, and monitoring systems receive new inputs while they think or perform another task. Modern LLMs address this with specialized architectures for voice interaction and video streams, VLAs for robot control, asynchronous tool calling for API usage, and others. In this work, we generalize from different asynchronous tasks to general asynchronous agents that can adapt to different types of concurrency. To achieve this, we develop an asynchronous LLM framework that lets users (or the agents themselves) define inference coroutines with overlapping memory states. We showcase that Qwen&nbsp;3.x models are capable of asynchronous operation for streaming video understanding, videogames, and monitoring, without task-specific training.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="teaser">
+  <div class="container">
+    <video src="doom-streams.mp4" poster="doom-poster.jpg" autoplay controls muted loop playsinline aria-label="A training-free Doom agent: observation and action streams progress while the game runs"></video>
+    <h2 class="subtitle centered">A training-free Doom agent. Observation and action coroutines share one cache and progress concurrently, so the agent keeps acting while it watches the game.</h2>
+  </div>
+</section>
+
+<section class="section band">
+  <div class="container wide centered">
+    <h2 class="title-3">How AsyncLLM Works</h2>
+    <h2 class="subtitle lead">AsyncLLM lets you define asynchronous agents in terms of coroutines communicating through shared cache blocks. Each coroutine writes to its own cache block and can access other coroutines&#8217; outputs using cache views. Below, an agent reasons and simultaneously provides the user with a running summary of its progress. Colors mark cache blocks; the outlined block is where a coroutine writes.</h2>
+    <div class="fig-box fig1" id="fig1">
+      <div class="code-col">
+        <div class="col-label">Agent definition</div>
+          <div class="cell"><div class="prompt">In [1]:</div><pre>api = AsyncLLM(<span class="s">"Qwen/Qwen3.5-9B"</span>)
+<span class="ref s" data-block="s">prompt_block</span>, <span class="ref t" data-block="t">thinker_block</span>, <span class="ref w" data-block="w">writer_block</span> = [
+    <span class="k">await</span> api.create_block() <span class="k">for</span> _ <span class="k">in</span> range(3)]
+paragraph_finished = asyncio.Event()  <span class="c"># thinker -&gt; writer signal</span>
+thinker_done = asyncio.Event()
+<span class="k">await</span> api.forward(encode(PROMPT), write_to=<span class="ref s" data-block="s">prompt_block</span>)</pre></div>
+          <div class="cell"><div class="prompt">In [2]:</div><pre><span class="k">async def</span> thinker_coro():
+<span class="line t" id="l-think">    <span class="k">async for</span> token <span class="k">in</span> api.generate(</span>
+        <span class="s">"&lt;think&gt;\n"</span>, [<span class="ref s" data-block="s">prompt_block</span>, <span class="ref t" data-block="t">thinker_block</span>],
+        stop=<span class="s">"&lt;/think&gt;"</span>,
+    ):
+        <span class="k">if</span> <span class="s">"\n\n"</span> <span class="k">in</span> token:
+<span class="line t" id="l-set">            paragraph_finished.set()  <span class="c"># notify the writer</span></span>
+    thinker_done.set()
+    paragraph_finished.set()  <span class="c"># one last summary</span></pre></div>
+          <div class="cell"><div class="prompt">In [3]:</div><pre><span class="k">async def</span> writer_coro():
+    <span class="k">while</span> (<span class="k">not</span> thinker_done.is_set()
+           <span class="k">or</span> paragraph_finished.is_set()):
+<span class="line w" id="l-wait">        <span class="k">await</span> paragraph_finished.wait()  <span class="c"># new paragraph</span></span>
+        paragraph_finished.clear()
+<span class="line w" id="l-write">        <span class="k">async for</span> token <span class="k">in</span> api.generate(</span>
+            <span class="s">"...&lt;/think&gt; Summary:"</span>,
+            [<span class="ref s" data-block="s">prompt_block</span>, <span class="ref t" data-block="t">thinker_block</span>, <span class="ref w" data-block="w">writer_block</span>],
+            stop=<span class="s">"\n"</span>,
+        ):
+            send_to_user(token)  <span class="c"># e.g. speak via TTS</span></pre></div>
+          <div class="cell running"><div class="prompt">In [*]:</div><pre><span class="k">await</span> asyncio.gather(thinker_coro(), writer_coro())</pre></div>
+      </div>
+
+      <div class="live-col">
+        <div class="live-head">
+          <div class="col-label">What happens</div>
+          <span class="stepno" id="stepno" aria-live="polite"></span>
+        </div>
+        <div class="controls" role="group" aria-label="Animation controls">
+            <button class="ctl" id="fig-back" type="button" aria-label="Step back"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h1.8v11H3zM13 2.5v11L5.8 8z"/></svg></button>
+            <button class="ctl primary" id="fig-play" type="button"><svg viewBox="0 0 16 16" aria-hidden="true"><path id="fig-play-icon" d="M4 2.5v11L13.5 8z"/></svg><span id="fig-play-label">Play</span></button>
+            <button class="ctl" id="fig-fwd" type="button" aria-label="Step forward"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.2 2.5H13v11h-1.8zM3 2.5v11L10.2 8z"/></svg></button>
+          </div>
+
+        <div class="live-block">
+          <div class="view-name">Inference engine</div>
+          <div class="timeline" id="timeline"></div>
+          <div class="tl-legend"><span class="tk t"></span>T decode <span class="tk w"></span>W decode <span class="tk wp"></span>W prefill</div>
+          <p>One column per forward pass. When both coroutines are active they share a batch. Click a column to jump there.</p>
+        </div>
+
+        <div class="live-block">
+          <div class="view-name">Cache blocks</div>
+          <div class="keys">
+            <span class="key"><span class="blk s wr" data-block="s">S</span><span class="ref s" data-block="s">prompt_block</span></span>
+            <span class="key"><span class="blk t" data-block="t">T</span><span class="ref t" data-block="t">thinker_block</span></span>
+            <span class="key"><span class="blk w" data-block="w">W</span><span class="ref w" data-block="w">writer_block</span></span>
+          </div>
+        </div>
+
+        <div class="views2">
+          <div class="live-block view">
+            <div class="view-name">Thinker view <span class="muted-note">In [2]</span></div>
+            <div class="brow"><span class="blk s" data-block="s">S</span><span class="toks s" data-toks="s"></span></div>
+            <div class="brow"><span class="blk t wr" data-block="t">T</span><span class="toks t" data-toks="t"></span></div>
+            <p>Reads the prompt and its own reasoning. Never sees the writer.</p>
+          </div>
+          <div class="live-block view">
+            <div class="view-name">Writer view <span class="muted-note">In [3]</span></div>
+            <div class="brow"><span class="blk s" data-block="s">S</span><span class="toks s" data-toks="s"></span></div>
+            <div class="brow"><span class="blk t" data-block="t">T</span><span class="toks t" data-toks="t"></span></div>
+            <div class="brow"><span class="blk w wr" data-block="w">W</span><span class="toks w" data-toks="w"></span></div>
+            <p>Reads the thinker's block as it grows and writes the summary.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container centered">
+    <h2 class="title-3">Demos</h2>
+    <h2 class="subtitle lead">All of the demos below are built on top of AsyncLLM. Each agent is a set of coroutines communicating through shared cache blocks.</h2>
+    <video src="street.mp4" autoplay controls muted loop playsinline aria-label="Streaming video of a street crossing with event captions"></video>
+    <h2 class="subtitle caption">Streaming video. An event probe scores every incoming frame (bars along the bottom), and the agent describes new events as they happen while the video keeps playing.</h2>
+    <div class="pair">
+      <div>
+        <video src="web-agent-49.mp4" autoplay controls muted loop playsinline aria-label="Web agent answering how much RAM a listed PC has"></video>
+        <p>Qwen3.5-35B-A3B finds how much RAM the listing with blue LED lights has.</p>
+      </div>
+      <div>
+        <video src="web-agent-15.mp4" autoplay controls muted loop playsinline aria-label="Web agent finding a seller's email address"></video>
+        <p>The same model finds the email of the seller of the guitar in the red case.</p>
+      </div>
+    </div>
+    <h2 class="subtitle caption">Web agent on VisualWebArena Classifieds.</h2>
+  </div>
+</section>
+
+<section class="section band">
+  <div class="container centered">
+    <h2 class="title-3">Self-Defining Agents</h2>
+    <h2 class="subtitle lead">Because AsyncLLM inference is defined directly in Python, we can hand an agent its own runtime and let it define its own inference structure: which coroutines to run, which cache blocks they share, and how they react to the environment.</h2>
+    <div class="fig-box self-loop">
+      <ol class="loop">
+        <li><span class="num">1</span><b>Write</b><span>The agent generates tool calls that rewrite its own inference code.</span></li>
+        <li class="sep"><svg class="arr" viewBox="0 0 24 12" aria-hidden="true"><path d="M0 6h20M15 1l6 5-6 5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></li>
+        <li><span class="num">2</span><b>Patch</b><span>The new code is applied to the already-running instance. Cache blocks and background tasks survive every rewrite.</span></li>
+        <li class="sep"><svg class="arr" viewBox="0 0 24 12" aria-hidden="true"><path d="M0 6h20M15 1l6 5-6 5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></li>
+        <li><span class="num">3</span><b>Act</b><span>Its <code>act()</code> method runs on every environment step.</span></li>
+        <li class="sep"><svg class="arr" viewBox="0 0 24 12" aria-hidden="true"><path d="M0 6h20M15 1l6 5-6 5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></li>
+        <li><span class="num">4</span><b>Evaluate</b><span>A harness scores the agent and reports the result in the next round's prompt.</span></li>
+      </ol>
+      <div class="loop-back"><svg viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true"><path d="M99 0v5H1V0" fill="none" stroke="currentColor" stroke-width="1" vector-effect="non-scaling-stroke"/></svg><span>next round</span></div>
+    </div>
+    <h2 class="subtitle caption">We run this loop with Qwen3.6-35B-A3B on two ViZDoom environments. The agent gets its runtime, the previous evaluation result, and the ability to modify its inference code, but no task-specific guidance on what inference structure to build. Self-defined agents show good initial results on our evaluations. The capability is not yet reliable, but it suggests that future LLMs may build self-adapting agents from an environment description.</h2>
+    <p class="more">More in our blog post, <a href="https://research.yandex.com/blog/the-kv-cache-as-an-agent-runtime">The KV cache as an agent runtime</a>.</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container centered">
+    <h2 class="title-3">Results</h2>
+    <div class="tables">
+      <div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr class="group"><th></th><th colspan="3">SoccerNet (streaming)</th><th>ProactiveVideoQA</th></tr>
+              <tr><th>Model</th><th>AUROC</th><th>Trigger Acc</th><th>TimVal</th><th>PAUC (ω=0.5)</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>AsyncLLM Qwen3.5-9B</td><td class="best">0.677</td><td class="best">62.82</td><td class="best">39.62</td><td class="best">0.541</td></tr>
+              <tr><td>AsyncLLM Qwen3.8-27B</td><td>0.608</td><td>54.88</td><td>33.27</td><td>0.504</td></tr>
+              <tr><td>AsyncLLM Qwen3.6-35B-A3B</td><td>0.651</td><td>62.55</td><td>37.46</td><td>0.539</td></tr>
+              <tr class="base"><td>Mage-VL</td><td>0.555</td><td>52.79</td><td>27.87</td><td>0.428</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h2 class="subtitle caption">Streaming video understanding. Training-free AsyncLLM agents outperform Mage-VL, a model trained specifically for video streaming (higher is better).</h2>
+      </div>
+      <div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Qwen3.6-35B-A3B agent</th><th>Accuracy % ↑</th><th># forward passes ↓</th><th>Mean % events ↓</th></tr>
+            </thead>
+            <tbody>
+              <tr class="base"><td>Sequential</td><td>61.76</td><td>8452</td><td>100</td></tr>
+              <tr class="base"><td>+ early answer</td><td>47.06</td><td>6641</td><td>58.71</td></tr>
+              <tr class="base"><td>+ skip rows</td><td>26.47</td><td>3686</td><td>65.86</td></tr>
+              <tr><td>AsyncLLM</td><td>55.88</td><td>3837</td><td class="best">55.49</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h2 class="subtitle caption">System monitoring on DevOps-Gym. AsyncLLM answers after 55% of the log events on average, using 45% of the sequential agent's forward passes.</h2>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section band" id="BibTeX">
+  <div class="container">
+    <h2 class="title-3">BibTeX</h2>
+    <div class="bib">
+      <button class="copy" id="copy-bib" type="button">Copy</button>
+      <pre id="bibtex">@misc{yakushev2026llmsgeneralasynchronousagents,
+      title={LLMs are General Asynchronous Agents},
+      author={George Yakushev and Denis Mazur and Vladimir Bartenev and Vyacheslav Zhdanovskiy and Timofey Byzov and Vladimir Kaurkin and Vadim Pastushenko},
+      year={2026},
+      eprint={2609.35427},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2609.35427},
+}</pre>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <div class="narrow">
+      <p>This page follows the design of the <a href="https://github.com/eliahuhorwitz/Academic-project-page-template">Academic Project Page Template</a> which was adopted from the <a href="https://nerfies.github.io">Nerfies</a> project page. This website is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by-sa/4.0/">Creative Commons Attribution-ShareAlike 4.0 International License</a>.</p>
+    </div>
+  </div>
+</footer>
+
+<script>
+  const btn = document.getElementById("copy-bib");
+  btn.addEventListener("click", () => {
+    const text = document.getElementById("bibtex").textContent;
+    const done = () => { btn.textContent = "Copied"; setTimeout(() => (btn.textContent = "Copy"), 1600); };
+    const fallback = () => {
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById("bibtex"));
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+      btn.textContent = "Selected";
+    };
+    try { navigator.clipboard.writeText(text).then(done, fallback); } catch (e) { fallback(); }
+  });
+  const fig = document.querySelector(".fig1");
+  fig.querySelectorAll("[data-block]").forEach(el => {
+    const b = el.dataset.block;
+    el.addEventListener("mouseenter", () => fig.classList.add("hl-" + b));
+    el.addEventListener("mouseleave", () => fig.classList.remove("hl-" + b));
+  });
+  // Figure 1 animation: precompute one run of the thinker/writer agent, then seek through it.
+  (() => {
+    const T_MAX = 24, PARA = 8, PREFILL = 2, DECODE = 3, TICK_MS = 320;
+    const q = sel => document.querySelector(sel);
+    const lines = { think: q("#l-think"), set: q("#l-set"), wait: q("#l-wait"), write: q("#l-write") };
+    const timeline = q("#timeline"), stepno = q("#stepno");
+    const back = q("#fig-back"), fwd = q("#fig-fwd"), play = q("#fig-play");
+    const playIcon = q("#fig-play-icon"), playLabel = q("#fig-play-label");
+    const ICON_PLAY = "M4 2.5v11L13.5 8z", ICON_PAUSE = "M3.5 2.5h3v11h-3zM9.5 2.5h3v11h-3z";
+
+    // frames[0] is the empty start; frames[i] is the state after forward pass i.
+    const frames = [{ t: 0, w: 0, tNew: 0, wNew: 0, batch: [], pulse: false, waiting: false }];
+    (() => {
+      let t = 0, w = 0, pending = 0, writer = null;
+      for (;;) {
+        const batch = []; let tNew = 0, wNew = 0, pulse = false;
+        if (!writer && pending > 0) { pending--; writer = { phase: "prefill" }; }
+        if (writer) {
+          if (writer.phase === "prefill") { w += PREFILL; wNew = PREFILL; batch.push("wp"); writer = { phase: "decode", left: DECODE }; }
+          else { w += 1; wNew = 1; batch.push("w"); if (--writer.left === 0) writer = null; }
+        }
+        if (t < T_MAX) { t += 1; tNew = 1; batch.unshift("t"); if (t % PARA === 0) { pending++; pulse = true; } }
+        if (!batch.length) break;
+        frames.push({ t, w, tNew, wNew, batch, pulse, waiting: !batch.some(b => b !== "t") });
+      }
+    })();
+    const N = frames.length - 1;
+
+    const cols = frames.slice(1).map((f, k) => {
+      const col = document.createElement("div"); col.className = "col"; col.title = `Step ${k + 1}`;
+      f.batch.forEach(b => { const el = document.createElement("span"); el.className = "tk " + b; col.appendChild(el); });
+      col.addEventListener("click", () => { stop(); show(k + 1); });
+      timeline.appendChild(col); return col;
+    });
+    const fill = (k, n, fresh) => document.querySelectorAll(`[data-toks="${k}"]`).forEach(el => {
+      while (el.children.length < n) el.appendChild(document.createElement("i"));
+      while (el.children.length > n) el.lastChild.remove();
+      [...el.children].forEach((c, i) => c.classList.toggle("new", i >= n - fresh));
+    });
+
+    let i = N, timer = null;
+    function show(k) {
+      i = Math.max(0, Math.min(N, k));
+      const f = frames[i], mid = i > 0 && i < N;
+      fill("s", 6, 0); fill("t", f.t, mid ? f.tNew : 0); fill("w", f.w, mid ? f.wNew : 0);
+      lines.think.classList.toggle("live", mid && f.batch.includes("t"));
+      lines.set.classList.toggle("pulse", mid && f.pulse);
+      lines.write.classList.toggle("live", mid && !f.waiting);
+      lines.wait.classList.toggle("live", mid && f.waiting && f.t < T_MAX);
+      cols.forEach((c, k) => { c.classList.toggle("future", k + 1 > i); c.classList.toggle("cur", mid && k + 1 === i); });
+      stepno.textContent = i === N ? `${N} forward passes` : `step ${i} / ${N}`;
+      back.disabled = i === 0; fwd.disabled = i === N;
+    }
+    function setPlaying(on) {
+      playIcon.setAttribute("d", on ? ICON_PAUSE : ICON_PLAY);
+      playLabel.textContent = on ? "Pause" : i === N ? "Replay" : "Play";
+    }
+    function stop() { clearTimeout(timer); timer = null; setPlaying(false); }
+    function tick() { show(i + 1); if (i === N) { stop(); return; } timer = setTimeout(tick, TICK_MS); }
+    function start() { if (i === N) show(0); setPlaying(true); timer = setTimeout(tick, TICK_MS); }
+
+    play.addEventListener("click", () => (timer ? stop() : start()));
+    back.addEventListener("click", () => { stop(); show(i - 1); setPlaying(false); });
+    fwd.addEventListener("click", () => { stop(); show(i + 1); setPlaying(false); });
+    q("#fig1").addEventListener("keydown", e => {
+      if (!e.target.closest(".controls")) return;
+      if (e.key === "ArrowLeft") { e.preventDefault(); back.click(); }
+      if (e.key === "ArrowRight") { e.preventDefault(); fwd.click(); }
+    });
+
+    show(N); setPlaying(false);                // complete, readable state at rest
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!reduced && "IntersectionObserver" in window) {
+      const io = new IntersectionObserver(([e]) => {
+        if (e.isIntersecting) { io.disconnect(); start(); }
+      }, { threshold: 0.35 });
+      io.observe(q("#fig1"));
+    }
+  })();
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    document.querySelectorAll("video[autoplay]").forEach(v => { v.removeAttribute("autoplay"); v.pause(); });
+  }
+</script>
+</body>
+</html>
