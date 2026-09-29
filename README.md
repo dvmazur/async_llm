@@ -134,9 +134,9 @@ If you found this work useful, please consider citing:
       title={LLMs are General Asynchronous Agents},
       author={George Yakushev and Denis Mazur and Vladimir Bartenev and Vyacheslav Zhdanovskiy and Timofey Byzov and Vladimir Kaurkin and Vadim Pastushenko},
       year={2026},
-      eprint={TODO},
+      eprint={2609.35427},
       archivePrefix={arXiv},
       primaryClass={cs.LG},
-      url={TODO},
+      url={https://arxiv.org/abs/2609.35427},
 }
 ```
