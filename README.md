@@ -1,3 +1,7 @@
+<a href='https://arxiv.org/abs/2609.35427'><img src='https://img.shields.io/badge/ArXiv-PDF-red' height="25"></a> &nbsp;
+<a href='https://dvmazur.github.io/async_llm/'><img src='https://img.shields.io/badge/Project-Page-Green' height="25"></a> &nbsp;
+<a href='https://huggingface.co/papers/2609.35427'><img src='https://img.shields.io/badge/HF%20%F0%9F%A4%97-Paper-yellow' height="25"></a> &nbsp;
+
 # AsyncLLM: LLMs are General Asynchronous Agents
 
 Official implementation of the paper `LLMs are General Asynchronous Agents`.
