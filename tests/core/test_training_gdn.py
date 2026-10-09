@@ -206,6 +206,155 @@ def uneven_history_trace():
     return session.trace
 
 
+@pytest.fixture
+def cuda_delta_math():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    previous = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = False
+    try:
+        yield
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = previous
+
+
+@pytest.mark.parametrize(
+    "trace_kind,segment_size,read_mode,dk,dv,boundaries",
+    [
+        ("mutation", 1, "expanded", 5, 7, False),
+        ("mutation", 1, "factorized", 128, 128, False),
+        ("mutation", 8, "expanded", 7, 5, True),
+        ("mutation", 8, "factorized", 5, 7, True),
+        ("stress", 8, "expanded", 16, 12, False),
+        ("stress", 8, "factorized", 16, 12, False),
+        ("uneven", 8, "factorized", 3, 5, True),
+    ],
+)
+def test_triton_delta_outputs_and_gradients(
+    cuda_delta_math, trace_kind, segment_size, read_mode, dk, dv, boundaries
+):
+    if trace_kind == "stress":
+        session = RecordingSession(Session())
+        workload(session, vocab_size=32, large_size=2)
+        trace = session.trace
+    else:
+        trace = uneven_history_trace() if trace_kind == "uneven" else mutation_trace()
+    torch.manual_seed(7)
+    n, heads = len(trace.tokens), 2
+    order = torch.randperm(n)
+    alpha, beta = (torch.rand(n, heads * 2, device="cuda")[:, ::2] for _ in range(2))
+    if boundaries:
+        alpha[::3], alpha[1::3] = 0, 1
+        beta[::4], beta[1::4] = 0, 1
+    inputs = tuple(
+        x.requires_grad_()
+        for x in (
+            torch.randn(n, heads, dk, device="cuda"),
+            torch.randn(n, heads, dk, device="cuda"),
+            torch.randn(n, heads, dv * 2, device="cuda")[..., ::2],
+            alpha,
+            beta,
+        )
+    )
+    weights = torch.randn(n, heads, dv, device="cuda")
+    outputs, gradients = [], []
+    for backend in ("torch", "triton"):
+        replay = GDNReplay.from_trace(
+            trace,
+            order,
+            device="cuda",
+            segment_size=segment_size,
+            read_mode=read_mode,
+            read_backend=backend,
+        )
+        output = delta(*inputs, replay)
+        outputs.append(output)
+        gradients.append(torch.autograd.grad((output * weights).sum(), inputs))
+    torch.testing.assert_close(outputs[1], outputs[0], atol=3e-6, rtol=3e-5)
+    for actual, expected in zip(gradients[1], gradients[0], strict=True):
+        assert actual.isfinite().all()
+        torch.testing.assert_close(actual, expected, atol=6e-6, rtol=3e-4)
+
+
+@pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
+def test_triton_delta_no_grad_saves_no_tensors(cuda_delta_math, read_mode):
+    trace = mutation_trace()
+    n = len(trace.tokens)
+    replay = GDNReplay.from_trace(
+        trace, torch.arange(n), device="cuda", read_mode=read_mode, read_backend="triton"
+    )
+    inputs = tuple(
+        x.requires_grad_()
+        for x in (
+            torch.randn(n, 2, 5, device="cuda"),
+            torch.randn(n, 2, 5, device="cuda"),
+            torch.randn(n, 2, 7, device="cuda"),
+            torch.rand(n, 2, device="cuda"),
+            torch.rand(n, 2, device="cuda"),
+        )
+    )
+    expected = delta(*inputs, replay).detach()
+
+    def unexpected_save(tensor):
+        raise AssertionError("No-grad replay must not save tensors")
+
+    with (
+        torch.no_grad(),
+        torch.autograd.graph.saved_tensors_hooks(unexpected_save, lambda tensor: tensor),
+    ):
+        actual = delta(*inputs, replay)
+    assert not actual.requires_grad
+    torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
+
+
+@pytest.mark.parametrize("backend", ["invalid", "triton"])
+def test_delta_rejects_invalid_or_cpu_triton_backend(backend):
+    trace = mutation_trace()
+    n = len(trace.tokens)
+    with pytest.raises(ValueError, match="backend|CUDA|cuda"):
+        replay = GDNReplay.from_trace(trace, torch.arange(n), read_backend=backend)
+        delta(
+            torch.randn(n, 1, 3),
+            torch.randn(n, 1, 3),
+            torch.randn(n, 1, 4),
+            torch.rand(n, 1),
+            torch.rand(n, 1),
+            replay,
+        )
+
+
+@pytest.mark.parametrize(
+    "read_mode,use_reentrant", [("expanded", None), ("factorized", False), ("expanded", True)]
+)
+def test_triton_hybrid_parameter_gradients(cuda_delta_math, read_mode, use_reentrant):
+    reference, model = tiny_hybrid().cuda().train(), tiny_hybrid().cuda().train()
+    if use_reentrant is not None:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
+        )
+    trace = mutation_trace()
+    options = {"device": "cuda", "gdn_read_mode": read_mode}
+    native = Replay.from_trace(trace, **options, gdn_read_backend="torch")
+    replay = Replay.from_trace(trace, **options, gdn_read_backend="triton")
+    expected = forward(reference, native)
+    actual = forward(model, replay)
+    torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
+    targets = replay.input_ids.roll(-1)
+    F.cross_entropy(expected, targets).backward()
+    F.cross_entropy(actual, targets).backward()
+    for (name, parameter), (_, native_parameter) in zip(
+        model.named_parameters(), reference.named_parameters(), strict=True
+    ):
+        assert parameter.grad is not None and native_parameter.grad is not None
+        torch.testing.assert_close(
+            parameter.grad,
+            native_parameter.grad,
+            atol=2e-6,
+            rtol=3e-4,
+            msg=f"Gradient mismatch: {name}",
+        )
+
+
 @pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
 @pytest.mark.parametrize("segment_size", [1, 2, 8, 16])
 @pytest.mark.parametrize("trace_kind", ["single", "mutation", "uneven", "stress"])

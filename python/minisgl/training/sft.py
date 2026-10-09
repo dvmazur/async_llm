@@ -306,10 +306,13 @@ def train(args):
     gdn_segment_size = getattr(args, "gdn_segment_size", 8)
     gdn_read_mode = getattr(args, "gdn_read_mode", "expanded")
     gdn_cache_reused = getattr(args, "gdn_cache_reused", True)
+    gdn_read_backend = getattr(args, "gdn_read_backend", "torch")
     if gdn_segment_size < 1:
         raise ValueError("gdn_segment_size must be positive")
     if gdn_read_mode not in {"expanded", "factorized"}:
         raise ValueError("gdn_read_mode must be expanded or factorized")
+    if gdn_read_backend not in {"torch", "triton"}:
+        raise ValueError("gdn_read_backend must be torch or triton")
     data = json.loads(args.data.read_text())
     examples = []
     for example in data["examples"]:
@@ -323,6 +326,7 @@ def train(args):
             gdn_segment_size=gdn_segment_size,
             gdn_read_mode=gdn_read_mode,
             gdn_cache_reused=gdn_cache_reused,
+            gdn_read_backend=gdn_read_backend,
         )
         examples.append((replay, targets))
     config = AutoConfig.from_pretrained(data["model"]).get_text_config()
@@ -385,6 +389,7 @@ def train(args):
         "gdn_segment_size": gdn_segment_size,
         "gdn_read_mode": gdn_read_mode,
         "gdn_cache_reused": gdn_cache_reused,
+        "gdn_read_backend": gdn_read_backend,
         "max_logprob_error": max_error,
         "initial": initial,
         "final": final,
@@ -435,6 +440,12 @@ def main():
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Cache dense transforms for heavily reused GDN summaries",
+    )
+    training.add_argument(
+        "--gdn-read-backend",
+        choices=("torch", "triton"),
+        default="torch",
+        help="Use Torch or fused Triton kernels for GDN reads",
     )
     args = parser.parse_args()
     if torch.cuda.device_count() != 1:

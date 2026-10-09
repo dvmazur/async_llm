@@ -818,6 +818,7 @@ def test_causal_metadata_is_compact():
         {"gdn_segment_size": 0},
         {"gdn_segment_size": -1},
         {"gdn_read_mode": "invalid"},
+        {"gdn_read_backend": "invalid"},
     ],
 )
 def test_gdn_options_are_rejected_before_training_data_is_loaded(options):
@@ -827,15 +828,25 @@ def test_gdn_options_are_rejected_before_training_data_is_loaded(options):
         sft.train(NS(**options))
 
 
+@pytest.mark.parametrize("backend", ["torch", "triton"])
+def test_replay_preserves_gdn_read_backend_on_transfer(backend):
+    replay = Replay.from_trace(example_trace(), gdn_read_backend=backend)
+    replay._gdn["cached"] = object()
+    transferred = replay.to("cpu")
+    assert replay.gdn_read_backend == transferred.gdn_read_backend == backend
+    assert not transferred._gdn
+
+
 @pytest.mark.parametrize(
     "flags,expected",
     [
-        ([], (8, "expanded", True)),
+        ([], (8, "expanded", True, "torch")),
         (
             ["--gdn-segment-size", "2", "--gdn-read-mode", "factorized", "--no-gdn-cache-reused"],
-            (2, "factorized", False),
+            (2, "factorized", False, "torch"),
         ),
-        (["--gdn-cache-reused"], (8, "expanded", True)),
+        (["--gdn-cache-reused"], (8, "expanded", True, "torch")),
+        (["--gdn-read-backend", "triton"], (8, "expanded", True, "triton")),
     ],
 )
 def test_sft_cli_passes_gdn_options(monkeypatch, tmp_path, flags, expected):
@@ -847,7 +858,12 @@ def test_sft_cli_passes_gdn_options(monkeypatch, tmp_path, flags, expected):
     sft.main()
     assert len(received) == 1
     args = received[0]
-    assert (args.gdn_segment_size, args.gdn_read_mode, args.gdn_cache_reused) == expected
+    assert (
+        args.gdn_segment_size,
+        args.gdn_read_mode,
+        args.gdn_cache_reused,
+        args.gdn_read_backend,
+    ) == expected
 
 
 @pytest.mark.parametrize(
@@ -855,6 +871,7 @@ def test_sft_cli_passes_gdn_options(monkeypatch, tmp_path, flags, expected):
     [
         ["--gdn-segment-size", "0"],
         ["--gdn-read-mode", "invalid"],
+        ["--gdn-read-backend", "invalid"],
     ],
 )
 def test_sft_cli_rejects_invalid_gdn_options(monkeypatch, tmp_path, flags):

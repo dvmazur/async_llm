@@ -26,6 +26,7 @@ class Replay:
     gdn_segment_size: int = 8
     gdn_read_mode: str = "expanded"
     gdn_cache_reused: bool = True
+    gdn_read_backend: str = "torch"
     _gdn: dict = field(default_factory=dict, repr=False)
     _attention: dict = field(default_factory=dict, repr=False)
 
@@ -63,6 +64,7 @@ class Replay:
         gdn_segment_size=8,
         gdn_read_mode="expanded",
         gdn_cache_reused=True,
+        gdn_read_backend="torch",
     ):
         if query_chunk_size <= 0:
             raise ValueError("query_chunk_size must be positive")
@@ -70,6 +72,8 @@ class Replay:
             raise ValueError("gdn_segment_size must be positive")
         if gdn_read_mode not in {"expanded", "factorized"}:
             raise ValueError("gdn_read_mode must be expanded or factorized")
+        if gdn_read_backend not in {"torch", "triton"}:
+            raise ValueError("gdn_read_backend must be torch or triton")
         if not trace.tokens:
             raise ValueError("Cannot replay an empty trace")
         tokens = trace.tokens
@@ -170,6 +174,7 @@ class Replay:
             gdn_segment_size=gdn_segment_size,
             gdn_read_mode=gdn_read_mode,
             gdn_cache_reused=gdn_cache_reused,
+            gdn_read_backend=gdn_read_backend,
         )
 
 
@@ -309,6 +314,7 @@ def _forward(model, replay: Replay, rows, hidden_only):
             replay.gdn_segment_size,
             replay.gdn_read_mode,
             replay.gdn_cache_reused,
+            replay.gdn_read_backend,
         )
         if key not in replay._gdn:
             replay._gdn[key] = GDNReplay.from_trace(
@@ -319,6 +325,7 @@ def _forward(model, replay: Replay, rows, hidden_only):
                 segment_size=key[2],
                 read_mode=key[3],
                 cache_reused=key[4],
+                read_backend=key[5],
             )
         kwargs["gdn_replay"] = replay._gdn[key]
         for layer in backbone.layers:

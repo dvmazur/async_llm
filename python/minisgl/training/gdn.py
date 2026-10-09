@@ -17,6 +17,17 @@ class GDNReplay:
     segment_size: int = 8
     read_mode: str = "expanded"
     cache_reused: bool = True
+    read_backend: str = "torch"
+
+    @cached_property
+    def read_paths(self):
+        reads = self.partitions[1]
+        paths = torch.zeros(len(self.reads), len(reads), 2, dtype=torch.long)
+        for depth, groups in enumerate(reads):
+            for kind, (rows, indices) in enumerate(groups, 1):
+                paths[rows.cpu(), depth, 0] = kind
+                paths[rows.cpu(), depth, 1] = indices.cpu()
+        return paths.to(self.reads.device)
 
     @cached_property
     def partitions(self):
@@ -130,8 +141,11 @@ class GDNReplay:
         segment_size=8,
         read_mode="expanded",
         cache_reused=True,
+        read_backend="torch",
     ):
         """Compile shared snapshot summaries and original convolution windows."""
+        if read_backend not in {"torch", "triton"}:
+            raise ValueError("Read backend must be torch or triton")
         n = len(trace.tokens)
         order = torch.as_tensor(order).cpu().tolist()
         if not n or sorted(order) != list(range(n)) or conv_kernel_size < 1:
@@ -251,6 +265,7 @@ class GDNReplay:
             segment_size,
             read_mode,
             cache_reused,
+            read_backend,
         )
 
 
@@ -315,33 +330,54 @@ class _Delta(torch.autograd.Function):
             ss, uu, zz, ww = _segment_factors(*(x[sources] for x in (key, value, alpha, beta)))
             scale[rows], fu[columns], fz[columns], fw[columns] = ss, uu, zz, ww
             del ss, uu, zz, ww
-        r = query * dk**-0.5
-        output = torch.zeros_like(value)
-        vectors = []
-        for (rows, indices), (dense_rows, dense_indices), (short_rows, short_indices) in reads:
-            if save:
-                vectors.append(r)
-            next_r = r.clone()
-            if len(rows):
-                k, v = key[indices], value[indices]
-                al, be = alpha[indices, :, None], beta[indices, :, None]
-                kr = (k * r[rows]).sum(-1, keepdim=True)
-                output[rows] += be * v * kr
-                next_r[rows] = al * (r[rows] - be * k * kr)
-            if len(dense_rows):
-                rr = r[dense_rows, ..., None]
-                output[dense_rows] += (b[dense_indices] @ rr).squeeze(-1)
-                next_r[dense_rows] = (a[dense_indices] @ rr).squeeze(-1)
-            if len(short_rows):
-                columns = lookup[short_indices]
-                rr = r[short_rows]
-                s = (fw[columns] * rr[:, None]).sum(-1)
-                output[short_rows] += (fz[columns] * s[..., None]).sum(1)
-                next_r[short_rows] = scale[short_indices, :, None] * rr + (
-                    fu[columns] * s[..., None]
-                ).sum(1)
-                del rr, s
-            r = next_r
+        if replay.read_backend == "triton":
+            from .gdn_kernel import read_paths
+
+            output, vectors = read_paths(
+                query,
+                key,
+                value,
+                alpha,
+                beta,
+                a,
+                b,
+                scale,
+                fu,
+                fz,
+                fw,
+                lookup,
+                replay.read_paths,
+                save,
+            )
+        else:
+            r = query * dk**-0.5
+            output = torch.zeros_like(value)
+            vectors = []
+            for (rows, indices), (dense_rows, dense_indices), (short_rows, short_indices) in reads:
+                if save:
+                    vectors.append(r)
+                next_r = r.clone()
+                if len(rows):
+                    k, v = key[indices], value[indices]
+                    al, be = alpha[indices, :, None], beta[indices, :, None]
+                    kr = (k * r[rows]).sum(-1, keepdim=True)
+                    output[rows] += be * v * kr
+                    next_r[rows] = al * (r[rows] - be * k * kr)
+                if len(dense_rows):
+                    rr = r[dense_rows, ..., None]
+                    output[dense_rows] += (b[dense_indices] @ rr).squeeze(-1)
+                    next_r[dense_rows] = (a[dense_indices] @ rr).squeeze(-1)
+                if len(short_rows):
+                    columns = lookup[short_indices]
+                    rr = r[short_rows]
+                    s = (fw[columns] * rr[:, None]).sum(-1)
+                    output[short_rows] += (fz[columns] * s[..., None]).sum(1)
+                    next_r[short_rows] = scale[short_indices, :, None] * rr + (
+                        fu[columns] * s[..., None]
+                    ).sum(1)
+                    del rr, s
+                r = next_r
+            vectors = torch.stack(vectors) if save else None
         if save:
             ctx.save_for_backward(
                 key,
@@ -350,7 +386,7 @@ class _Delta(torch.autograd.Function):
                 beta,
                 a,
                 b,
-                torch.stack(vectors),
+                vectors,
                 cached,
                 scale,
                 fu,
@@ -503,6 +539,10 @@ def delta(query, key, value, alpha, beta, replay: GDNReplay):
     T dense summaries use O(T H d^2); vectors use O(N D H d) at execution depth D.
     Factorized reads add O(P H d) for P cached factor columns. Traces store indices.
     """
+    if replay.read_backend not in {"torch", "triton"}:
+        raise ValueError("Read backend must be torch or triton")
+    if replay.read_backend == "triton" and not query.is_cuda:
+        raise ValueError("Triton GDN reads require CUDA FP32 inputs")
     inputs = tuple(x.float() for x in (query, key, value, alpha, beta))
     query, key, value, alpha, beta = inputs
     query = query * torch.rsqrt(query.square().sum(-1, keepdim=True) + 1e-6)
