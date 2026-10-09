@@ -4,6 +4,7 @@ from dataclasses import asdict
 from functools import partial
 from itertools import groupby
 from types import SimpleNamespace as NS
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -644,25 +645,67 @@ def test_causal_forward_and_backward_match_huggingface(mixed_steps):
         )
 
 
-def test_native_forward_after_replay_stays_causal_and_masked():
-    model = tiny_model()
-    ids = torch.tensor([[1, 2, 3, 4], [0, 5, 6, 7]])
-    mask = torch.tensor([[1, 1, 1, 1], [0, 1, 1, 1]])
+@pytest.mark.parametrize("backend", ["eager", "sdpa"])
+@pytest.mark.parametrize("padded", [False, True])
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_native_forward_after_replay_stays_causal_and_masked(backend, padded, device):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    model = tiny_model().to(device)
+    model.set_attn_implementation(backend)
+    ids = torch.tensor([[1, 2, 3, 4], [0, 5, 6, 7]], device=device)
+    mask = torch.tensor([[1, 1, 1, 1], [0, 1, 1, 1]], device=device) if padded else None
     with torch.no_grad():
         expected = model(ids, attention_mask=mask, use_cache=False).logits
-        forward(model, Replay.from_trace(mutation_trace()))
-        actual = model(ids, attention_mask=mask, use_cache=False).logits
+        forward(model, Replay.from_trace(mutation_trace(), device=device))
+        assert model.config._attn_implementation == backend
+        with patch(
+            "torch.nn.functional.scaled_dot_product_attention",
+            wraps=torch.nn.functional.scaled_dot_product_attention,
+        ) as sdpa:
+            actual = model(ids, attention_mask=mask, use_cache=False).logits
+        assert sdpa.call_count == (len(model.model.layers) if backend == "sdpa" else 0)
+        if backend == "sdpa" and not padded:
+            assert all(call.kwargs["attn_mask"] is None for call in sdpa.call_args_list)
         torch.testing.assert_close(actual, expected)
         changed = ids.clone()
         changed[0, -1], changed[1, 0] = 10, 11
         perturbed = model(changed, attention_mask=mask, use_cache=False).logits
     torch.testing.assert_close(perturbed[0, :-1], actual[0, :-1])
-    torch.testing.assert_close(perturbed[1, 1:], actual[1, 1:])
+    if padded:
+        torch.testing.assert_close(perturbed[1, 1:], actual[1, 1:])
+
+
+@pytest.mark.parametrize("use_reentrant", [None, False, True])
+def test_attention_inference_warmup_then_training(use_reentrant):
+    reference, model = tiny_model().train(), tiny_model().eval()
+    trace = repeated_view_trace()
+    with torch.inference_mode():
+        replay = Replay.from_trace(trace, query_chunk_size=3).to("cpu")
+        forward(model, replay)
+    chunks = replay._attention[(torch.device("cpu"), 3)]
+    assert not replay.input_ids.is_inference() and not replay.order.is_inference()
+    assert all(not entries.is_inference() for _, entries in chunks)
+    model.train()
+    if use_reentrant is not None:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
+        )
+    expected = forward(reference, Replay.from_trace(trace, query_chunk_size=3))
+    actual = forward(model, replay)
+    torch.testing.assert_close(actual, expected)
+    expected.square().mean().backward()
+    actual.square().mean().backward()
+    assert replay._attention[(torch.device("cpu"), 3)] is chunks
+    for parameter, target in zip(model.parameters(), reference.parameters(), strict=True):
+        torch.testing.assert_close(parameter.grad, target.grad, atol=1e-6, rtol=2e-4)
 
 
 @pytest.mark.parametrize("use_reentrant", [False, True])
-def test_replay_gradient_checkpointing(use_reentrant):
+@pytest.mark.parametrize("backend", ["eager", "sdpa"])
+def test_replay_gradient_checkpointing(use_reentrant, backend):
     reference, checkpointed = tiny_model().train(), tiny_model().train()
+    checkpointed.set_attn_implementation(backend)
     checkpointed.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
     )
@@ -676,6 +719,25 @@ def test_replay_gradient_checkpointing(use_reentrant):
     for parameter, target in zip(checkpointed.parameters(), reference.parameters()):
         assert parameter.grad is not None and target.grad is not None
         torch.testing.assert_close(parameter.grad, target.grad, atol=1e-6, rtol=2e-4)
+
+
+def test_native_sdpa_cache_continues_after_replay():
+    reference, model = tiny_model(), tiny_model()
+    for m in (reference, model):
+        m.set_attn_implementation("sdpa")
+    ids = torch.tensor([[1, 2, 3]])
+    with torch.no_grad():
+        original = reference(ids, use_cache=True)
+        prefix = model(ids, use_cache=True)
+        forward(model, Replay.from_trace(repeated_view_trace()))
+        expected = reference(torch.tensor([[4]]), past_key_values=original.past_key_values).logits
+        with patch(
+            "torch.nn.functional.scaled_dot_product_attention",
+            wraps=torch.nn.functional.scaled_dot_product_attention,
+        ) as sdpa:
+            actual = model(torch.tensor([[4]]), past_key_values=prefix.past_key_values).logits
+    assert sdpa.call_count == len(model.model.layers)
+    torch.testing.assert_close(actual, expected)
 
 
 def test_replay_checkpoint_reloads_as_native_huggingface(tmp_path):

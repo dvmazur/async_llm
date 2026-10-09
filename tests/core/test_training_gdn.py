@@ -3,6 +3,7 @@ import json
 import re
 from itertools import groupby
 from types import SimpleNamespace as NS
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -307,6 +308,60 @@ def test_delta_autocast_preserves_fp32_core(request, device, backend, read_mode,
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
     for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
         torch.testing.assert_close(actual_grad, expected_grad, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize(
+    "device,backend", [("cpu", "torch"), ("cuda", "torch"), ("cuda", "triton")]
+)
+@pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
+def test_gdn_inference_metadata_supports_backward(request, device, backend, read_mode):
+    if device == "cuda":
+        request.getfixturevalue("cuda_delta_math")
+    torch.manual_seed(7)
+    trace = mutation_trace()
+    n = len(trace.tokens)
+    inputs = tuple(
+        x.requires_grad_()
+        for x in (
+            torch.randn(n, 2, 5, device=device),
+            torch.randn(n, 2, 5, device=device),
+            torch.randn(n, 2, 7, device=device),
+            torch.rand(n, 2, device=device),
+            torch.rand(n, 2, device=device),
+        )
+    )
+    options = {"device": device, "read_mode": read_mode, "read_backend": backend}
+    reference = GDNReplay.from_trace(trace, torch.arange(n), **options)
+    weights = torch.randn(n, 2, 7, device=device)
+    expected = delta(*inputs, reference)
+    expected_grads = torch.autograd.grad((expected * weights).sum(), inputs)
+    with torch.inference_mode():
+        replay = GDNReplay.from_trace(trace, torch.arange(n), **options)
+        warmed = delta(*inputs, replay)
+        metadata = (
+            replay.conv_sources,
+            replay.levels,
+            replay.reads,
+            replay.partitions,
+            replay.read_paths,
+        )
+        assert torch.is_inference_mode_enabled() and warmed.is_inference()
+
+    def check_normal_tensors(value):
+        if isinstance(value, torch.Tensor):
+            assert not value.is_inference()
+        else:
+            for item in value:
+                if isinstance(item, (torch.Tensor, list, tuple)):
+                    check_normal_tensors(item)
+
+    check_normal_tensors(metadata)
+    actual = delta(*inputs, replay)
+    actual_grads = torch.autograd.grad((actual * weights).sum(), inputs)
+    assert replay.partitions is metadata[3] and replay.read_paths is metadata[4]
+    torch.testing.assert_close(actual, expected)
+    for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
+        torch.testing.assert_close(actual_grad, expected_grad)
 
 
 @pytest.mark.parametrize(
@@ -1350,6 +1405,44 @@ def test_hybrid_autocast_parameter_gradients(request, device, backend, use_reent
         assert parameter.grad.isfinite().all(), name
 
 
+@pytest.mark.parametrize(
+    "device,backend,use_reentrant",
+    [
+        ("cpu", "torch", None),
+        ("cpu", "torch", False),
+        ("cpu", "torch", True),
+        ("cuda", "torch", False),
+        ("cuda", "triton", None),
+        ("cuda", "triton", True),
+    ],
+)
+@pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
+def test_hybrid_inference_warmup_then_training(request, device, backend, use_reentrant, read_mode):
+    if device == "cuda":
+        request.getfixturevalue("cuda_delta_math")
+    reference, model = tiny_hybrid().to(device).train(), tiny_hybrid().to(device)
+    if use_reentrant is not None:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
+        )
+    trace = mutation_trace()
+    options = {"device": device, "gdn_read_mode": read_mode, "gdn_read_backend": backend}
+    native = Replay.from_trace(trace, **options)
+    expected = forward(reference, native)
+    expected.square().mean().backward()
+    with torch.inference_mode():
+        replay = Replay.from_trace(trace, **options)
+        warmed = forward(model.eval(), replay)
+        compiled = next(iter(replay._gdn.values()))
+        assert warmed.is_inference()
+    actual = forward(model.train(), replay)
+    actual.square().mean().backward()
+    assert next(iter(replay._gdn.values())) is compiled
+    torch.testing.assert_close(actual, expected)
+    for parameter, original in zip(model.parameters(), reference.parameters(), strict=True):
+        torch.testing.assert_close(parameter.grad, original.grad, atol=1e-6, rtol=2e-4)
+
+
 def test_hybrid_replay_checkpoint_reloads_as_native_huggingface(tmp_path):
     model = tiny_hybrid()
     ids = torch.tensor([[1, 2, 3]])
@@ -1368,19 +1461,59 @@ def test_hybrid_replay_checkpoint_reloads_as_native_huggingface(tmp_path):
         torch.testing.assert_close(restored(ids, use_cache=False).logits, expected)
 
 
+def test_hybrid_replay_preserves_native_sdpa_masks_and_cache():
+    model = tiny_hybrid().eval()
+    model.set_attn_implementation("sdpa")
+    ids = torch.tensor([[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]])
+    mask = torch.tensor([[1, 1, 1, 1, 1], [0, 0, 1, 1, 1]])
+    with (
+        torch.no_grad(),
+        patch.object(
+            F, "scaled_dot_product_attention", wraps=F.scaled_dot_product_attention
+        ) as sdpa,
+    ):
+        expected = model(ids, attention_mask=mask, use_cache=False).logits
+        cache = model(ids[:1, :-1], use_cache=True).past_key_values
+        assert sdpa.call_count == 2
+        forward(model, Replay.from_trace(mutation_trace()))
+        assert sdpa.call_count == 2 and cache.get_seq_length() == ids.shape[1] - 1
+        assert model.config._attn_implementation == "sdpa"
+        assert model.model.layers[1].self_attn.config._attn_implementation == "sdpa"
+        actual = model(ids, attention_mask=mask, use_cache=False).logits
+        assert sdpa.call_count == 3
+        torch.testing.assert_close(actual, expected)
+        continued = model(ids[:1, -1:], past_key_values=cache, use_cache=True).logits
+        assert sdpa.call_count == 4
+        torch.testing.assert_close(continued, expected[:1, -1:], atol=2e-6, rtol=2e-5)
+        changed = ids.clone()
+        changed[:, -1], changed[1, :2] = 31, 30
+        perturbed = model(changed, attention_mask=mask, use_cache=False).logits
+        torch.testing.assert_close(perturbed[0, :-1], expected[0, :-1])
+        torch.testing.assert_close(perturbed[1, 2:-1], expected[1, 2:-1])
+
+
 @pytest.mark.parametrize("use_reentrant", [False, True])
 def test_hybrid_checkpointed_replay_gradients(use_reentrant):
     reference, checkpointed = tiny_hybrid().train(), tiny_hybrid().train()
+    reference.set_attn_implementation("sdpa")
+    checkpointed.set_attn_implementation("sdpa")
     checkpointed.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
     )
     replay = Replay.from_trace(mutation_trace())
-    expected = forward(reference, replay)
-    actual = forward(checkpointed, replay)
-    torch.testing.assert_close(actual, expected)
-    checkpointed(torch.tensor([[1, 2, 3]]), use_cache=False)
-    expected.square().mean().backward()
-    actual.square().mean().backward()
+    with patch.object(
+        F, "scaled_dot_product_attention", wraps=F.scaled_dot_product_attention
+    ) as sdpa:
+        expected = forward(reference, replay)
+        actual = forward(checkpointed, replay)
+        torch.testing.assert_close(actual, expected)
+        assert sdpa.call_count == 0
+        with torch.no_grad():
+            checkpointed(torch.tensor([[1, 2, 3]]), use_cache=False)
+        assert sdpa.call_count == 1
+        expected.square().mean().backward()
+        actual.square().mean().backward()
+        assert sdpa.call_count == 1
     for actual_parameter, expected_parameter in zip(
         checkpointed.parameters(), reference.parameters()
     ):

@@ -1,13 +1,11 @@
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, field, replace
 from itertools import groupby
 from types import MethodType
 
 import torch
 from torch.utils.checkpoint import checkpoint
-from transformers import AttentionInterface, AttentionMaskInterface
-from transformers.masking_utils import eager_mask
-from transformers.models.qwen3.modeling_qwen3 import eager_attention_forward
+from transformers import AttentionInterface
 
 from .trace import Trace
 
@@ -28,6 +26,7 @@ class Replay:
     gdn_cache_reused: bool = True
     gdn_read_backend: str = "torch"
     attention_checkpointing: bool = True
+    cache_plans: bool = True
     _gdn: dict = field(default_factory=dict, repr=False)
     _attention: dict = field(default_factory=dict, repr=False)
 
@@ -47,6 +46,7 @@ class Replay:
                 if lo < hi:
                     stack.append((parent, lo - position, hi - position, offset + position))
 
+    @torch.inference_mode(False)
     def to(self, device):
         input_ids, order = self.input_ids.to(device), self.order.to(device)
         if input_ids is self.input_ids and order is self.order:
@@ -54,6 +54,7 @@ class Replay:
         return replace(self, input_ids=input_ids, order=order)
 
     @classmethod
+    @torch.inference_mode(False)
     def from_trace(
         cls,
         trace: Trace,
@@ -64,6 +65,7 @@ class Replay:
         gdn_cache_reused=True,
         gdn_read_backend="torch",
         attention_checkpointing=True,
+        cache_plans=True,
     ):
         if query_chunk_size <= 0:
             raise ValueError("query_chunk_size must be positive")
@@ -170,6 +172,7 @@ class Replay:
             copies=copies,
             query_chunk_size=query_chunk_size,
             attention_checkpointing=attention_checkpointing,
+            cache_plans=cache_plans,
             trace=deepcopy(trace),
             gdn_segment_size=gdn_segment_size,
             gdn_read_mode=gdn_read_mode,
@@ -240,7 +243,8 @@ def attention(q, k, v, replay, inv_freq, scaling):
                     (version, min(r[1] for r in reads), max(r[2] for r in reads), len(reads))
                 )
                 entries.extend(reads)
-            chunks.append((blocks, torch.tensor(entries, device=q.device)))
+            with torch.inference_mode(False):
+                chunks.append((blocks, torch.tensor(entries, device=q.device)))
         replay._attention[cache_key] = chunks
     outputs = []
     for query, (blocks, entries) in zip(
@@ -264,10 +268,6 @@ def attention(q, k, v, replay, inv_freq, scaling):
 def replay_attention(
     module, query, key, value, attention_mask, scaling, replay=None, inv_freq=None, **kwargs
 ):
-    if replay is None:
-        return eager_attention_forward(
-            module, query, key, value, attention_mask, scaling=scaling, **kwargs
-        )
     if query.shape[0] != 1:
         raise ValueError("Replay packs all tokens into one sequence")
     output = attention(
@@ -282,7 +282,15 @@ def replay_attention(
 
 
 AttentionInterface.register("minisgl_replay", replay_attention)
-AttentionMaskInterface.register("minisgl_replay", eager_mask)
+
+
+def replay_self_attention(module, *args, replay=None, **kwargs):
+    if replay is None:
+        return module._replay_native_forward(*args, **kwargs)
+    local = copy(module)
+    local.config = copy(module.config)
+    local.config._attn_implementation = "minisgl_replay"
+    return module._replay_native_forward.__func__(local, *args, replay=replay, **kwargs)
 
 
 def replay_gdn(
@@ -309,6 +317,10 @@ def _forward(model, replay: Replay, rows, hidden_only):
         raise NotImplementedError("Only default RoPE is supported")
     if getattr(backbone, "has_sliding_layers", False) or config.attention_dropout:
         raise NotImplementedError("Replay requires full attention and zero attention dropout")
+    if not replay.cache_plans:
+        replay._gdn.clear()
+        replay._attention.clear()
+        replay = replace(replay, _gdn={}, _attention={})
     kwargs = {}
     if "linear_attention" in config.layer_types:
         from .gdn import GDNReplay
@@ -337,13 +349,12 @@ def _forward(model, replay: Replay, rows, hidden_only):
                 read_backend=key[5],
             )
         kwargs["gdn_replay"] = replay._gdn[key]
-        for layer in backbone.layers:
-            if hasattr(layer, "linear_attn") and not hasattr(
-                layer.linear_attn, "_replay_native_forward"
-            ):
-                layer.linear_attn._replay_native_forward = layer.linear_attn.forward
-                layer.linear_attn.forward = MethodType(replay_gdn, layer.linear_attn)
-    backbone.set_attn_implementation("minisgl_replay")
+    for layer in backbone.layers:
+        for name, wrapper in (("self_attn", replay_self_attention), ("linear_attn", replay_gdn)):
+            module = getattr(layer, name, None)
+            if module is not None and not hasattr(module, "_replay_native_forward"):
+                module._replay_native_forward = module.forward
+                module.forward = MethodType(wrapper, module)
     indices = replay.order.argsort()
     if rows is not None:
         indices = indices[rows]

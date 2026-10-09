@@ -20,6 +20,7 @@ class GDNReplay:
     read_backend: str = "torch"
 
     @cached_property
+    @torch.inference_mode(False)
     def read_paths(self):
         reads = self.partitions[1]
         paths = torch.zeros(len(self.reads), len(reads), 2, dtype=torch.long)
@@ -30,6 +31,7 @@ class GDNReplay:
         return paths.to(self.reads.device)
 
     @cached_property
+    @torch.inference_mode(False)
     def partitions(self):
         n, device = len(self.reads), self.reads.device
         if self.segment_size < 1:
@@ -132,6 +134,7 @@ class GDNReplay:
         )
 
     @classmethod
+    @torch.inference_mode(False)
     def from_trace(
         cls,
         trace: Trace,

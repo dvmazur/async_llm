@@ -305,6 +305,7 @@ def train(args):
     loss_chunk_size = getattr(args, "loss_chunk_size", 128)
     attention_checkpointing = getattr(args, "attention_checkpointing", True)
     loss_checkpointing = getattr(args, "loss_checkpointing", True)
+    cache_replay_plans = getattr(args, "cache_replay_plans", True)
     gdn_segment_size = getattr(args, "gdn_segment_size", 8)
     gdn_read_mode = getattr(args, "gdn_read_mode", "expanded")
     gdn_cache_reused = getattr(args, "gdn_cache_reused", True)
@@ -326,6 +327,7 @@ def train(args):
             trace,
             query_chunk_size=query_chunk_size,
             attention_checkpointing=attention_checkpointing,
+            cache_plans=cache_replay_plans,
             gdn_segment_size=gdn_segment_size,
             gdn_read_mode=gdn_read_mode,
             gdn_cache_reused=gdn_cache_reused,
@@ -394,6 +396,7 @@ def train(args):
         "gradient_checkpointing": args.gradient_checkpointing,
         "attention_checkpointing": attention_checkpointing,
         "loss_checkpointing": loss_checkpointing,
+        "cache_replay_plans": cache_replay_plans,
         "query_chunk_size": query_chunk_size,
         "loss_chunk_size": loss_chunk_size,
         "gdn_segment_size": gdn_segment_size,
@@ -442,6 +445,12 @@ def main():
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Recompute vocabulary projections during backward to reduce saved logits",
+    )
+    training.add_argument(
+        "--cache-replay-plans",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep replay plans between forwards; disable to save device memory and recompile each time",
     )
     training.add_argument("--query-chunk-size", type=int, default=128)
     training.add_argument("--loss-chunk-size", type=int, default=128)
