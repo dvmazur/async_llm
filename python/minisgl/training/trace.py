@@ -22,11 +22,12 @@ class Trace:
 
 @dataclass(frozen=True)
 class BlockUpdate:
-    """Destination contents before `step`, referencing original trace token rows."""
+    """Replace from pre-update live (block, length) refs, or legacy source rows."""
 
     step: int
     block: int
-    sources: tuple[int, ...]
+    sources: tuple[int, ...] = ()
+    refs: tuple[tuple[int, int], ...] | None = None
 
 
 class RecordingSession:
@@ -45,7 +46,7 @@ class RecordingSession:
         if self._failed:
             raise RuntimeError("Discard recorder after a failed inference call")
         for block in blocks:
-            if block.num_tokens != len(self._contents.get(block.block_id, ())):
+            if block.num_tokens != self._contents.get(block.block_id, 0):
                 raise ValueError("Unrecorded or modified block; attach recorder before prefill")
 
     def _call(self, call):
@@ -58,27 +59,27 @@ class RecordingSession:
     def _run(self, records, call):
         result = self._call(call)
         for token in records:
-            self._contents.setdefault(token.block, []).append(len(self.trace.tokens))
+            self._contents[token.block] = self._contents.get(token.block, 0) + 1
             self.trace.tokens.append(token)
         self.trace.steps += 1
         return result
 
-    def _replace(self, block, sources):
-        self._contents[block.block_id] = list(sources)
-        self.trace.updates.append(BlockUpdate(self.trace.steps, block.block_id, tuple(sources)))
+    def _replace(self, block, refs):
+        self._contents[block.block_id] = sum(length for _, length in refs)
+        self.trace.updates.append(BlockUpdate(self.trace.steps, block.block_id, refs=refs))
 
     def merge_blocks(self, left, right):
         self._check([left, right])
-        sources = self._contents.get(left.block_id, []) + self._contents.get(right.block_id, [])
+        refs = ((left.block_id, left.num_tokens), (right.block_id, right.num_tokens))
         merged = self._call(lambda: self.session.merge_blocks(left, right))
-        self._replace(merged, sources)
+        self._replace(merged, refs)
         return merged
 
     def append_block(self, left, right):
         self._check([left, right])
-        sources = self._contents.get(left.block_id, []) + self._contents.get(right.block_id, [])
+        refs = ((left.block_id, left.num_tokens), (right.block_id, right.num_tokens))
         result = self._call(lambda: self.session.append_block(left, right))
-        self._replace(left, sources)
+        self._replace(left, refs)
         return result
 
     def free_block(self, block):

@@ -9,15 +9,25 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from .replay import Replay, forward
+from .replay import Replay, hidden
 from .trace import BlockUpdate, Token, Trace, record
 
 
 def restore_trace(data):
     tokens = [Token(**{**t, "view": tuple(map(tuple, t["view"]))}) for t in data["tokens"]]
-    updates = [BlockUpdate(**{**u, "sources": tuple(u["sources"])}) for u in data["updates"]]
+    updates = [
+        BlockUpdate(
+            **{
+                **u,
+                "sources": tuple(u.get("sources", ())),
+                "refs": None if u.get("refs") is None else tuple(map(tuple, u["refs"])),
+            }
+        )
+        for u in data["updates"]
+    ]
     return Trace(tokens, data["steps"], updates)
 
 
@@ -234,21 +244,51 @@ async def mine(args):
     )
 
 
+def _supervised(model, replay, targets):
+    device = next(model.parameters()).device
+    rows = (targets != -100).nonzero().flatten()
+    if len(targets) != len(replay.input_ids) or not len(rows):
+        raise ValueError("Each trace needs aligned, nonempty supervision")
+    return hidden(model, replay.to(device), rows=rows.to(device)), targets[rows].to(device)
+
+
+def supervised_loss(model, replay, targets, chunk_size=128):
+    if chunk_size < 1:
+        raise ValueError("Loss chunk size must be positive")
+    states, selected = _supervised(model, replay, targets)
+
+    def chunk_loss(x, y):
+        return F.cross_entropy(model.lm_head(x).float(), y, reduction="sum")
+
+    losses = []
+    for x, y in zip(states.split(chunk_size), selected.split(chunk_size), strict=True):
+        losses.append(
+            checkpoint(chunk_loss, x, y, use_reentrant=False, preserve_rng_state=False)
+            if torch.is_grad_enabled()
+            else chunk_loss(x, y)
+        )
+    return torch.stack(losses).sum()
+
+
 @torch.no_grad()
-def evaluate(model, examples):
+def evaluate(model, examples, chunk_size=128):
+    if chunk_size < 1:
+        raise ValueError("Loss chunk size must be positive")
     results = []
     for replay, targets in examples:
-        logits = forward(model, replay).float()
-        selected = targets != -100
-        nll = F.cross_entropy(logits, targets, reduction="none")[selected]
+        states, selected = _supervised(model, replay, targets)
+        nll, correct = [], 0
+        for x, y in zip(states.split(chunk_size), selected.split(chunk_size), strict=True):
+            logits = model.lm_head(x).float()
+            nll.append(F.cross_entropy(logits, y, reduction="none"))
+            correct = correct + (logits.argmax(-1) == y).sum()
+            del logits
+        nll = torch.cat(nll)
         results.append(
             {
-                "tokens": int(selected.sum()),
+                "tokens": len(selected),
                 "loss": nll.mean().item(),
-                "accuracy": (logits.argmax(-1)[selected] == targets[selected])
-                .float()
-                .mean()
-                .item(),
+                "accuracy": correct.item() / len(selected),
                 "nll": nll.cpu().tolist(),
             }
         )
@@ -261,16 +301,24 @@ def evaluate(model, examples):
 
 
 def train(args):
+    query_chunk_size = getattr(args, "query_chunk_size", 128)
+    loss_chunk_size = getattr(args, "loss_chunk_size", 128)
     data = json.loads(args.data.read_text())
     examples = []
     for example in data["examples"]:
         trace = restore_trace(example["trace"])
-        targets = torch.tensor(example["targets"], device="cuda")
+        targets = torch.tensor(example["targets"])
         if len(targets) != len(trace.tokens) or not (targets != -100).any():
             raise ValueError("Each trace needs aligned, nonempty supervision")
-        examples.append((Replay.from_trace(trace, "cuda"), targets))
+        replay = Replay.from_trace(
+            trace,
+            query_chunk_size=query_chunk_size,
+        )
+        examples.append((replay, targets))
     model = AutoModelForCausalLM.from_pretrained(data["model"], dtype=torch.float32).cuda()
-    initial = evaluate(model.eval(), examples)
+    if args.gradient_checkpointing:
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    initial = evaluate(model.eval(), examples, loss_chunk_size)
     errors = [
         abs(nll + lp)
         for result, example in zip(initial["examples"], data["examples"])
@@ -293,14 +341,14 @@ def train(args):
         model.train()
         optimizer.zero_grad(set_to_none=True)
         for replay, targets in examples:
-            loss = F.cross_entropy(forward(model, replay).float(), targets, reduction="sum") / count
+            loss = supervised_loss(model, replay, targets, loss_chunk_size) / count
             if not torch.isfinite(loss):
                 raise RuntimeError("Non-finite training loss")
             loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         if step % 5 == 0 or step == args.steps:
-            final = evaluate(model.eval(), examples)
+            final = evaluate(model.eval(), examples, loss_chunk_size)
             history.append({"step": step, "loss": final["loss"], "accuracy": final["accuracy"]})
             print(
                 f"step {step}: loss={final['loss']:.6f} accuracy={final['accuracy']:.2%}",
@@ -318,6 +366,9 @@ def train(args):
         "lr": args.lr,
         "steps": step,
         "supervised_tokens": count,
+        "gradient_checkpointing": args.gradient_checkpointing,
+        "query_chunk_size": query_chunk_size,
+        "loss_chunk_size": loss_chunk_size,
         "max_logprob_error": max_error,
         "initial": initial,
         "final": final,
@@ -348,6 +399,9 @@ def main():
     training.add_argument("--steps", type=int, default=80)
     training.add_argument("--lr", type=float, default=3e-5)
     training.add_argument("--seed", type=int, default=7)
+    training.add_argument("--gradient-checkpointing", action="store_true")
+    training.add_argument("--query-chunk-size", type=int, default=128)
+    training.add_argument("--loss-chunk-size", type=int, default=128)
     args = parser.parse_args()
     if torch.cuda.device_count() != 1:
         parser.error("Select exactly one GPU with CUDA_VISIBLE_DEVICES")
@@ -357,8 +411,10 @@ def main():
         parser.error(f"Output already exists: {args.output}")
     if args.command == "mine" and (args.max_tokens < 1 or args.temperature <= 0):
         parser.error("--max-tokens and --temperature must be positive")
-    if args.command == "train" and (args.steps < 1 or args.lr <= 0):
-        parser.error("--steps and --lr must be positive")
+    if args.command == "train" and (
+        args.steps < 1 or args.lr <= 0 or args.query_chunk_size < 1 or args.loss_chunk_size < 1
+    ):
+        parser.error("--steps, --lr, --query-chunk-size and --loss-chunk-size must be positive")
     torch.manual_seed(args.seed)
     if args.command == "mine":
         asyncio.run(mine(args))
