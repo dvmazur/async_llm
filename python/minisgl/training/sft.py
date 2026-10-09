@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from .replay import Replay, hidden
 from .trace import BlockUpdate, Token, Trace, record
@@ -303,6 +303,13 @@ def evaluate(model, examples, chunk_size=128):
 def train(args):
     query_chunk_size = getattr(args, "query_chunk_size", 128)
     loss_chunk_size = getattr(args, "loss_chunk_size", 128)
+    gdn_segment_size = getattr(args, "gdn_segment_size", 8)
+    gdn_read_mode = getattr(args, "gdn_read_mode", "expanded")
+    gdn_cache_reused = getattr(args, "gdn_cache_reused", True)
+    if gdn_segment_size < 1:
+        raise ValueError("gdn_segment_size must be positive")
+    if gdn_read_mode not in {"expanded", "factorized"}:
+        raise ValueError("gdn_read_mode must be expanded or factorized")
     data = json.loads(args.data.read_text())
     examples = []
     for example in data["examples"]:
@@ -313,9 +320,15 @@ def train(args):
         replay = Replay.from_trace(
             trace,
             query_chunk_size=query_chunk_size,
+            gdn_segment_size=gdn_segment_size,
+            gdn_read_mode=gdn_read_mode,
+            gdn_cache_reused=gdn_cache_reused,
         )
         examples.append((replay, targets))
-    model = AutoModelForCausalLM.from_pretrained(data["model"], dtype=torch.float32).cuda()
+    config = AutoConfig.from_pretrained(data["model"]).get_text_config()
+    model = AutoModelForCausalLM.from_pretrained(
+        data["model"], config=config, dtype=torch.float32
+    ).cuda()
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     initial = evaluate(model.eval(), examples, loss_chunk_size)
@@ -369,6 +382,9 @@ def train(args):
         "gradient_checkpointing": args.gradient_checkpointing,
         "query_chunk_size": query_chunk_size,
         "loss_chunk_size": loss_chunk_size,
+        "gdn_segment_size": gdn_segment_size,
+        "gdn_read_mode": gdn_read_mode,
+        "gdn_cache_reused": gdn_cache_reused,
         "max_logprob_error": max_error,
         "initial": initial,
         "final": final,
@@ -402,6 +418,24 @@ def main():
     training.add_argument("--gradient-checkpointing", action="store_true")
     training.add_argument("--query-chunk-size", type=int, default=128)
     training.add_argument("--loss-chunk-size", type=int, default=128)
+    training.add_argument(
+        "--gdn-segment-size",
+        type=int,
+        default=8,
+        help="Maximum compact GDN segment length; 1 disables short-segment compaction",
+    )
+    training.add_argument(
+        "--gdn-read-mode",
+        choices=("expanded", "factorized"),
+        default="expanded",
+        help="Apply compact GDN reads token by token or through segment factors",
+    )
+    training.add_argument(
+        "--gdn-cache-reused",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Cache dense transforms for heavily reused GDN summaries",
+    )
     args = parser.parse_args()
     if torch.cuda.device_count() != 1:
         parser.error("Select exactly one GPU with CUDA_VISIBLE_DEVICES")
@@ -412,9 +446,16 @@ def main():
     if args.command == "mine" and (args.max_tokens < 1 or args.temperature <= 0):
         parser.error("--max-tokens and --temperature must be positive")
     if args.command == "train" and (
-        args.steps < 1 or args.lr <= 0 or args.query_chunk_size < 1 or args.loss_chunk_size < 1
+        args.steps < 1
+        or args.lr <= 0
+        or args.query_chunk_size < 1
+        or args.loss_chunk_size < 1
+        or args.gdn_segment_size < 1
     ):
-        parser.error("--steps, --lr, --query-chunk-size and --loss-chunk-size must be positive")
+        parser.error(
+            "--steps, --lr, --query-chunk-size, --loss-chunk-size and --gdn-segment-size "
+            "must be positive"
+        )
     torch.manual_seed(args.seed)
     if args.command == "mine":
         asyncio.run(mine(args))

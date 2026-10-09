@@ -7,6 +7,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 import torch
+from minisgl.training import sft
 from minisgl.training.replay import Replay, attention, forward
 from minisgl.training.sft import restore_trace, supervised_loss
 from minisgl.training.stress import workload
@@ -809,6 +810,61 @@ def test_causal_metadata_is_compact():
     for value in vars(replay).values():
         if isinstance(value, torch.Tensor):
             assert value.numel() <= length
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"gdn_segment_size": 0},
+        {"gdn_segment_size": -1},
+        {"gdn_read_mode": "invalid"},
+    ],
+)
+def test_gdn_options_are_rejected_before_training_data_is_loaded(options):
+    with pytest.raises(ValueError, match="gdn_"):
+        Replay.from_trace(example_trace(), **options)
+    with pytest.raises(ValueError, match="gdn_"):
+        sft.train(NS(**options))
+
+
+@pytest.mark.parametrize(
+    "flags,expected",
+    [
+        ([], (8, "expanded", True)),
+        (
+            ["--gdn-segment-size", "2", "--gdn-read-mode", "factorized", "--no-gdn-cache-reused"],
+            (2, "factorized", False),
+        ),
+        (["--gdn-cache-reused"], (8, "expanded", True)),
+    ],
+)
+def test_sft_cli_passes_gdn_options(monkeypatch, tmp_path, flags, expected):
+    received = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["sft", "train", *flags])
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(sft, "train", received.append)
+    sft.main()
+    assert len(received) == 1
+    args = received[0]
+    assert (args.gdn_segment_size, args.gdn_read_mode, args.gdn_cache_reused) == expected
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--gdn-segment-size", "0"],
+        ["--gdn-read-mode", "invalid"],
+    ],
+)
+def test_sft_cli_rejects_invalid_gdn_options(monkeypatch, tmp_path, flags):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["sft", "train", *flags])
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(sft, "train", lambda args: pytest.fail("Invalid options reached training"))
+    with pytest.raises(SystemExit) as error:
+        sft.main()
+    assert error.value.code == 2
 
 
 def test_attention_reuses_only_compact_metadata():

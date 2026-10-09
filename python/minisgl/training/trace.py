@@ -92,7 +92,7 @@ class RecordingSession:
         records = []
         for job in jobs:
             if job.pixel_values is not None:
-                raise NotImplementedError("Training traces currently support text Qwen3 only")
+                raise NotImplementedError("Training traces currently support text only")
             self._check([*job.context, job.block])
             context = tuple((b.block_id, b.num_tokens) for b in job.context)
             for offset, token_id in enumerate(job.input_ids.flatten().tolist()):

@@ -1,5 +1,7 @@
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from itertools import groupby
+from types import MethodType
 
 import torch
 from torch.utils.checkpoint import checkpoint
@@ -20,6 +22,11 @@ class Replay:
     reads: list[list[tuple[int, int, int, int]]]
     copies: list[list[tuple[int, int, int]]]
     query_chunk_size: int = 128
+    trace: Trace | None = None
+    gdn_segment_size: int = 8
+    gdn_read_mode: str = "expanded"
+    gdn_cache_reused: bool = True
+    _gdn: dict = field(default_factory=dict, repr=False)
     _attention: dict = field(default_factory=dict, repr=False)
 
     def source_spans(self, version, start, end):
@@ -43,6 +50,7 @@ class Replay:
             self,
             input_ids=self.input_ids.to(device),
             order=self.order.to(device),
+            _gdn={},
             _attention={},
         )
 
@@ -52,9 +60,16 @@ class Replay:
         trace: Trace,
         device="cpu",
         query_chunk_size=128,
+        gdn_segment_size=8,
+        gdn_read_mode="expanded",
+        gdn_cache_reused=True,
     ):
         if query_chunk_size <= 0:
             raise ValueError("query_chunk_size must be positive")
+        if gdn_segment_size < 1:
+            raise ValueError("gdn_segment_size must be positive")
+        if gdn_read_mode not in {"expanded", "factorized"}:
+            raise ValueError("gdn_read_mode must be expanded or factorized")
         if not trace.tokens:
             raise ValueError("Cannot replay an empty trace")
         tokens = trace.tokens
@@ -151,6 +166,10 @@ class Replay:
             reads=[rows[i] for i in order],
             copies=copies,
             query_chunk_size=query_chunk_size,
+            trace=deepcopy(trace),
+            gdn_segment_size=gdn_segment_size,
+            gdn_read_mode=gdn_read_mode,
+            gdn_cache_reused=gdn_cache_reused,
         )
 
 
@@ -252,10 +271,24 @@ AttentionInterface.register("minisgl_replay", replay_attention)
 AttentionMaskInterface.register("minisgl_replay", eager_mask)
 
 
+def replay_gdn(
+    module, hidden_states, cache_params=None, attention_mask=None, *, gdn_replay=None, **kwargs
+):
+    if gdn_replay is None:
+        return module._replay_native_forward(
+            hidden_states, cache_params=cache_params, attention_mask=attention_mask, **kwargs
+        )
+    from .gdn import gdn_forward
+
+    return gdn_forward(module, hidden_states, gdn_replay)
+
+
 def _forward(model, replay: Replay, rows, hidden_only):
-    if model.config.model_type != "qwen3":
-        raise ValueError("Only dense text Qwen3 is supported")
+    if model.config.model_type not in {"qwen3", "qwen3_5_text", "qwen3_5"}:
+        raise ValueError("Only dense text Qwen3 and Qwen3.5 are supported")
     backbone = model.model
+    if model.config.model_type == "qwen3_5":
+        backbone = backbone.language_model
     config = backbone.config
     rotary = backbone.rotary_emb
     if getattr(rotary, "rope_type", "default") != "default":
@@ -263,6 +296,37 @@ def _forward(model, replay: Replay, rows, hidden_only):
     if getattr(backbone, "has_sliding_layers", False) or config.attention_dropout:
         raise NotImplementedError("Replay requires full attention and zero attention dropout")
     kwargs = {}
+    if "linear_attention" in config.layer_types:
+        from .gdn import GDNReplay
+
+        if replay.trace is None:
+            raise ValueError("Qwen3.5 GDN replay requires its original trace")
+        if config.hidden_act not in {"silu", "swish"}:
+            raise NotImplementedError("GDN replay requires SiLU convolution")
+        key = (
+            config.linear_conv_kernel_dim,
+            replay.input_ids.device,
+            replay.gdn_segment_size,
+            replay.gdn_read_mode,
+            replay.gdn_cache_reused,
+        )
+        if key not in replay._gdn:
+            replay._gdn[key] = GDNReplay.from_trace(
+                replay.trace,
+                replay.order,
+                device=key[1],
+                conv_kernel_size=key[0],
+                segment_size=key[2],
+                read_mode=key[3],
+                cache_reused=key[4],
+            )
+        kwargs["gdn_replay"] = replay._gdn[key]
+        for layer in backbone.layers:
+            if hasattr(layer, "linear_attn") and not hasattr(
+                layer.linear_attn, "_replay_native_forward"
+            ):
+                layer.linear_attn._replay_native_forward = layer.linear_attn.forward
+                layer.linear_attn.forward = MethodType(replay_gdn, layer.linear_attn)
     backbone.set_attn_implementation("minisgl_replay")
     indices = replay.order.argsort()
     if rows is not None:
@@ -273,7 +337,7 @@ def _forward(model, replay: Replay, rows, hidden_only):
         input_ids=replay.input_ids[None],
         # Identity native RoPE; the attention backend applies block-relative rotations.
         position_ids=torch.zeros_like(replay.input_ids)[None],
-        attention_mask={"full_attention": None},
+        attention_mask={"full_attention": None, "linear_attention": None},
         use_cache=False,
         replay=replay,
         inv_freq=rotary.inv_freq,
@@ -291,5 +355,5 @@ def hidden(model, replay: Replay, rows=None):
 
 
 def forward(model, replay: Replay, rows=None):
-    """Native HF Qwen3 logits, optionally selecting original trace rows."""
+    """Native HF Qwen3/Qwen3.5 logits, optionally selecting original trace rows."""
     return _forward(model, replay, rows, hidden_only=False)
