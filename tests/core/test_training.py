@@ -121,6 +121,42 @@ def mutation_trace():
     return session.trace
 
 
+def repeated_view_trace():
+    session = RecordingSession(Session())
+    a, b, c, empty = [session.create_block() for _ in range(4)]
+
+    def prefill(block, ids, context):
+        session.prefill_batch(
+            [NS(block=block, input_ids=torch.tensor(ids), context=context, pixel_values=None)]
+        )
+
+    prefill(a, [1, 2, 3, 4, 5], [])
+    prefill(b, [6, 7], [a, a])
+    prefill(c, [8], [a, b, a])
+    session.decode_step(
+        [
+            NS(cache_view=[a, b, a, empty, b], output_block=a),
+            NS(cache_view=[b, a, b, a], output_block=b),
+            NS(cache_view=[a, a], output_block=c),
+        ],
+        torch.tensor([9, 10, 11]),
+    )
+    copied = session.merge_blocks(a, b)
+    session.append_block(copied, copied)
+    session.free_block(a)
+    prefill(a, [12, 13], [copied, copied, b, copied])
+    session.decode_step(
+        [
+            NS(cache_view=[a, copied, a, copied], output_block=a),
+            NS(cache_view=[copied, a, b, copied, b], output_block=b),
+        ],
+        torch.tensor([14, 15]),
+    )
+    session.free_block(copied)
+    prefill(copied, [16, 17], [a, b, a])
+    return session.trace
+
+
 def randomized_trace(seed):
     rng = random.Random(seed)
     session = RecordingSession(Session())
@@ -322,7 +358,7 @@ def sequential(model, trace):
     return torch.stack([outputs[i] for i in range(len(trace.tokens))])
 
 
-@pytest.mark.parametrize("trace_factory", [example_trace, mutation_trace])
+@pytest.mark.parametrize("trace_factory", [example_trace, mutation_trace, repeated_view_trace])
 @pytest.mark.parametrize("query_chunk_size", [1, 3, 128])
 def test_parallel_logits_and_gradients(trace_factory, query_chunk_size):
     model = tiny_model()
@@ -408,7 +444,8 @@ def test_grouped_attention_and_partial_rotary_gradients(kv_heads, rotary_width):
 
 @pytest.mark.parametrize("query_chunk_size", [1, 7, None])
 @pytest.mark.parametrize(
-    "trace_kind,kv_heads,rotary_width", [("single", 4, 8), ("mutation", 2, 8), ("stress", 1, 4)]
+    "trace_kind,kv_heads,rotary_width",
+    [("single", 4, 8), ("mutation", 2, 8), ("stress", 1, 4), ("repeated", 2, 4)],
 )
 def test_attention_fp64_algebra_and_fp32_rounding(
     trace_kind, kv_heads, rotary_width, query_chunk_size, record_property, fp64_attention
@@ -417,6 +454,8 @@ def test_attention_fp64_algebra_and_fp32_rounding(
         session = RecordingSession(Session())
         workload(session, vocab_size=32, large_size=4)
         trace = session.trace
+    elif trace_kind == "repeated":
+        trace = repeated_view_trace()
     else:
         trace = single_block_trace(True) if trace_kind == "single" else mutation_trace()
     n = len(trace.tokens)
@@ -834,7 +873,8 @@ def test_replay_preserves_gdn_read_backend_on_transfer(backend):
     replay._gdn["cached"] = object()
     transferred = replay.to("cpu")
     assert replay.gdn_read_backend == transferred.gdn_read_backend == backend
-    assert not transferred._gdn
+    assert transferred is replay
+    assert transferred._gdn["cached"] is replay._gdn["cached"]
 
 
 @pytest.mark.parametrize(
@@ -896,7 +936,7 @@ def test_attention_reuses_only_compact_metadata():
     assert replay._attention[(q.device, 4)] is chunks
     assert sum(entries.numel() for _, entries in chunks) == 4 * length
     assert all(entries.dtype == torch.long for _, entries in chunks)
-    assert not replay.to("cpu")._attention
+    assert replay.to("cpu")._attention[(q.device, 4)] is chunks
     torch.testing.assert_close(actual, expected)
     replay.query_chunk_size = 7
     torch.testing.assert_close(attention(q, k, v, replay, inv_freq, 8**-0.5), expected)

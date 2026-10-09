@@ -31,13 +31,15 @@ def _read_paths(
     BV: tl.constexpr,
     BS: tl.constexpr,
 ):
-    row, head = tl.program_id(0), tl.program_id(1)
+    row = tl.program_id(0).to(tl.int64)
+    head = tl.program_id(1).to(tl.int64)
     k, v = tl.arange(0, BK), tl.arange(0, BV)
     r = tl.load(Query + (row * H + head) * DK + k, k < DK, other=0.0) * DK**-0.5
     output = tl.full((BV,), 0, tl.float32)
     for depth in range(DEPTH):
         if SAVE:
-            tl.store(Vectors + ((depth * N + row) * H + head) * DK + k, r, k < DK)
+            offset = ((depth.to(tl.int64) * N + row) * H + head) * DK
+            tl.store(Vectors + offset + k, r, k < DK)
         kind = tl.load(Paths + (row * DEPTH + depth) * 2)
         index = tl.load(Paths + (row * DEPTH + depth) * 2 + 1)
         if kind == 1:

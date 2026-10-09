@@ -27,6 +27,7 @@ class Replay:
     gdn_read_mode: str = "expanded"
     gdn_cache_reused: bool = True
     gdn_read_backend: str = "torch"
+    attention_checkpointing: bool = True
     _gdn: dict = field(default_factory=dict, repr=False)
     _attention: dict = field(default_factory=dict, repr=False)
 
@@ -47,13 +48,10 @@ class Replay:
                     stack.append((parent, lo - position, hi - position, offset + position))
 
     def to(self, device):
-        return replace(
-            self,
-            input_ids=self.input_ids.to(device),
-            order=self.order.to(device),
-            _gdn={},
-            _attention={},
-        )
+        input_ids, order = self.input_ids.to(device), self.order.to(device)
+        if input_ids is self.input_ids and order is self.order:
+            return self
+        return replace(self, input_ids=input_ids, order=order)
 
     @classmethod
     def from_trace(
@@ -65,6 +63,7 @@ class Replay:
         gdn_read_mode="expanded",
         gdn_cache_reused=True,
         gdn_read_backend="torch",
+        attention_checkpointing=True,
     ):
         if query_chunk_size <= 0:
             raise ValueError("query_chunk_size must be positive")
@@ -137,15 +136,15 @@ class Replay:
             for row, token in group:
                 if token.kind not in {"prefill", "decode"}:
                     raise ValueError("Unknown forward kind")
-                view = dict(token.view)
-                if len(view) != len(token.view):
-                    raise ValueError("Repeated blocks in a view are not supported")
-                if token.block in view and view[token.block] <= token.position:
+                own_lengths = [length for block, length in token.view if block == token.block]
+                if any(length <= token.position for length in own_lengths):
                     raise ValueError("A token must attend to itself")
-                if token.kind == "prefill" and view.get(token.block) != token.position + 1:
+                if token.kind == "prefill" and (
+                    not own_lengths or any(length != token.position + 1 for length in own_lengths)
+                ):
                     raise ValueError("Prefill must include its own causal prefix")
                 entries, prefix = [], 0
-                total = sum(view.values())
+                total = sum(length for _, length in token.view)
                 for block, length in token.view:
                     if length < 0:
                         raise ValueError("View length must be nonnegative")
@@ -155,7 +154,7 @@ class Replay:
                         raise ValueError("View exposes future or unrecorded tokens")
                     entries.append((current[block], 0, length, total - 1 - prefix))
                     prefix += length
-                if token.block not in view:
+                if not own_lengths:
                     entries.append(
                         (current[token.block], token.position, token.position + 1, token.position)
                     )
@@ -170,6 +169,7 @@ class Replay:
             reads=[rows[i] for i in order],
             copies=copies,
             query_chunk_size=query_chunk_size,
+            attention_checkpointing=attention_checkpointing,
             trace=deepcopy(trace),
             gdn_segment_size=gdn_segment_size,
             gdn_read_mode=gdn_read_mode,
@@ -227,10 +227,15 @@ def attention(q, k, v, replay, inv_freq, scaling):
         for start in range(0, len(q), replay.query_chunk_size):
             grouped = {}
             for row, reads in enumerate(replay.reads[start : start + replay.query_chunk_size]):
+                occurrences = {}
                 for version, left, right, position in reads:
-                    grouped.setdefault(version, []).append((row, left, right, position))
+                    occurrence = occurrences.get(version, 0)
+                    occurrences[version] = occurrence + 1
+                    grouped.setdefault((version, occurrence), []).append(
+                        (row, left, right, position)
+                    )
             blocks, entries = [], []
-            for version, reads in grouped.items():
+            for (version, _), reads in grouped.items():
                 blocks.append(
                     (version, min(r[1] for r in reads), max(r[2] for r in reads), len(reads))
                 )
@@ -242,7 +247,11 @@ def attention(q, k, v, replay, inv_freq, scaling):
         q.split(replay.query_chunk_size), replay._attention[cache_key], strict=True
     ):
         kwargs = {"replay": replay, "blocks": blocks, "entries": entries, "scaling": scaling}
-        if torch.is_grad_enabled() and any(x.requires_grad for x in (q, k, v)):
+        if (
+            replay.attention_checkpointing
+            and torch.is_grad_enabled()
+            and any(x.requires_grad for x in (q, k, v))
+        ):
             output = checkpoint(
                 attention_chunk, query, k, v, inv_freq, use_reentrant=False, **kwargs
             )

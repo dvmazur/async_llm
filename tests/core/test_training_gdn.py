@@ -1,5 +1,6 @@
 import inspect
 import json
+import re
 from itertools import groupby
 from types import SimpleNamespace as NS
 
@@ -11,7 +12,14 @@ from minisgl.training.replay import Replay, forward
 from minisgl.training.sft import supervised_loss
 from minisgl.training.stress import workload
 from minisgl.training.trace import BlockUpdate, RecordingSession, Token, Trace
-from test_training import Session, apply_updates, example_trace, mutation_trace, single_block_trace
+from test_training import (
+    Session,
+    apply_updates,
+    example_trace,
+    mutation_trace,
+    repeated_view_trace,
+    single_block_trace,
+)
 from torch.overrides import TorchFunctionMode
 from torch.utils._python_dispatch import TorchDispatchMode
 from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
@@ -218,6 +226,89 @@ def cuda_delta_math():
         torch.backends.cuda.matmul.allow_tf32 = previous
 
 
+def test_triton_saved_vector_offsets_are_64_bit(tmp_path, monkeypatch):
+    triton = pytest.importorskip("triton")
+    from minisgl.training.gdn_kernel import _read_paths
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler.compiler import ASTSource
+
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path / "triton"))
+    constants = {
+        "N": 8192,
+        "H": 16,
+        "DK": 128,
+        "DV": 128,
+        "DEPTH": 129,
+        "WIDTH": 0,
+        "SAVE": True,
+        "BK": 128,
+        "BV": 128,
+        "BS": 1,
+    }
+    assert (constants["DEPTH"] - 1) * constants["N"] * constants["H"] * constants["DK"] >= 2**31
+    signature = {
+        name: "*i64" if name in {"Lookup", "Paths"} else "*fp32"
+        for name in _read_paths.arg_names[: _read_paths.arg_names.index("N")]
+    }
+    compiled = triton.compile(
+        ASTSource(_read_paths, signature, constants),
+        target=GPUTarget("cuda", 80, 32),
+        options={"num_warps": 4, "enable_fp_fusion": False},
+    )
+    ir = compiled.asm["ttir"]
+    definitions = dict(re.findall(r"^\s*(%\w+)\s*=\s*(.*)$", ir, re.MULTILINE))
+    vector_stores = []
+    for pointer in re.findall(r"tt.store (%\w+),", ir):
+        pending, dependencies = [pointer], set()
+        while pending:
+            name = pending.pop()
+            if name not in dependencies:
+                dependencies.add(name)
+                pending.extend(re.findall(r"%\w+", definitions.get(name, "")))
+        if "%Vectors" in dependencies:
+            vector_stores.append(dependencies)
+    assert len(vector_stores) == 1
+    for name in vector_stores[0]:
+        assert not re.search(r"arith\.(addi|muli).*:\s*i32\b", definitions.get(name, ""))
+
+
+@pytest.mark.parametrize(
+    "device,backend", [("cpu", "torch"), ("cuda", "torch"), ("cuda", "triton")]
+)
+@pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_delta_autocast_preserves_fp32_core(request, device, backend, read_mode, dtype):
+    if device == "cuda":
+        request.getfixturevalue("cuda_delta_math")
+    torch.manual_seed(7)
+    n = 17
+    trace = Trace([Token(i, 0, 0, i, ((0, i + 1),), "prefill") for i in range(n)])
+    replay = GDNReplay.from_trace(
+        trace, torch.arange(n), device=device, read_mode=read_mode, read_backend=backend
+    )
+    inputs = tuple(
+        x.to(dtype).requires_grad_()
+        for x in (
+            torch.randn(n, 2, 5, device=device),
+            torch.randn(n, 2, 5, device=device),
+            torch.randn(n, 2, 7, device=device),
+            torch.rand(n, 2, device=device),
+            torch.rand(n, 2, device=device),
+        )
+    )
+    weights = torch.randn(n, 2, 7, device=device)
+    expected = delta(*inputs, replay)
+    expected_grads = torch.autograd.grad((expected * weights).sum(), inputs)
+    with torch.autocast(device, dtype=torch.bfloat16):
+        actual = delta(*inputs, replay)
+        actual_grads = torch.autograd.grad((actual * weights).sum(), inputs)
+        assert torch.is_autocast_enabled(device)
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
+        torch.testing.assert_close(actual_grad, expected_grad, atol=0, rtol=0)
+
+
 @pytest.mark.parametrize(
     "trace_kind,segment_size,read_mode,dk,dv,boundaries",
     [
@@ -357,7 +448,7 @@ def test_triton_hybrid_parameter_gradients(cuda_delta_math, read_mode, use_reent
 
 @pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
 @pytest.mark.parametrize("segment_size", [1, 2, 8, 16])
-@pytest.mark.parametrize("trace_kind", ["single", "mutation", "uneven", "stress"])
+@pytest.mark.parametrize("trace_kind", ["single", "mutation", "uneven", "stress", "repeated"])
 def test_delta_fp64_outputs_and_gradients(trace_kind, segment_size, read_mode, record_property):
     if trace_kind == "stress":
         session = RecordingSession(Session())
@@ -365,6 +456,8 @@ def test_delta_fp64_outputs_and_gradients(trace_kind, segment_size, read_mode, r
         trace = session.trace
     elif trace_kind == "uneven":
         trace = uneven_history_trace()
+    elif trace_kind == "repeated":
+        trace = repeated_view_trace()
     else:
         trace = single_block_trace(True) if trace_kind == "single" else mutation_trace()
     torch.manual_seed(7)
@@ -1066,12 +1159,17 @@ def test_delta_factorized_reads_preserve_vector_depth(record_property):
         torch.testing.assert_close(actual, expected, atol=2e-12, rtol=2e-12)
 
 
-@pytest.mark.parametrize("trace_factory", [example_trace, mutation_trace, uneven_history_trace])
-def test_gdn_parallel_outputs_and_gradients(trace_factory):
+@pytest.mark.parametrize(
+    "trace_factory", [example_trace, mutation_trace, uneven_history_trace, repeated_view_trace]
+)
+@pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
+def test_gdn_parallel_outputs_and_gradients(trace_factory, read_mode):
     module = tiny_hybrid().model.layers[0].linear_attn
     trace = trace_factory()
     order = Replay.from_trace(trace).order
-    replay = GDNReplay.from_trace(trace, order, conv_kernel_size=module.conv_kernel_size)
+    replay = GDNReplay.from_trace(
+        trace, order, conv_kernel_size=module.conv_kernel_size, read_mode=read_mode
+    )
     hidden = torch.randn(len(trace.tokens), module.hidden_size, requires_grad=True)
     expected = sequential_gdn(module, hidden, trace)
     actual = gdn_forward(module, hidden[order][None], replay)[0][order.argsort()]
@@ -1188,7 +1286,8 @@ def test_hybrid_gdn_options_survive_transfer_and_separate_compiled_cache():
             read_mode,
         )
         assert transferred.gdn_cache_reused == cache_reused
-        assert not transferred._gdn
+        assert transferred is replay
+        assert transferred._gdn is replay._gdn
     with torch.no_grad():
         forward(model, replay)
     assert len(replay._gdn) == 4 and list(replay._gdn.values())[-1] is compiled
@@ -1216,6 +1315,39 @@ def test_hybrid_causal_forward_and_backward_match_huggingface(mixed_steps):
         )
     with torch.no_grad():
         torch.testing.assert_close(model(ids, use_cache=False).logits[0], expected)
+
+
+@pytest.mark.parametrize(
+    "device,backend,use_reentrant",
+    [
+        ("cpu", "torch", None),
+        ("cpu", "torch", True),
+        ("cuda", "torch", False),
+        ("cuda", "triton", True),
+    ],
+)
+def test_hybrid_autocast_parameter_gradients(request, device, backend, use_reentrant):
+    if device == "cuda":
+        request.getfixturevalue("cuda_delta_math")
+    model = tiny_hybrid().to(device).train()
+    if use_reentrant is not None:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
+        )
+    trace = Trace([Token(i, 0, 0, i, ((0, i + 1),), "prefill") for i in range(17)])
+    replay = Replay.from_trace(
+        trace, device=device, gdn_read_mode="factorized", gdn_read_backend=backend
+    )
+    with torch.autocast(device, dtype=torch.bfloat16):
+        logits = forward(model, replay)
+        loss = F.cross_entropy(logits, replay.input_ids.roll(-1))
+        loss.backward()
+    assert logits.dtype == torch.bfloat16
+    assert loss.isfinite()
+    for name, parameter in model.named_parameters():
+        assert parameter.grad is not None, name
+        assert parameter.grad.dtype == torch.float32, name
+        assert parameter.grad.isfinite().all(), name
 
 
 def test_hybrid_replay_checkpoint_reloads_as_native_huggingface(tmp_path):

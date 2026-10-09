@@ -405,6 +405,11 @@ class _Delta(torch.autograd.Function):
     def backward(ctx, grad_output):
         if torch.is_grad_enabled():
             raise RuntimeError("GDN replay supports first-order gradients only")
+        with torch.autocast(grad_output.device.type, enabled=False):
+            return _Delta._backward(ctx, grad_output)
+
+    @staticmethod
+    def _backward(ctx, grad_output):
         key, value, alpha, beta, a, b, vectors, cached, scale, fu, fz, fw, lookup, *indices = (
             ctx.saved_tensors
         )
@@ -543,12 +548,13 @@ def delta(query, key, value, alpha, beta, replay: GDNReplay):
         raise ValueError("Read backend must be torch or triton")
     if replay.read_backend == "triton" and not query.is_cuda:
         raise ValueError("Triton GDN reads require CUDA FP32 inputs")
-    inputs = tuple(x.float() for x in (query, key, value, alpha, beta))
-    query, key, value, alpha, beta = inputs
-    query = query * torch.rsqrt(query.square().sum(-1, keepdim=True) + 1e-6)
-    key = key * torch.rsqrt(key.square().sum(-1, keepdim=True) + 1e-6)
-    save = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
-    return _Delta.apply(query, key, value, alpha, beta, replay, save)
+    with torch.autocast(query.device.type, enabled=False):
+        inputs = tuple(x.float() for x in (query, key, value, alpha, beta))
+        query, key, value, alpha, beta = inputs
+        query = query * torch.rsqrt(query.square().sum(-1, keepdim=True) + 1e-6)
+        key = key * torch.rsqrt(key.square().sum(-1, keepdim=True) + 1e-6)
+        save = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
+        return _Delta.apply(query, key, value, alpha, beta, replay, save)
 
 
 def gdn_forward(module, hidden_states, replay: GDNReplay):

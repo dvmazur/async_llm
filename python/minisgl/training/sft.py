@@ -252,7 +252,7 @@ def _supervised(model, replay, targets):
     return hidden(model, replay.to(device), rows=rows.to(device)), targets[rows].to(device)
 
 
-def supervised_loss(model, replay, targets, chunk_size=128):
+def supervised_loss(model, replay, targets, chunk_size=128, *, checkpointing=True):
     if chunk_size < 1:
         raise ValueError("Loss chunk size must be positive")
     states, selected = _supervised(model, replay, targets)
@@ -264,7 +264,7 @@ def supervised_loss(model, replay, targets, chunk_size=128):
     for x, y in zip(states.split(chunk_size), selected.split(chunk_size), strict=True):
         losses.append(
             checkpoint(chunk_loss, x, y, use_reentrant=False, preserve_rng_state=False)
-            if torch.is_grad_enabled()
+            if checkpointing and torch.is_grad_enabled()
             else chunk_loss(x, y)
         )
     return torch.stack(losses).sum()
@@ -303,6 +303,8 @@ def evaluate(model, examples, chunk_size=128):
 def train(args):
     query_chunk_size = getattr(args, "query_chunk_size", 128)
     loss_chunk_size = getattr(args, "loss_chunk_size", 128)
+    attention_checkpointing = getattr(args, "attention_checkpointing", True)
+    loss_checkpointing = getattr(args, "loss_checkpointing", True)
     gdn_segment_size = getattr(args, "gdn_segment_size", 8)
     gdn_read_mode = getattr(args, "gdn_read_mode", "expanded")
     gdn_cache_reused = getattr(args, "gdn_cache_reused", True)
@@ -323,6 +325,7 @@ def train(args):
         replay = Replay.from_trace(
             trace,
             query_chunk_size=query_chunk_size,
+            attention_checkpointing=attention_checkpointing,
             gdn_segment_size=gdn_segment_size,
             gdn_read_mode=gdn_read_mode,
             gdn_cache_reused=gdn_cache_reused,
@@ -358,7 +361,12 @@ def train(args):
         model.train()
         optimizer.zero_grad(set_to_none=True)
         for replay, targets in examples:
-            loss = supervised_loss(model, replay, targets, loss_chunk_size) / count
+            loss = (
+                supervised_loss(
+                    model, replay, targets, loss_chunk_size, checkpointing=loss_checkpointing
+                )
+                / count
+            )
             if not torch.isfinite(loss):
                 raise RuntimeError("Non-finite training loss")
             loss.backward()
@@ -384,6 +392,8 @@ def train(args):
         "steps": step,
         "supervised_tokens": count,
         "gradient_checkpointing": args.gradient_checkpointing,
+        "attention_checkpointing": attention_checkpointing,
+        "loss_checkpointing": loss_checkpointing,
         "query_chunk_size": query_chunk_size,
         "loss_chunk_size": loss_chunk_size,
         "gdn_segment_size": gdn_segment_size,
@@ -421,6 +431,18 @@ def main():
     training.add_argument("--lr", type=float, default=3e-5)
     training.add_argument("--seed", type=int, default=7)
     training.add_argument("--gradient-checkpointing", action="store_true")
+    training.add_argument(
+        "--attention-checkpointing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Recompute attention chunks during backward to reduce saved activations",
+    )
+    training.add_argument(
+        "--loss-checkpointing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Recompute vocabulary projections during backward to reduce saved logits",
+    )
     training.add_argument("--query-chunk-size", type=int, default=128)
     training.add_argument("--loss-chunk-size", type=int, default=128)
     training.add_argument(
