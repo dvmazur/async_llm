@@ -252,7 +252,8 @@ def sequential_attention(q, k, v, trace, order, inv_freq, scaling):
     width = 2 * len(inv_freq)
 
     def rotated(x, positions):
-        angles = torch.outer(torch.tensor(positions, dtype=x.dtype), inv_freq).repeat(1, 2)[None]
+        positions = torch.tensor(positions, dtype=x.dtype, device=x.device)
+        angles = torch.outer(positions, inv_freq).repeat(1, 2)[None]
         part = x[..., :width].transpose(0, 1)[None]
         part, _ = apply_rotary_pos_emb(part, part, angles.cos(), angles.sin())
         return torch.cat((part[0].transpose(0, 1), x[..., width:]), -1)

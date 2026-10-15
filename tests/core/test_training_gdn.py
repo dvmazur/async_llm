@@ -103,7 +103,10 @@ def sequential_gdn(module, hidden, trace):
             x = hidden[row]
             raw = module.in_proj_qkv(x)
             window = torch.cat([tail[1:], raw[None]], dim=0)
-            convolved = F.silu((window * module.conv1d.weight[:, 0].T).sum(0))
+            convolved = (window * module.conv1d.weight[:, 0].T).sum(0)
+            if module.conv1d.bias is not None:
+                convolved = convolved + module.conv1d.bias
+            convolved = F.silu(convolved)
             query, key, value = convolved.split([module.key_dim, module.key_dim, module.value_dim])
             query, key = (t.reshape(module.num_k_heads, dk) for t in (query, key))
             query, key = (
