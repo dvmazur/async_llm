@@ -149,7 +149,10 @@ class GDNReplay:
         """Compile shared snapshot summaries and original convolution windows."""
         if read_backend not in {"torch", "triton"}:
             raise ValueError("Read backend must be torch or triton")
-        n = len(trace.tokens)
+        if trace.multimodal:
+            raise NotImplementedError("Multimodal training replay is not implemented")
+        tokens = trace.tokens
+        n = len(tokens)
         order = torch.as_tensor(order).cpu().tolist()
         if not n or sorted(order) != list(range(n)) or conv_kernel_size < 1:
             raise ValueError("Expected a nonempty trace, a token permutation, and positive width")
@@ -182,7 +185,7 @@ class GDNReplay:
         empty = (0, (), (-1,) * conv_kernel_size)
         blocks, windows, paths = {}, [None] * n, [None] * n
         update_index = 0
-        for step, rows in groupby(enumerate(trace.tokens), key=lambda x: x[1].step):
+        for step, rows in groupby(enumerate(tokens), key=lambda x: x[1].step):
             rows = list(rows)
             while update_index < len(trace.updates) and trace.updates[update_index].step <= step:
                 update = trace.updates[update_index]
@@ -312,9 +315,10 @@ class _Delta(torch.autograd.Function):
                 return _segment_matrices(*(x[indices] for x in (key, value, alpha, beta)))
             k, v = key[indices], value[indices]
             al, be = alpha[indices, :, None, None], beta[indices, :, None, None]
-            return al * (identity - be * k[..., :, None] * k[..., None, :]), be * v[
-                ..., :, None
-            ] * k[..., None, :]
+            return (
+                al * (identity - be * k[..., :, None] * k[..., None, :]),
+                be * v[..., :, None] * k[..., None, :],
+            )
 
         if len(cached):
             a[-len(cached) :], b[-len(cached) :] = matrices(cached, True)
@@ -490,9 +494,10 @@ class _Delta(torch.autograd.Function):
                 return _segment_matrices(*(x[indices] for x in (key, value, alpha, beta)))
             k, v = key[indices], value[indices]
             al, be = alpha[indices, :, None, None], beta[indices, :, None, None]
-            return al * (identity - be * k[..., :, None] * k[..., None, :]), be * v[
-                ..., :, None
-            ] * k[..., None, :]
+            return (
+                al * (identity - be * k[..., :, None] * k[..., None, :]),
+                be * v[..., :, None] * k[..., None, :],
+            )
 
         def accumulate(indices, leaf, ga, gb):
             if not leaf:

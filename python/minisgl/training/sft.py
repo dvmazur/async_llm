@@ -13,22 +13,11 @@ from torch.utils.checkpoint import checkpoint
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from .replay import Replay, hidden
-from .trace import BlockUpdate, Token, Trace, record
+from .trace import Trace, record
 
 
 def restore_trace(data):
-    tokens = [Token(**{**t, "view": tuple(map(tuple, t["view"]))}) for t in data["tokens"]]
-    updates = [
-        BlockUpdate(
-            **{
-                **u,
-                "sources": tuple(u.get("sources", ())),
-                "refs": None if u.get("refs") is None else tuple(map(tuple, u["refs"])),
-            }
-        )
-        for u in data["updates"]
-    ]
-    return Trace(tokens, data["steps"], updates)
+    return Trace.from_dict(data)
 
 
 async def mine(args):
@@ -64,14 +53,16 @@ async def mine(args):
                 return ids[-1]
 
             async def sample(block, view, pending, generator):
-                cursor = len(trace.tokens)
+                cursor, batch_cursor = trace.num_tokens, len(trace.batches)
                 context = AsyncContext(cache_view=view, output_block=block, next_input_id=pending)
                 output = await llm.forward(cache_view=context)
-                rows = [
-                    i
-                    for i in range(cursor, len(trace.tokens))
-                    if trace.tokens[i].block == block.block_id
-                ]
+                rows, start = [], cursor
+                for batch in trace.batches[batch_cursor:]:
+                    for request in batch.requests:
+                        end = start + len(request.input_ids)
+                        if request.write_to == block.block_id:
+                            rows.extend(range(start, end))
+                        start = end
                 if len(rows) != 1:
                     raise RuntimeError("Sampling requires exactly one writer per block")
                 row = rows[0]
@@ -200,13 +191,14 @@ async def mine(args):
                 answer = await generate(a, [prompt, copied, a], pending, 2)
             for block in blocks:
                 await llm.free_block(block)
-            batches = Counter(t.step for t in trace.tokens if t.kind == "decode")
+            tokens = trace.tokens
+            batches = Counter(t.step for t in tokens if t.kind == "decode")
             coverage = {
                 "blocks": len(blocks),
                 "operations": dict(operations),
-                "ordered_views": len({tuple(b for b, _ in t.view) for t in trace.tokens}),
-                "max_view_depth": max(len(t.view) for t in trace.tokens),
-                "prefill_steps": len({t.step for t in trace.tokens if t.kind == "prefill"}),
+                "ordered_views": len({tuple(b for b, _ in t.view) for t in tokens}),
+                "max_view_depth": max(len(t.view) for t in tokens),
+                "prefill_steps": len({t.step for t in tokens if t.kind == "prefill"}),
                 "decode_batch_sizes": dict(sorted(Counter(batches.values()).items())),
             }
             examples.append(
@@ -215,13 +207,13 @@ async def mine(args):
                     "workers": workers,
                     "answer": answer,
                     "trace": asdict(trace),
-                    "targets": [targets.get(i, -100) for i in range(len(trace.tokens))],
-                    "logprobs": [logprobs.get(i) for i in range(len(trace.tokens))],
+                    "targets": [targets.get(i, -100) for i in range(trace.num_tokens)],
+                    "logprobs": [logprobs.get(i) for i in range(trace.num_tokens)],
                     "coverage": coverage,
                 }
             )
             print(
-                f"{problem} inputs={len(trace.tokens)} targets={len(targets)} answer={answer!r}",
+                f"{problem} inputs={trace.num_tokens} targets={len(targets)} answer={answer!r}",
                 flush=True,
             )
             print(f"coverage={coverage}", flush=True)
@@ -321,7 +313,7 @@ def train(args):
     for example in data["examples"]:
         trace = restore_trace(example["trace"])
         targets = torch.tensor(example["targets"])
-        if len(targets) != len(trace.tokens) or not (targets != -100).any():
+        if len(targets) != trace.num_tokens or not (targets != -100).any():
             raise ValueError("Each trace needs aligned, nonempty supervision")
         replay = Replay.from_trace(
             trace,

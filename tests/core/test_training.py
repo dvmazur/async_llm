@@ -786,7 +786,11 @@ def test_legacy_and_compact_json_replay_match():
         for row, token in enumerate(trace.tokens):
             if token.step == step:
                 blocks.setdefault(token.block, []).append(row)
-    legacy = asdict(Trace(trace.tokens, trace.steps, updates))
+    legacy = {
+        "tokens": [asdict(token) for token in trace.tokens],
+        "steps": trace.steps,
+        "updates": [asdict(update) for update in updates],
+    }
     for update in legacy["updates"]:
         del update["refs"]
     compact = asdict(trace)

@@ -22,12 +22,9 @@ MODEL = None
 LAYERS = (0, 1, 2, 3, 23)
 
 
-def record(args):
+def build_engine(args):
     from minisgl.distributed import DistributedInfo
     from minisgl.engine import Engine, EngineConfig
-    from minisgl.shared_cache import AsyncContext, PrefillJob, SharedCacheSession, WorkerGroup
-    from minisgl.training.stress import workload
-    from minisgl.training.trace import RecordingSession
 
     original_init = Engine._init_communication
 
@@ -55,6 +52,15 @@ def record(args):
         )
     )
     reference.check()
+    return engine
+
+
+def record(args):
+    from minisgl.shared_cache import AsyncContext, PrefillJob, SharedCacheSession, WorkerGroup
+    from minisgl.training.stress import workload
+    from minisgl.training.trace import RecordingSession, Trace
+
+    engine = build_engine(args)
     dtype = getattr(torch, args.dtype)
     weights = fingerprints(
         {
@@ -87,7 +93,7 @@ def record(args):
 
         def prefill_batch(self, jobs):
             jobs = list(jobs)
-            cursor, endpoints = len(self.trace.tokens), []
+            cursor, endpoints = self.trace.num_tokens, []
             self.pending = {}
             for job in jobs:
                 for offset in range(job.input_ids.numel()):
@@ -101,7 +107,7 @@ def record(args):
             return result
 
         def decode_step(self, group, input_ids):
-            cursor = len(self.trace.tokens)
+            cursor = self.trace.num_tokens
             self.pending = {
                 (ctx.output_block.block_id, ctx.output_block.num_tokens): cursor + i
                 for i, ctx in enumerate(group)
@@ -225,23 +231,45 @@ def record(args):
             ]
             decode([a, b, c], views, f"long_decode_{turn:02d}")
         torch.cuda.synchronize()
+        tokens = capture.trace.tokens
+        serialized = asdict(capture.trace)
+        assert serialized["format_version"] == 2 and "tokens" not in serialized
+        assert Trace.from_dict(json.loads(json.dumps(serialized))) == capture.trace
+        legacy = Trace.from_dict(
+            json.loads(
+                json.dumps(
+                    {
+                        "tokens": [asdict(token) for token in tokens],
+                        "steps": capture.trace.steps,
+                        "updates": serialized["updates"],
+                    }
+                )
+            )
+        )
+        assert legacy == capture.trace and legacy.tokens == tokens
+        long_requests = [
+            request
+            for batch in capture.trace.batches
+            for request in batch.requests
+            if len(request.input_ids) == 2048
+        ]
+        assert len(long_requests) == 1
         metadata = {
             "dtype": args.dtype,
             "prefill_rows": args.prefill_rows,
             "seconds": time.perf_counter() - started,
-            "tokens": len(capture.trace.tokens),
+            "tokens": capture.trace.num_tokens,
+            "format_version": serialized["format_version"],
+            "requests": sum(len(batch.requests) for batch in capture.trace.batches),
+            "long_prefill_tokens": len(long_requests[0].input_ids),
             "output_rows": len(capture.rows),
             "steps": capture.trace.steps,
             "updates": len(capture.trace.updates),
-            "max_visible": max(sum(n for _, n in token.view) for token in capture.trace.tokens),
-            "max_depth": max(len(token.view) for token in capture.trace.tokens),
-            "ordered_views": len(
-                {tuple(b for b, _ in token.view) for token in capture.trace.tokens}
-            ),
+            "max_visible": max(sum(n for _, n in token.view) for token in tokens),
+            "max_depth": max(len(token.view) for token in tokens),
+            "ordered_views": len({tuple(b for b, _ in token.view) for token in tokens}),
             "decode_batch_sizes": dict(
-                Counter(
-                    Counter(t.step for t in capture.trace.tokens if t.kind == "decode").values()
-                )
+                Counter(Counter(t.step for t in tokens if t.kind == "decode").values())
             ),
             "peak_gpu_bytes": torch.cuda.max_memory_allocated(),
         }
@@ -253,13 +281,13 @@ def record(args):
         features = {}
         for key, chunks in capture.features.items():
             value = torch.empty(
-                len(capture.trace.tokens), chunks[0][1].shape[-1], dtype=chunks[0][1].dtype
+                capture.trace.num_tokens, chunks[0][1].shape[-1], dtype=chunks[0][1].dtype
             )
             seen = []
             for rows, chunk in chunks:
                 value[rows] = chunk
                 seen.extend(rows)
-            assert sorted(seen) == list(range(len(capture.trace.tokens))), key
+            assert sorted(seen) == list(range(capture.trace.num_tokens)), key
             features[key] = value
         torch.save(
             {
@@ -274,7 +302,7 @@ def record(args):
             json.dumps(
                 {
                     "model": str(MODEL),
-                    "trace": asdict(capture.trace),
+                    "trace": serialized,
                     "metadata": metadata,
                     "weights": weights,
                 }
@@ -285,6 +313,126 @@ def record(args):
         reference.topology = None
         engine.shutdown()
         math_mode.__exit__(None, None, None)
+
+
+def record_image(args):
+    from minisgl.shared_cache import SharedCacheSession, WorkerGroup
+    from minisgl.training.gdn import GDNReplay
+    from minisgl.training.replay import Replay
+    from minisgl.training.trace import RecordingSession, Trace
+
+    engine = build_engine(args)
+    try:
+        raw = SharedCacheSession(engine)
+        recorder = RecordingSession(raw)
+        config = engine.config.model_config
+        vision = config.vision_config
+        patch_dim = vision.in_channels * vision.temporal_patch_size * vision.patch_size**2
+        grid = torch.tensor([[1, 8, 8]])
+        pixels = (
+            torch.sin(torch.arange(64 * patch_dim).float().reshape(64, patch_dim) * 7.7e-4) * 0.5
+        )
+        original_pixels = pixels.clone()
+        ids = torch.tensor(
+            [config.vision_start_token_id]
+            + [config.image_token_id] * (64 // vision.spatial_merge_size**2)
+            + [config.vision_end_token_id],
+            dtype=torch.int32,
+        )
+        types = (ids == config.image_token_id).long()
+        image = {
+            "pixel_values": pixels,
+            "image_grid_thw": grid,
+            "mm_token_type_ids": types,
+        }
+        baseline, block = raw.create_block(), recorder.create_block()
+        expected = raw.prefill_block(baseline, ids, **image)
+        image_logits = expected.clone()
+        calls = []
+        original_forward = raw._forward
+
+        def capture(batch, *a, **kw):
+            calls.append((batch.input_ids.cpu().clone(), batch.mrope_positions.cpu().clone()))
+            return original_forward(batch, *a, **kw)
+
+        raw._forward = capture
+        actual = recorder.prefill_block(block, ids, **image)
+        raw._forward = original_forward
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        assert len(calls) > 1 and all(len(tokens) <= args.prefill_rows for tokens, _ in calls)
+        image_chunks = len(calls)
+        batch = recorder.trace.batches[0]
+        request = batch.requests[0]
+        assert batch.kind == "prefill" and len(batch.requests) == 1
+        assert request.input_ids == tuple(ids.tolist()) and request.write_start == 0
+        assert request.write_span == 0 and request.cache_spans == (0,)
+        assert torch.equal(torch.cat([tokens for tokens, _ in calls]), ids)
+        assert torch.equal(
+            torch.cat([positions for _, positions in calls], dim=1),
+            request.mrope_positions.tensor(),
+        )
+        for field, tensor in image.items():
+            assert torch.equal(getattr(request, field).tensor(), tensor), field
+        pixels.add_(1)
+        assert torch.equal(request.pixel_values.tensor(), original_pixels)
+        span = block.mrope_span
+        assert span < block.num_tokens == len(ids)
+        text = torch.tensor([42, 43, 44], dtype=torch.int32)
+        expected = raw.prefill_block(baseline, text)
+        actual = recorder.prefill_block(block, text)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        request = recorder.trace.batches[-1].requests[0]
+        assert request.write_span == span and request.cache_spans == (span,)
+        assert torch.equal(
+            request.mrope_positions.tensor(), torch.arange(span, span + 3).expand(3, -1)
+        )
+        assert block.mrope_span == baseline.mrope_span == span + 3
+        token = torch.tensor([45], dtype=torch.int32)
+
+        def group(target):
+            return WorkerGroup(cache_structure=[[target]], write_to=[target])
+
+        expected = raw.decode_step(group(baseline), token)
+        actual = recorder.decode_step(group(block), token)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        request = recorder.trace.batches[-1].requests[0]
+        assert request.write_span == span + 3 and request.cache_spans == (span + 3,)
+        span, length = block.mrope_span, block.num_tokens
+        raw.append_block(baseline, baseline)
+        recorder.append_block(block, block)
+        assert block.mrope_span == 2 * span and block.num_tokens == 2 * length
+        expected = raw.prefill_block(baseline, token)
+        actual = recorder.prefill_block(block, token)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        assert recorder.trace.batches[-1].requests[0].write_span == 2 * span
+        recorder.free_block(block)
+        assert block.num_tokens == block.mrope_span == 0
+        actual = recorder.prefill_block(block, ids, **{**image, "pixel_values": original_pixels})
+        torch.testing.assert_close(actual, image_logits, rtol=0, atol=0)
+        request = recorder.trace.batches[-1].requests[0]
+        assert request.write_start == request.write_span == 0 and request.cache_spans == (0,)
+        data = json.loads(json.dumps(asdict(recorder.trace)))
+        restored = Trace.from_dict(data)
+        assert restored == recorder.trace
+        assert data["format_version"] == 2 and "tokens" not in data
+        assert len(restored.batches) == 5 and len(restored.updates) == 2
+        assert sum(r.pixel_values is not None for b in restored.batches for r in b.requests) == 2
+        with pytest.raises(NotImplementedError, match="(?i)multimodal"):
+            Replay.from_trace(restored)
+        with pytest.raises(NotImplementedError, match="(?i)multimodal"):
+            GDNReplay.from_trace(restored, torch.arange(restored.num_tokens))
+        metadata = {
+            "image_tokens": len(ids),
+            "image_chunks": image_chunks,
+            "batches": len(restored.batches),
+            "tokens": restored.num_tokens,
+            "updates": len(restored.updates),
+            "max_abs": (actual - image_logits).abs().max().item(),
+        }
+        (ROOT / f"{args.name}.json").write_text(json.dumps({"trace": data, "metadata": metadata}))
+        print(json.dumps(metadata), flush=True)
+    finally:
+        engine.shutdown()
 
 
 def replay(args):
@@ -447,7 +595,7 @@ def canonical_weights(model):
 
 
 @pytest.fixture(scope="module")
-def engine_runs(tmp_path_factory):
+def engine_runner(tmp_path_factory):
     if not os.environ.get("MINISGL_TRAINING_LOGITS_MODEL"):
         pytest.skip(
             "Set MINISGL_TRAINING_LOGITS_MODEL to a local dense Qwen3.5 checkpoint directory"
@@ -483,6 +631,12 @@ def engine_runs(tmp_path_factory):
             )
         assert result.returncode == 0, f"{log}\n{log.read_text()[-8000:]}"
 
+    return directory, run
+
+
+@pytest.fixture(scope="module")
+def engine_runs(engine_runner):
+    directory, run = engine_runner
     for dtype, unprepared in [("float32", False), ("float32", True), ("float64", True)]:
         name = dtype + ("-torch-state" if unprepared else "-prepared")
         run(
@@ -545,9 +699,18 @@ def test_prepared_gdn_matches_torch_state_path(engine_runs, record_property):
     record_property("prepared_vs_torch_max_abs", result["logits"]["max_abs"])
 
 
+def test_image_recording_preserves_request_payload(engine_runner, record_property):
+    directory, run = engine_runner
+    run("record_image", "image-recording", "--prefill-rows", "8")
+    result = json.loads((directory / "image-recording.json").read_text())["metadata"]
+    assert result["image_chunks"] > 1 and result["batches"] == 5
+    assert result["max_abs"] == 0
+    record_property("report", str(directory / "image-recording.json"))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["record", "replay", "compare"])
+    parser.add_argument("mode", choices=["record", "record_image", "replay", "compare"])
     parser.add_argument("--name", required=True)
     parser.add_argument("--source")
     parser.add_argument("--dtype", choices=["float32", "float64"], default="float32")

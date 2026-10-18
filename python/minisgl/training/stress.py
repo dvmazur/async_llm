@@ -17,7 +17,7 @@ def workload(session, vocab_size, seed=7, large_size=128):
 
     if not 1 <= large_size <= 256 or vocab_size < 2:
         raise ValueError("Require 1 <= large_size <= 256 and vocab_size >= 2")
-    if session.trace.tokens or session.trace.updates:
+    if session.trace.num_tokens or session.trace.updates:
         raise ValueError("The workload requires a fresh RecordingSession")
     rng = random.Random(seed)
     blocks = [session.create_block() for _ in range(24)]
@@ -44,7 +44,7 @@ def workload(session, vocab_size, seed=7, large_size=128):
             logprobs[row] = float(output.log_softmax(-1)[target])
 
     def prefill(jobs):
-        rows, cursor = [], len(session.trace.tokens)
+        rows, cursor = [], session.trace.num_tokens
         for job in jobs:
             cursor += job.input_ids.numel()
             rows.append(cursor - 1)
@@ -109,7 +109,7 @@ def workload(session, vocab_size, seed=7, large_size=128):
             if visible + 1 > 8192:
                 raise ValueError("Synthetic workload exceeds the visible context budget")
             contexts.append(AsyncContext(cache_view=view, output_block=output))
-        cursor = len(session.trace.tokens)
+        cursor = session.trace.num_tokens
         save(
             range(cursor, cursor + len(outputs)),
             session.decode_step(WorkerGroup(contexts), ids(len(outputs))),
@@ -124,18 +124,19 @@ def workload(session, vocab_size, seed=7, large_size=128):
     empty_copy = merge(empty, empty)
     prefill([PrefillJob(empty_copy, ids(2), published[-2:])])
     trace = session.trace
-    batches = Counter(t.step for t in trace.tokens if t.kind == "decode")
+    tokens = trace.tokens
+    batches = Counter(t.step for t in tokens if t.kind == "decode")
     return {
         "workload": {"seed": seed, "large_size": large_size, "vocab_size": vocab_size},
         "trace": asdict(trace),
-        "targets": [targets.get(i, -100) for i in range(len(trace.tokens))],
-        "logprobs": [logprobs.get(i) for i in range(len(trace.tokens))],
+        "targets": [targets.get(i, -100) for i in range(trace.num_tokens)],
+        "logprobs": [logprobs.get(i) for i in range(trace.num_tokens)],
         "coverage": {
             "blocks": len(blocks),
             "operations": dict(operations),
-            "ordered_views": len({tuple(b for b, _ in t.view) for t in trace.tokens}),
-            "max_view_depth": max(len(t.view) for t in trace.tokens),
-            "max_visible_tokens": max(sum(n for _, n in t.view) for t in trace.tokens),
+            "ordered_views": len({tuple(b for b, _ in t.view) for t in tokens}),
+            "max_view_depth": max(len(t.view) for t in tokens),
+            "max_visible_tokens": max(sum(n for _, n in t.view) for t in tokens),
             "peak_live_tokens": peak_live,
             "decode_batch_sizes": dict(sorted(Counter(batches.values()).items())),
         },
@@ -184,7 +185,7 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps({"model": args.model, "examples": [example]}))
     print(json.dumps(example["coverage"], indent=2), flush=True)
-    print(f"Saved {len(example['trace']['tokens'])} input rows to {args.output}", flush=True)
+    print(f"Saved {len(example['targets'])} input rows to {args.output}", flush=True)
 
 
 if __name__ == "__main__":

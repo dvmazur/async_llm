@@ -75,9 +75,11 @@ class Replay:
             raise ValueError("gdn_read_mode must be expanded or factorized")
         if gdn_read_backend not in {"torch", "triton"}:
             raise ValueError("gdn_read_backend must be torch or triton")
-        if not trace.tokens:
-            raise ValueError("Cannot replay an empty trace")
+        if trace.multimodal:
+            raise NotImplementedError("Multimodal training replay is not implemented")
         tokens = trace.tokens
+        if not tokens:
+            raise ValueError("Cannot replay an empty trace")
         if any(a.step > b.step for a, b in zip(tokens, tokens[1:])) or any(
             a.step > b.step for a, b in zip(trace.updates, trace.updates[1:])
         ):
