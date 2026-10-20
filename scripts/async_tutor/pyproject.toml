@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "async-tutor"
+version = "0.1.0"
+description = "Concurrent camera tutor and demo recorder on minisgl's shared cache"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = ["fastapi", "pillow", "uvicorn", "websockets>=12"]
+
+# Install the parent repo in the same environment for minisgl and its model dependencies.
+
+[project.scripts]
+async-tutor = "async_tutor.__main__:main"
+async-tutor-record = "async_tutor.record:main"
+
+[tool.setuptools.packages.find]
+include = ["async_tutor*"]

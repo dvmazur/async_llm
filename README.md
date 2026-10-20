@@ -110,6 +110,15 @@ probes, e.g. reading the next-token distribution over a fixed set of actions.
 
 ## Demos
 
+**Camera tutor:** concurrent paper assessment and hints, with MP4 recording and replay.
+[Setup and recording instructions](./scripts/async_tutor).
+
+```bash
+uv pip install -e scripts/async_tutor
+uv run --no-sync async-tutor
+uv run --no-sync async-tutor-record --output artifacts/tutor-eval/run
+```
+
 **Asynchronous thinking:** thinker and writer streams with a mode-switching probe, ported from the
 [AsyncReasoning demo](https://github.com/yandex-research/AsyncReasoning/blob/main/notebooks/demo_async_thoughts.ipynb):
 [__`scripts/async_thoughts`__](./scripts/async_thoughts)
