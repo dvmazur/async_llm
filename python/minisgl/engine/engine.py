@@ -7,6 +7,7 @@ import torch
 from minisgl.attention import create_attention_backend
 from minisgl.core import Batch, Context, Req, set_global_ctx
 from minisgl.distributed import destroy_distributed, enable_pynccl_distributed, set_tp_info
+from minisgl.distributed.partition import validate_model_partition
 from minisgl.kvcache import GDNStatePool, PageAllocator, create_kvcache_pool
 from minisgl.layers import set_rope_device
 from minisgl.models import create_model, load_weight
@@ -29,6 +30,7 @@ class ForwardOutput(NamedTuple):
 class Engine:
     def __init__(self, config: EngineConfig):
         assert not torch.cuda.is_initialized()
+        validate_model_partition(config.model_config, config.tp_info.size)
         set_tp_info(rank=config.tp_info.rank, size=config.tp_info.size)
         _adjust_config(config)
 
@@ -43,7 +45,8 @@ class Engine:
         set_global_ctx(self.ctx)
 
         self.tp_cpu_group = self._init_communication(config)
-        init_free_memory = self._sync_get_memory()[1]
+        init_free_memory = self._sync_get_memory()[0]
+        local_init_free_memory = get_free_memory(self.device)
         logger.info_rank0(f"Free memory before loading model: {mem_GB(init_free_memory)}")
 
         # ======================= Model initialization ========================
@@ -52,8 +55,17 @@ class Engine:
             self.model = create_model(config.model_config)
         self.model.load_state_dict(self._load_weight_state_dict(config))
 
+        # Reserve rank-local recurrent pools before sizing the shared KV pool.
+        if config.model_config.is_hybrid:
+            self.ctx.gdn_state = GDNStatePool(
+                model_config=config.model_config,
+                max_running_req=config.max_running_req + 1,
+                device=self.device,
+                dtype=self.dtype,
+            )
+
         # ======================= KV cache initialization ========================
-        self.num_pages = self._determine_num_pages(init_free_memory, config)
+        self.num_pages = self._determine_num_pages(local_init_free_memory, config)
         num_tokens = self.num_pages * config.page_size
         self.ctx.kv_cache = self.kv_cache = create_kvcache_pool(
             model_config=config.model_config,
@@ -62,16 +74,6 @@ class Engine:
             device=self.device,
             dtype=self.dtype,
         )
-
-        # Hybrid models (Qwen3.5) keep a per-request recurrent state for their
-        # linear-attention layers alongside the token KV cache.  +1 for the dummy slot.
-        if config.model_config.is_hybrid:
-            self.ctx.gdn_state = GDNStatePool(
-                model_config=config.model_config,
-                max_running_req=config.max_running_req + 1,
-                device=self.device,
-                dtype=self.dtype,
-            )
 
         # Main page cache: the page-aligned pool over the real KV pages.  The
         # live scheduler manages its own CacheManager; standalone in-process
@@ -173,7 +175,8 @@ class Engine:
             }
 
     def _determine_num_pages(self, old_free_memory: int, config: EngineConfig) -> int:
-        new_free_memory = self._sync_get_memory()[1]
+        self._sync_get_memory()
+        new_free_memory = get_free_memory(self.device)
         cache_per_page = (
             2  # key + value
             * config.model_config.head_dim
@@ -187,6 +190,14 @@ class Engine:
             model_memory = old_free_memory - new_free_memory
             available_memory = int(config.memory_ratio * old_free_memory) - model_memory
             num_pages = available_memory // cache_per_page
+
+        # Free memory can differ across devices, but page capacities must agree.
+        # Use the capacity of the most constrained rank.
+        capacity = torch.tensor(num_pages, device="cpu", dtype=torch.int64)
+        torch.distributed.all_reduce(
+            capacity, op=torch.distributed.ReduceOp.MIN, group=self.tp_cpu_group
+        )
+        num_pages = int(capacity.item())
 
         assert num_pages > 1, "Not enough memory for KV cache, try reducing --num-pages"
         num_tokens = num_pages * config.page_size
@@ -207,11 +218,10 @@ class Engine:
         min_free_memory = int(free_mem_tensor[0].item())
         max_free_memory = -int(free_mem_tensor[1].item())
         if max_free_memory - min_free_memory > 2 * 1024 * 1024 * 1024:
-            logger.error(
+            logger.warning(
                 f"Memory across TP ranks are imbalanced:"
                 f" min {mem_GB(min_free_memory)}, max {mem_GB(max_free_memory)}"
             )
-            raise RuntimeError("Memory across TP ranks are imbalanced")
 
         return min_free_memory, max_free_memory
 

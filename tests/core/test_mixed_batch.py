@@ -449,11 +449,21 @@ def _hybrid_config():
 
 
 @pytest.fixture(scope="module")
-def gdn_layer(global_ctx):
+def single_rank_tp():
+    import minisgl.distributed.info as info
+    from minisgl.distributed import DistributedInfo
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(info, "_TP_INFO", DistributedInfo(0, 1))
+        yield
+
+
+@pytest.fixture(scope="module")
+def gdn_layer(global_ctx, single_rank_tp):
     """A GatedDeltaNet layer with random weights, plus a state pool on the global ctx.
 
-    No checkpoint involved: ``LinearReplicated`` is a bare weight tensor, so seeding it
-    with random values is enough to exercise the real forward paths.
+    No checkpoint involved: seed the single-rank projections with random values
+    to exercise the real forward paths.
     """
     from minisgl.kvcache import GDNStatePool
     from minisgl.models.qwen3_5_delta import Qwen3_5GatedDeltaNet

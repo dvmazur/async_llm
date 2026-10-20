@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple
 
 import torch
@@ -17,6 +17,10 @@ class ServerArgs(SchedulerConfig):
     server_port: int = 1919
     num_tokenizer: int = 0
     silent_output: bool = False
+    distributed_addr: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "distributed_addr", f"tcp://127.0.0.1:{self.server_port + 1}")
 
     @property
     def share_tokenizer(self) -> bool:
@@ -45,10 +49,6 @@ class ServerArgs(SchedulerConfig):
     @property
     def frontend_create_tokenizer_link(self) -> bool:
         return not self.share_tokenizer
-
-    @property
-    def distributed_addr(self) -> str:
-        return f"tcp://127.0.0.1:{self.server_port + 1}"
 
 
 def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bool]:
@@ -90,7 +90,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         "--tp-size",
         type=int,
         default=1,
-        help="The tensor parallelism size.",
+        help="Maximum tensor parallelism size; uses the largest supported size within the visible GPU count.",
     )
 
     parser.add_argument(
