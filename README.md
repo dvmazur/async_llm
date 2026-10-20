@@ -110,15 +110,9 @@ probes, e.g. reading the next-token distribution over a fixed set of actions.
 
 ## Demos
 
-**Asynchronous thinking:** thinker and writer streams with a mode-switching probe, ported from the
-[AsyncReasoning demo](https://github.com/yandex-research/AsyncReasoning/blob/main/notebooks/demo_async_thoughts.ipynb):
-[__`scripts/async_thoughts`__](./scripts/async_thoughts)
-
-```bash
-uv pip install -e scripts/async_thoughts
-async-thoughts --problem "What is 17 * 23?"
-async-thoughts --model /path/to/Qwen3.5-0.8B --max-steps 140 --probe-period 20   # quick demo
-```
+**Asynchronous thinking:** concurrent thinker and writer streams with a shared-cache
+readiness probe, based on [AsyncReasoning](https://arxiv.org/abs/2512.10931).
+See the [async-thoughts README](./scripts/async_thoughts/README.md) for setup and usage.
 
 ### Coming soon 🚧
 
