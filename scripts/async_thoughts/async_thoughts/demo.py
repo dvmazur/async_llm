@@ -11,6 +11,7 @@ import gc
 import os
 import sys
 import time
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import List
 
@@ -169,20 +170,22 @@ async def _run_loop(
         async def thinker_coro() -> None:
             reason = "thinker hit token limit"
             try:
-                async for token in llm.async_generate(
-                    thinker_ctx, forbid_ids=forbidden, max_steps=config.max_steps
-                ):
-                    if done.is_set():
-                        break
-                    if token in (end_think, eos):
-                        reason = "thinker finished"
-                        break
-                    thinker_tokens.append(token)
-                    _stream_token(tokenizer.decode([token]), "thinker")
-                    if len(thinker_tokens) % config.probe_period == 0 or ends_with_double_newline(
-                        thinker_tokens, tokenizer
-                    ):
-                        probe_due.set()
+                async with aclosing(
+                    llm.async_generate(
+                        thinker_ctx, forbid_ids=forbidden, max_steps=config.max_steps
+                    )
+                ) as stream:
+                    async for token in stream:
+                        if done.is_set():
+                            break
+                        if token in (end_think, eos):
+                            reason = "thinker finished"
+                            break
+                        thinker_tokens.append(token)
+                        _stream_token(tokenizer.decode([token]), "thinker")
+                        period_elapsed = len(thinker_tokens) % config.probe_period == 0
+                        if period_elapsed or ends_with_double_newline(thinker_tokens, tokenizer):
+                            probe_due.set()
                 # Commit the final budget-limited thought before releasing the writer.
                 if not done.is_set() and thinker_ctx.next_input_id not in (None, end_think, eos):
                     await llm.forward(cache_view=thinker_ctx, return_logits=False)
@@ -201,27 +204,30 @@ async def _run_loop(
                 await writer_may_run.wait()
                 if done.is_set():
                     return
-                async for token in llm.async_generate(
-                    writer_ctx, forbid_ids=writer_forbidden, max_steps=config.max_answer_tokens
-                ):
-                    if done.is_set():
-                        break
-                    if token == eos:
-                        _print_state_change("writer hit EOS -- finished")
-                        break
-                    writer_tokens.append(token)
-                    _stream_token(tokenizer.decode([token]), "writer")
-                    if len(writer_tokens) >= config.max_answer_tokens:
-                        _print_state_change("writer hit token limit -- finished")
-                        break
-                    if not thinking_done.is_set():
-                        if ends_with_double_newline(writer_tokens, tokenizer):
-                            _print_state_change("writer end-of-step -> thinker leads")
-                            writer_may_run.clear()
-                        # The sampled token stays pending while the writer is paused.
-                        await writer_may_run.wait()
-                    if done.is_set():
-                        break
+                async with aclosing(
+                    llm.async_generate(
+                        writer_ctx, forbid_ids=writer_forbidden, max_steps=config.max_answer_tokens
+                    )
+                ) as stream:
+                    async for token in stream:
+                        if done.is_set():
+                            break
+                        if token == eos:
+                            _print_state_change("writer hit EOS -- finished")
+                            break
+                        writer_tokens.append(token)
+                        _stream_token(tokenizer.decode([token]), "writer")
+                        if len(writer_tokens) >= config.max_answer_tokens:
+                            _print_state_change("writer hit token limit -- finished")
+                            break
+                        if not thinking_done.is_set():
+                            if ends_with_double_newline(writer_tokens, tokenizer):
+                                _print_state_change("writer end-of-step -> thinker leads")
+                                writer_may_run.clear()
+                            # The sampled token stays pending while the writer is paused.
+                            await writer_may_run.wait()
+                        if done.is_set():
+                            break
             finally:
                 done.set()
                 writer_may_run.set()
