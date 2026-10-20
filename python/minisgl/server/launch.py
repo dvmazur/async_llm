@@ -52,11 +52,11 @@ def launch_server(run_shell: bool = False) -> None:
     available = torch.cuda.device_count()
     selected = select_tp_size(server_args.model_config, requested, available)
     if selected != requested:
-        logger.warning(
-            f"Requested TP={requested}, visible GPUs={available}; using TP={selected}. "
-            f"The remaining {available - selected} visible GPU(s) will not be used."
+        raise RuntimeError(
+            f"Requested TP={requested}, visible GPUs={available}; "
+            f"the largest supported size within this limit is TP={selected}. "
+            f"Restart with --tp-size {selected} to use that size."
         )
-        server_args = replace(server_args, tp_info=DistributedInfo(0, selected))
 
     def start_subprocess() -> None:
         import multiprocessing as mp

@@ -351,9 +351,9 @@ def test_server_cli_preserves_tp_request_and_derives_distributed_address():
 
 @pytest.mark.parametrize(
     "requested,available,expected",
-    [(3, 3, 2), (6, 6, 4), (16, 16, 8), (3, 1, 1), (2, 2, 2)],
+    [(1, 1, 1), (2, 2, 2), (2, 6, 2), (4, 6, 4), (8, 8, 8)],
 )
-def test_server_starts_only_selected_ranks(monkeypatch, requested, available, expected):
+def test_server_starts_supported_requested_ranks(monkeypatch, requested, available, expected):
     from unittest.mock import Mock
 
     from minisgl.engine import EngineConfig
@@ -391,7 +391,35 @@ def test_server_starts_only_selected_ranks(monkeypatch, requested, available, ex
     assert processes.call_count == expected + 1  # existing detokenizer process
     assert processes.return_value.start.call_count == expected + 1
     assert config.tp_info.size == requested
-    assert logger.warning.call_count == int(requested != expected)
+    logger.warning.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "requested,available,supported",
+    [(3, 3, 2), (6, 6, 4), (16, 16, 8), (3, 1, 1), (8, 2, 2)],
+)
+def test_server_rejects_smaller_tp_before_startup(monkeypatch, requested, available, supported):
+    from unittest.mock import Mock
+
+    from minisgl.engine import EngineConfig
+    from minisgl.server import api_server, args, launch
+
+    config = args.ServerArgs(
+        model_path="unused", tp_info=DistributedInfo(0, requested), dtype=torch.bfloat16
+    )
+    monkeypatch.setattr(EngineConfig, "model_config", property(lambda _: _config(large=True)))
+    monkeypatch.setattr(args, "parse_args", lambda *_: (config, False))
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: available)
+    run_api, processes = Mock(), Mock()
+    monkeypatch.setattr(api_server, "run_api_server", run_api)
+    monkeypatch.setattr(launch.mp, "Process", processes)
+    with pytest.raises(RuntimeError) as error:
+        launch.launch_server()
+    assert f"Requested TP={requested}, visible GPUs={available}" in str(error.value)
+    assert f"Restart with --tp-size {supported}" in str(error.value)
+    assert config.tp_info == DistributedInfo(0, requested)
+    run_api.assert_not_called()
+    processes.assert_not_called()
 
 
 @pytest.mark.parametrize("available,invalid_model", [(0, False), (2, True)])
