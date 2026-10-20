@@ -1,7 +1,6 @@
 """Command-line entry point for the async-thoughts demo.
 
-Runnable as ``python -m async_thoughts`` or via the ``async-thoughts`` console
-script (see pyproject.toml).
+Run with ``uv run --no-sync async-thoughts`` after installing the package.
 """
 
 from __future__ import annotations
@@ -10,6 +9,7 @@ import argparse
 
 from . import __doc__ as _PKG_DOC
 from .demo import (
+    DEFAULT_MAX_ANSWER_TOKENS,
     DEFAULT_MAX_STEPS,
     DEFAULT_MEMORY_RATIO,
     DEFAULT_MODEL,
@@ -36,18 +36,25 @@ def parse_args(argv: list[str] | None = None) -> DemoConfig:
         "--problem", default=DEFAULT_PROBLEM, help="The user problem the assistant should solve."
     )
     p.add_argument(
+        "--max-think-tokens",
         "--max-steps",
+        dest="max_steps",
         type=int,
         default=DEFAULT_MAX_STEPS,
-        help=f"Hard cap on total decode steps (default: {DEFAULT_MAX_STEPS}).",
+        help=f"Thinker token budget (default: {DEFAULT_MAX_STEPS}); the writer can finish afterward.",
+    )
+    p.add_argument(
+        "--max-answer-tokens",
+        type=int,
+        default=DEFAULT_MAX_ANSWER_TOKENS,
+        help=f"Writer token budget (default: {DEFAULT_MAX_ANSWER_TOKENS}).",
     )
     p.add_argument(
         "--probe-period",
         type=int,
         default=DEFAULT_PROBE_PERIOD,
-        help="Run the mode-switching probe every N decode steps "
-        f"(default: {DEFAULT_PROBE_PERIOD}; plus on every thinker "
-        "end-of-step).",
+        help=f"Check writer readiness every N thinking tokens (default: {DEFAULT_PROBE_PERIOD}) "
+        "and at thinker paragraph boundaries.",
     )
     p.add_argument(
         "--memory-ratio",
@@ -63,10 +70,13 @@ def parse_args(argv: list[str] | None = None) -> DemoConfig:
         help="The number of tokens in a page.",
     )
     args = p.parse_args(argv)
+    if min(args.max_steps, args.max_answer_tokens, args.probe_period) < 1:
+        p.error("Token budgets and probe period must be positive")
     return DemoConfig(
         model=args.model,
         problem=args.problem,
         max_steps=args.max_steps,
+        max_answer_tokens=args.max_answer_tokens,
         probe_period=args.probe_period,
         memory_ratio=args.memory_ratio,
         page_size=args.page_size,
