@@ -90,7 +90,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         "--tp-size",
         type=int,
         default=1,
-        help="Maximum tensor parallelism size; uses the largest supported size within the visible GPU count.",
+        help="Requested tensor parallelism size; fails if the model or visible GPU count requires a smaller size.",
     )
 
     parser.add_argument(
