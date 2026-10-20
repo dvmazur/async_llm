@@ -250,6 +250,47 @@ class TestAsyncThoughtsPolicy(unittest.IsolatedAsyncioTestCase):
         self.assertLess(len(thoughts), 100)
         self.assert_released(llm)
 
+    async def test_early_exit_closes_streams_before_freeing_blocks(self):
+        class TrackedStreams(FakeLLM):
+            def __init__(self, writer):
+                super().__init__([True] * 100, writer=writer)
+                self.streams, self.open_streams, self.closed_streams = [], set(), set()
+
+            def async_generate(self, ctx, **kwargs):
+                original = super().async_generate(ctx, **kwargs)
+
+                async def tracked():
+                    index = ctx.output_block.index
+                    self.open_streams.add(index)
+                    try:
+                        async for token in original:
+                            yield token
+                    finally:
+                        await original.aclose()
+                        self.open_streams.remove(index)
+                        self.closed_streams.add(index)
+
+                stream = tracked()
+                # Keep a reference so garbage collection cannot hide missing aclose calls.
+                self.streams.append(stream)
+                return stream
+
+            async def free_block(self, block):
+                if block.index < 3:
+                    assert not self.open_streams, "freed blocks before closing generation streams"
+                await super().free_block(block)
+
+        for token in ("<|im_end|>", "answer"):
+            with self.subTest(writer_token=token):
+                llm = TrackedStreams(writer=(token,))
+                thoughts, answer = await self.run_demo(
+                    llm, max_steps=100, max_answer_tokens=1, probe_period=1
+                )
+                self.assertEqual(answer, [] if token == "<|im_end|>" else llm.writer)
+                self.assertLess(len(thoughts), 100)
+                self.assertEqual(llm.closed_streams, {1, 2})
+                self.assert_released(llm)
+
     async def test_probe_is_independent_and_late_no_cannot_park_finished_thinker(self):
         llm = FakeLLM([False], hold_probe=True, hold_writer=True)
         task = asyncio.create_task(
