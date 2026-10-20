@@ -31,8 +31,23 @@ _SLOT_NAMES = {
 _EXPERT_PATTERN = re.compile(r"^(?P<prefix>.+\.experts)\.(?P<idx>\d+)\.(?P<name>.+)$")
 
 
-def _shard_tensor(key: str, value: torch.Tensor, r: int, n: int, num_kv_heads: int):
+def _shard_tensor(key: str, value: torch.Tensor, r: int, n: int, config):
     """Extract rank r's shard from a single tensor. Returns a contiguous copy."""
+    if n == 1 or key.startswith("model.visual."):
+        return value
+    if ".linear_attn." in key:
+        leaf = key.split(".linear_attn.", 1)[1]
+        if leaf.startswith(("in_proj_qkv.", "conv1d.")):
+            dims = [config.linear_key_dim, config.linear_key_dim, config.linear_value_dim]
+            if key.endswith("_scale_inv"):
+                dims = [d // 128 for d in dims]
+            return torch.cat([part.chunk(n, dim=0)[r]
+                              for part in value.split(dims, dim=0)], dim=0).contiguous()
+        if leaf.startswith(("in_proj_z.", "in_proj_a.", "in_proj_b.", "A_log", "dt_bias")):
+            return value.chunk(n, dim=0)[r].clone()
+        if leaf.startswith("out_proj."):
+            return value.chunk(n, dim=1)[r].clone()
+        return value
     packed_key = key.removesuffix("_scale_inv").removesuffix(".weight")
     if packed_key.endswith(".experts.gate_up_proj"):
         # Qwen3.5-MoE checkpoints already pack all experts and both projections:
@@ -47,7 +62,8 @@ def _shard_tensor(key: str, value: torch.Tensor, r: int, n: int, num_kv_heads: i
         return value.chunk(n, dim=2)[r].clone()
     elif any(key.count(sub) for sub in _SPLIT_DIM_0):
         is_kv_proj = any(key.count(sub) for sub in (".k_proj", ".v_proj"))
-        if is_kv_proj and num_kv_heads is not None and num_kv_heads < n:
+        num_kv_heads = config.num_kv_heads if is_kv_proj else None
+        if is_kv_proj and num_kv_heads < n:
             head_dim = value.shape[0] // num_kv_heads
             head_idx = r * num_kv_heads // n
             return value[head_idx * head_dim : (head_idx + 1) * head_dim].clone()
@@ -59,7 +75,13 @@ def _shard_tensor(key: str, value: torch.Tensor, r: int, n: int, num_kv_heads: i
         num_embeddings_per_partition = div_ceil(num_embeddings, n)
         vocab_start_idx = r * num_embeddings_per_partition
         vocab_end_idx = min((r + 1) * num_embeddings_per_partition, num_embeddings)
-        return value[vocab_start_idx:vocab_end_idx, :].clone()
+        shard = value[vocab_start_idx:vocab_end_idx, :].clone()
+        # Equal shapes are required by all_gather, including a partial last shard.
+        if shard.shape[0] < num_embeddings_per_partition:
+            shard = torch.cat((shard, value.new_zeros(
+                num_embeddings_per_partition - shard.shape[0], value.shape[1]
+            )), dim=0)
+        return shard
     else:
         return value
 
@@ -147,7 +169,7 @@ def load_weight(model_path: str, device: torch.device, *,
                 if config.is_hybrid:
                     name = name.replace("model.language_model.", "model.", 1)
                 name = name.removeprefix("language_model.")
-                tensor = _shard_tensor(name, raw, tp_info.rank, tp_info.size, config.num_kv_heads)
+                tensor = _shard_tensor(name, raw, tp_info.rank, tp_info.size, config)
                 del raw
                 if (info := _get_merge_info(name)) is None:
                     out = (name, tensor)

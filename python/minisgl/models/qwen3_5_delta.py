@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Tuple
 import warnings
+from typing import TYPE_CHECKING, List, Tuple
 
 import torch
 import torch.nn.functional as F
 from minisgl.core import get_global_ctx
-from minisgl.layers import BaseOP, LinearReplicated
-from minisgl.utils import nvtx_annotate
+from minisgl.distributed import get_tp_info
+from minisgl.layers import BaseOP, LinearColParallelMerged, LinearRowParallel
+from minisgl.utils import div_even, nvtx_annotate
 
 if TYPE_CHECKING:
     from minisgl.core import Req
@@ -268,26 +269,33 @@ class Qwen3_5GatedDeltaNet(BaseOP):
     """
 
     def __init__(self, config: ModelConfig, linear_idx: int):
-        self.num_k_heads = config.linear_num_key_heads
-        self.num_v_heads = config.linear_num_value_heads
+        tp_size = get_tp_info().size
+        self.num_k_heads = div_even(config.linear_num_key_heads, tp_size)
+        self.num_v_heads = div_even(config.linear_num_value_heads, tp_size)
         self.head_k_dim = config.linear_key_head_dim
         self.head_v_dim = config.linear_value_head_dim
-        self.key_dim = config.linear_key_dim
-        self.value_dim = config.linear_value_dim
-        self.conv_dim = config.linear_conv_dim
+        self.key_dim = self.num_k_heads * self.head_k_dim
+        self.value_dim = self.num_v_heads * self.head_v_dim
+        self.conv_dim = 2 * self.key_dim + self.value_dim
         self.conv_kernel = config.linear_conv_kernel_dim
         self._n_rep = self.num_v_heads // self.num_k_heads
         self._lin_idx = linear_idx
 
-        self.in_proj_qkv = LinearReplicated(config.hidden_size, self.conv_dim, has_bias=False)
-        self.in_proj_z = LinearReplicated(config.hidden_size, self.value_dim, has_bias=False)
-        self.in_proj_a = LinearReplicated(config.hidden_size, self.num_v_heads, has_bias=False)
-        self.in_proj_b = LinearReplicated(config.hidden_size, self.num_v_heads, has_bias=False)
+        self.in_proj_qkv = LinearColParallelMerged(
+            config.hidden_size,
+            [config.linear_key_dim, config.linear_key_dim, config.linear_value_dim], False)
+        self.in_proj_z = LinearColParallelMerged(
+            config.hidden_size, [config.linear_value_dim], False)
+        self.in_proj_a = LinearColParallelMerged(
+            config.hidden_size, [config.linear_num_value_heads], False)
+        self.in_proj_b = LinearColParallelMerged(
+            config.hidden_size, [config.linear_num_value_heads], False)
         self.conv1d = _Conv1d(self.conv_dim, self.conv_kernel)
         self.A_log = torch.empty(self.num_v_heads)
         self.dt_bias = torch.empty(self.num_v_heads)
         self.norm = _GatedRMSNorm(self.head_v_dim, eps=config.rms_norm_eps)
-        self.out_proj = LinearReplicated(self.value_dim, config.hidden_size, has_bias=False)
+        self.out_proj = LinearRowParallel(
+            config.linear_value_dim, config.hidden_size, has_bias=False)
 
     def _gates(self, a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         beta = b.sigmoid()
