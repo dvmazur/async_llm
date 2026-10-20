@@ -13,6 +13,7 @@ import sys
 import time
 from contextlib import aclosing
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List
 
 import torch
@@ -51,6 +52,7 @@ class DemoConfig:
     probe_period: int = DEFAULT_PROBE_PERIOD
     memory_ratio: float = DEFAULT_MEMORY_RATIO
     page_size: int = DEFAULT_PAGE_SIZE
+    trace_output: Path | None = None
 
 
 class Prompting:
@@ -297,7 +299,24 @@ async def _run_demo(
 ) -> tuple[List[int], List[int]]:
     tokenizer = llm.tokenizer
     try:
-        return await _run_loop(config, llm, tokenizer, prompting)
+        recorder = None
+        if config.trace_output is not None:
+            from .training import DemoRecorder
+
+            if config.trace_output.exists():
+                raise FileExistsError(config.trace_output)
+            recorder = DemoRecorder(llm)
+        result = await _run_loop(config, recorder or llm, tokenizer, prompting)
+        if recorder is not None:
+            recorder.save(
+                config.trace_output,
+                model=config.model,
+                problem=config.problem,
+                thinker_tokens=result[0],
+                writer_tokens=result[1],
+            )
+            print(f"Saved training trace to {config.trace_output}", flush=True)
+        return result
     finally:
         await llm.close()
 

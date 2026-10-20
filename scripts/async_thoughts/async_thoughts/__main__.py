@@ -6,6 +6,7 @@ Run with ``uv run --no-sync async-thoughts`` after installing the package.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from . import __doc__ as _PKG_DOC
 from .demo import (
@@ -69,6 +70,11 @@ def parse_args(argv: list[str] | None = None) -> DemoConfig:
         default=DEFAULT_PAGE_SIZE,
         help="The number of tokens in a page.",
     )
+    p.add_argument(
+        "--trace-output",
+        type=Path,
+        help="Save executed requests and sampled-token targets to a new training JSON file.",
+    )
     args = p.parse_args(argv)
     if min(args.max_steps, args.max_answer_tokens, args.probe_period) < 1:
         p.error("Token budgets and probe period must be positive")
@@ -80,6 +86,7 @@ def parse_args(argv: list[str] | None = None) -> DemoConfig:
         probe_period=args.probe_period,
         memory_ratio=args.memory_ratio,
         page_size=args.page_size,
+        trace_output=args.trace_output,
     )
 
 
