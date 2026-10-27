@@ -256,7 +256,8 @@ async def replay(llm, sample, source, output, duration, interval, start=0):
             "audio_used": False,
         },
     )
-    session = TutorSession(ObservedBackend(llm, journal), journal.emit, frame_gate=FrameGate())
+    backend = ObservedBackend(llm, journal)
+    session = TutorSession(backend, journal.emit, frame_gate=FrameGate())
     session.start()
     error = None
     try:
@@ -294,7 +295,10 @@ async def replay(llm, sample, source, output, duration, interval, start=0):
         error = f"{type(exc).__name__}: {exc}"
         journal.add("error", text=error)
     finally:
-        await session.close()
+        try:
+            await session.close()
+        finally:
+            await backend.close()
     return journal.save(
         error=error,
         frames_submitted=session.revision,
@@ -370,7 +374,10 @@ async def simulate(llm, scenario, output, turns):
         error = f"{type(exc).__name__}: {exc}"
         journal.add("error", text=error)
     finally:
-        await session.close()
+        try:
+            await session.close()
+        finally:
+            await backend.close()
     return journal.save(
         error=error,
         final_work=work,
@@ -389,12 +396,17 @@ async def evaluate(args):
         # the clip while first-use vision/sampling kernels compile.
         print("Warming vision and generation before starting recorded timelines…", flush=True)
         backend = AsyncLLMBackend(llm, observation_tokens=32, reply_tokens=32)
-        warm = await backend.observe(paper("Solve x + 1 = 2", ["x = 1"]), 0, "None", lambda: False)
         try:
-            async for _ in backend.reply(warm, [], "Check this work briefly.", lambda: False):
-                pass
+            warm = await backend.observe(
+                paper("Solve x + 1 = 2", ["x = 1"]), 0, "None", lambda: False
+            )
+            try:
+                async for _ in backend.reply(warm, [], "Check this work briefly.", lambda: False):
+                    pass
+            finally:
+                await backend.free(warm.blocks)
         finally:
-            await backend.free(warm.blocks)
+            await backend.close()
         for mode, cases in (("video", SAMPLES), ("student", SCENARIOS)):
             if args.mode not in {"all", mode}:
                 continue
@@ -716,11 +728,13 @@ def build_report(output, runs, notes=None):
             if "source" in data
             else "Initial error is scripted; subsequent student turns are model-generated."
         )
-        cards.append(f"""<section><h2>{html.escape(data["title"])}</h2><p>{label}</p>
+        cards.append(
+            f"""<section><h2>{html.escape(data["title"])}</h2><p>{label}</p>
 <video controls preload="metadata" src="{media}"></video>
 <ul>{"".join("<li>" + html.escape(item) + "</li>" for item in summary)}</ul>
 <p><a href="{media}">Open MP4</a> · <a href="{evidence}">Full timestamped JSON</a></p><p>{source}</p>
-<details><summary>Conversation transcript</summary>{text}</details></section>""")
+<details><summary>Conversation transcript</summary>{text}</details></section>"""
+        )
         summaries.append({"case": name, "run": path.parent.parent.name, **measured, **result})
     output.write_text(
         """<!doctype html><html lang="en"><meta charset="utf-8">

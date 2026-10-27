@@ -15,7 +15,15 @@ uv run --no-sync async-tutor
 Choose an available GPU. The default Qwen3.8-27B needs one 80 GB GPU, CUDA 13
 (driver 580+), and FFmpeg with `libx264`/`libx265`. Open **http://localhost:7860**;
 for a remote GPU, forward port 7860 over SSH. Camera access needs localhost or HTTPS.
-The demo serves one session and does not save live images or dialogue.
+The demo serves up to four concurrent sessions using one shared model and does not
+save live images or dialogue. Each open browser tab uses a session slot; additional
+connections receive an explicit resource-limit message. `MAX_USERS` and
+`BRANCHES_PER_USER` at the top of `async_tutor/demo.py` determine the session limit
+and decode batch capacity. Run one server worker per model instance.
+
+Uploaded videos are sampled during playback. Pausing or reaching the end sends
+the stopped frame once for analysis; the connection stays open without repeatedly
+encoding and sending the same image.
 
 Record three lessons and three simulated student scenarios, or regenerate saved MP4s:
 
