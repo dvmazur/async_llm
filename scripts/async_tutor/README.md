@@ -25,6 +25,20 @@ Uploaded videos are sampled during playback. Pausing or reaching the end sends
 the stopped frame once for analysis; the connection stays open without repeatedly
 encoding and sending the same image.
 
+The **Prompts** tab edits System and Observe for the current browser tab. **Apply &
+restart session** clears that session's conversation, media, and KV cache; upload
+the video again afterward. **Reset to defaults** only fills the editor until Apply
+is clicked. Applied prompts are stored in the tab's `sessionStorage` and survive
+a page reload. Each session owns its system KV while sharing the model weights.
+
+The **Trace** button beside the chat opens a compact live log on the right:
+Observe assessments, Speak decisions, tutor replies, errors, and session starts.
+Repeated WAIT results and equivalent Speak decisions collapse into counters, with
+the frame/time range and latest measurements. Recent history stays available
+across session restarts; **Clear** clears the displayed log. Technical tracing
+remains in the code, while the browser receives only these selected events.
+Server durations include waiting for the engine as well as execution.
+
 Record three lessons and three simulated student scenarios, or regenerate saved MP4s:
 
 ```bash

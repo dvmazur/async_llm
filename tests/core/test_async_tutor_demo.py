@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import sys
+from dataclasses import FrozenInstanceError, asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -301,10 +302,57 @@ def test_system_prefix_is_initialized_once_and_preserves_multimodal_inputs():
     asyncio.run(run())
 
 
+def test_custom_prompts_and_system_blocks_are_private_and_initialized_lazily():
+    async def run():
+        llm = CacheLLM()
+        prompts = demo.Prompts(system="Custom tutor rules.", observe="Check brackets {x}.")
+        with pytest.raises(FrozenInstanceError):
+            prompts.system = "Changed during inference"
+        first = AsyncLLMBackend(llm, prompts=prompts)
+        second = AsyncLLMBackend(
+            llm, prompts=demo.Prompts(system=prompts.system, observe="Check the signs.")
+        )
+        assert first.system_block is second.system_block is None
+        assert not llm.calls and not llm.blocks
+        image = Image.new("RGB", (16, 16))
+        first_frame = await first.prepare_frame(image, "previous {notes}", ["student {question}"])
+        assert second.system_block is None
+        second_frame = await second.prepare_frame(image, "None.", [])
+        assert first.system_block is not second.system_block
+        assert first.system_block.tokens == second.system_block.tokens
+        assert sum(not call.view for call in llm.calls) == 2
+        for backend, frame in ((first, first_frame), (second, second_frame)):
+            system_text = llm.tokenizer.decode(backend.system_block.tokens)
+            frame_text = llm.tokenizer.decode(frame.tokens)
+            assert prompts.system in system_text
+            assert demo.SYSTEM not in system_text
+            assert backend.prompts.observe in frame_text
+            assert "output only WAIT" in frame_text
+            assert "TASK:" in frame_text and "READABILITY:" in frame_text
+            call = next(call for call in llm.calls if call.block is frame)
+            assert call.view == [backend.system_block, frame]
+        first_text = llm.tokenizer.decode(first_frame.tokens)
+        assert "previous {notes}" in first_text and "student {question}" in first_text
+        second_text = llm.tokenizer.decode(second_frame.tokens)
+        assert prompts.observe not in second_text
+        await first.free([first_frame])
+        await first.close()
+        assert second.system_block not in llm.freed
+        assert second_frame not in llm.freed
+        await second.free([second_frame])
+        await second.close()
+        assert len(llm.freed) == len(llm.blocks)
+
+    asyncio.run(run())
+
+
 def test_shared_system_is_read_once_by_each_branch_and_outlives_snapshots():
     async def run():
         llm = CacheLLM()
-        backend = AsyncLLMBackend(llm)
+        backend = AsyncLLMBackend(
+            llm,
+            prompts=demo.Prompts(system="Custom tutor rules.", observe="Check signs carefully."),
+        )
 
         async def generate(view, output, limit, stopped):
             async for text in fixed_generation(llm, view, output, limit, stopped):
@@ -498,23 +546,32 @@ class MemoryWebSocket:
 def app_without_model(monkeypatch):
     closed = []
 
-    async def start():
-        pass
-
-    async def close_backend():
-        closed.append("backend")
-
     async def close_llm():
         closed.append("llm")
 
-    llm = SimpleNamespace(processor=object(), close=close_llm)
-    backend = SimpleNamespace(llm=llm, start=start, close=close_backend)
+    llm = SimpleNamespace(processor=object(), close=close_llm, backends=[])
+
+    class SessionBackend:
+        def __init__(self, model, *, prompts=None):
+            assert model is llm
+            self.llm = model
+            self.prompts = prompts if prompts is not None else demo.Prompts()
+            self.system_block = None
+            llm.backends.append(self)
+
+        async def close(self):
+            closed.append(self)
+
     monkeypatch.setattr(demo, "create_llm", lambda *args: llm)
-    monkeypatch.setattr(demo, "AsyncLLMBackend", lambda model: backend)
+    monkeypatch.setattr(demo, "AsyncLLMBackend", SessionBackend)
     monkeypatch.setattr(demo, "FrameGate", lambda: SimpleNamespace(close=lambda: None))
     app = demo.make_app()
     routes = {route.path: route.endpoint for route in app.routes}
-    return app, routes, backend, closed
+    return app, routes, llm, closed
+
+
+def ready_event(prompts=None):
+    return {"type": "ready", "prompts": asdict(prompts or demo.Prompts())}
 
 
 def test_forced_frame_header_applies_only_to_next_binary_payload(monkeypatch, app_without_model):
@@ -549,7 +606,7 @@ def test_forced_frame_header_applies_only_to_next_binary_payload(monkeypatch, ap
         async with app.router.lifespan_context(app):
             task = asyncio.create_task(routes["/ws"](socket))
             try:
-                assert await socket.event() == {"type": "ready"}
+                assert await socket.event() == ready_event()
                 await header(True)
                 assert await frame() == {"type": "frame_received", "revision": 1}
                 assert received[-1] == (1, (16, 16), True)
@@ -583,7 +640,7 @@ def test_forced_frame_header_applies_only_to_next_binary_payload(monkeypatch, ap
 def test_multiuser_admission_isolation_and_slot_draining(
     monkeypatch, app_without_model, cancel_during_close
 ):
-    app, routes, backend, closed = app_without_model
+    app, routes, llm, closed = app_without_model
     sessions = []
 
     class TrackedSession(TutorSession):
@@ -612,9 +669,10 @@ def test_multiuser_admission_isolation_and_slot_draining(
         async with app.router.lifespan_context(app):
             try:
                 peers = await asyncio.gather(*(connect() for _ in range(demo.MAX_USERS)))
-                assert all(event == {"type": "ready"} for _, event in peers)
+                assert all(event == ready_event() for _, event in peers)
                 assert len(sessions) == demo.MAX_USERS == 4
-                assert all(session.backend is backend for session in sessions)
+                assert all(session.backend.llm is llm for session in sessions)
+                assert len({id(session.backend) for session in sessions}) == demo.MAX_USERS
                 assert len({id(session.history) for session in sessions}) == demo.MAX_USERS
                 health = await routes["/health"]()
                 assert health == {
@@ -660,9 +718,10 @@ def test_multiuser_admission_isolation_and_slot_draining(
                 sessions[0].allow_close.set()
                 await eventually(lambda: len(app.state.connections) == demo.MAX_USERS - 1)
                 _, event = await connect()
-                assert event == {"type": "ready"}
+                assert event == ready_event()
                 assert len(app.state.connections) == demo.MAX_USERS
-                assert not closed  # A disconnect must not close the shared backend.
+                assert closed == [sessions[0].backend]
+                assert "llm" not in closed  # A disconnect must not close the shared model.
             finally:
                 for session in sessions:
                     session.allow_close.set()
@@ -680,14 +739,16 @@ def test_multiuser_admission_isolation_and_slot_draining(
                 )
             assert not app.state.connections
             assert (await routes["/health"]())["busy"] is False
-        assert closed == ["backend", "llm"]
+        assert closed[-1] == "llm"
+        assert len(closed) == len(llm.backends) + 1
+        assert all(closed.count(backend) == 1 for backend in llm.backends)
 
     asyncio.run(run())
 
 
 @pytest.mark.parametrize("failure", ["gate", "start"])
 def test_connection_setup_failure_releases_slot(monkeypatch, app_without_model, failure):
-    app, routes, _, closed = app_without_model
+    app, routes, llm, closed = app_without_model
 
     def fail(*args, **kwargs):
         raise RuntimeError("injected session setup failure")
@@ -705,8 +766,133 @@ def test_connection_setup_failure_releases_slot(monkeypatch, app_without_model, 
             assert socket.close_code is not None
             assert not app.state.connections
             assert (await routes["/health"]())["active_sessions"] == 0
-            assert not closed
-        assert closed == ["backend", "llm"]
+            assert closed == llm.backends
+        assert closed == [*llm.backends, "llm"]
+
+    asyncio.run(run())
+
+
+def test_prompt_restart_validates_before_draining_and_frees_only_its_own_caches(monkeypatch):
+    sessions = []
+
+    class RestartSession(TutorSession):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.closing = asyncio.Event()
+            sessions.append(self)
+
+        def start(self):
+            pass  # Seed actual cache blocks below without starting model generation.
+
+        async def close(self):
+            self.closing.set()
+            await super().close()
+
+    monkeypatch.setattr(demo, "TutorSession", RestartSession)
+    monkeypatch.setattr(demo, "FrameGate", lambda: SimpleNamespace(close=lambda: None))
+
+    async def run():
+        llm = CacheLLM()
+        llm_closed = []
+
+        async def close_llm():
+            llm_closed.append(True)
+
+        llm.close = close_llm
+        monkeypatch.setattr(demo, "create_llm", lambda *args: llm)
+        app = demo.make_app()
+        routes = {route.path: route.endpoint for route in app.routes}
+        sockets = [MemoryWebSocket(), MemoryWebSocket()]
+        release_reader = asyncio.Event()
+        tasks = []
+
+        async def restart(prompts):
+            await sockets[0].incoming.put(
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps({"type": "restart", "prompts": prompts}),
+                }
+            )
+
+        async with app.router.lifespan_context(app):
+            assert not llm.calls  # Startup loads no session's system prefix.
+            try:
+                for socket in sockets:
+                    tasks.append(asyncio.create_task(routes["/ws"](socket)))
+                    assert await socket.event() == ready_event()
+                assert not llm.calls
+                old, peer = sessions
+                image = Image.new("RGB", (16, 16))
+                for session in sessions:
+                    frame = await session.backend.prepare_frame(image, "None.", [])
+                    session.latest = Snapshot(1, [frame], "Earlier assessment")
+                    session.history.append({"role": "assistant", "content": "Earlier hint"})
+                old_system, peer_system = old.backend.system_block, peer.backend.system_block
+                old_frame, peer_frame = old.latest.blocks[0], peer.latest.blocks[0]
+                old.student_inputs.append("Old question")
+                old.questions.append("Queued question")
+                old.frame = (1, image, False)
+                old.pending_hint = True
+                old.event_gate.update(0.9)
+
+                defaults = asdict(demo.Prompts())
+                invalid = [
+                    None,
+                    {"system": "Missing observe"},
+                    {**defaults, "extra": "not editable"},
+                    {**defaults, "observe": 7},
+                    {**defaults, "observe": "   "},
+                    {**defaults, "system": "x" * (demo.MAX_PROMPT_CHARACTERS + 1)},
+                    {**defaults, "system": "x" * demo.MAX_PROMPT_CHARACTERS},
+                ]
+                for prompts in invalid:
+                    await restart(prompts)
+                    error = await sockets[0].event()
+                    assert error["type"] == "error" and error["operation"] == "restart"
+                    assert not old.closed and len(sessions) == 2
+                    assert old.latest.blocks == [old_frame]
+                    assert not llm.freed
+
+                async def reader():
+                    await release_reader.wait()
+                    assert old_system not in llm.freed and old_frame not in llm.freed
+                    await old.send("text", text="Late output from old session")
+
+                old.tasks = [asyncio.create_task(reader())]
+                prompts = demo.Prompts(system="New rules.", observe="Check algebra signs.")
+                await restart(asdict(prompts))
+                await asyncio.wait_for(old.closing.wait(), 2)
+                assert len(app.state.connections) == 2
+                assert not llm.freed and len(sessions) == 2
+                assert sockets[0].outgoing.empty()
+                # Another user's session continues to emit while this one drains.
+                await peer.send("text", text="Peer still working")
+                assert await sockets[1].event() == {"type": "text", "text": "Peer still working"}
+                release_reader.set()
+                assert await sockets[0].event() == ready_event(prompts)
+                fresh = sessions[-1]
+                assert fresh is not old and fresh.backend is not old.backend
+                assert fresh.backend.llm is peer.backend.llm is llm
+                assert fresh.backend.prompts == prompts
+                assert fresh.backend.system_block is None
+                assert old_system in llm.freed and old_frame in llm.freed
+                assert peer_system not in llm.freed and peer_frame not in llm.freed
+                assert not fresh.history and not fresh.student_inputs and not fresh.questions
+                assert fresh.frame is fresh.latest is None
+                assert fresh.event_gate.probability is None and not fresh.pending_hint
+                assert len(app.state.connections) == 2
+                assert sockets[0].outgoing.empty() and not llm_closed
+                new_frame = await fresh.backend.prepare_frame(image, "None.", [])
+                fresh.latest = Snapshot(1, [new_frame], "Fresh assessment")
+                assert prompts.system in llm.tokenizer.decode(fresh.backend.system_block.tokens)
+            finally:
+                release_reader.set()
+                for socket in sockets:
+                    await socket.disconnect()
+                await asyncio.wait_for(asyncio.gather(*tasks), 2)
+            assert len(llm.freed) == len(llm.blocks)
+            assert not app.state.connections and not llm_closed
+        assert llm_closed == [True]
 
     asyncio.run(run())
 
