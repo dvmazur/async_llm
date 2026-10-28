@@ -10,7 +10,13 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoModelForImageTextToText,
+    AutoProcessor,
+    AutoTokenizer,
+)
 
 from .replay import Replay, hidden
 from .trace import Trace, record
@@ -326,10 +332,17 @@ def train(args):
             gdn_read_backend=gdn_read_backend,
         )
         examples.append((replay, targets))
-    config = AutoConfig.from_pretrained(data["model"]).get_text_config()
-    model = AutoModelForCausalLM.from_pretrained(
-        data["model"], config=config, dtype=torch.float32
-    ).cuda()
+    multimodal = any(
+        request.pixel_values is not None or request.image_embeds is not None
+        for replay, _ in examples
+        for batch in replay.trace.batches
+        for request in batch.requests
+    )
+    config = AutoConfig.from_pretrained(data["model"])
+    model_class = AutoModelForImageTextToText if multimodal else AutoModelForCausalLM
+    if not multimodal:
+        config = config.get_text_config()
+    model = model_class.from_pretrained(data["model"], config=config, dtype=torch.float32).cuda()
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     initial = evaluate(model.eval(), examples, loss_chunk_size)
@@ -377,7 +390,8 @@ def train(args):
                 break
     args.output.parent.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(args.output)
-    AutoTokenizer.from_pretrained(data["model"]).save_pretrained(args.output)
+    processor = AutoProcessor if multimodal else AutoTokenizer
+    processor.from_pretrained(data["model"]).save_pretrained(args.output)
     metrics = {
         "model": data["model"],
         "data": str(args.data),

@@ -323,8 +323,17 @@ def record_image(args):
 
     engine = build_engine(args)
     try:
+        weights = fingerprints(engine.model.state_dict())
         raw = SharedCacheSession(engine)
         recorder = RecordingSession(raw)
+        rows, logits, phases = [], [], []
+
+        def save(value, phase):
+            assert value.dtype == getattr(torch, args.dtype) and torch.isfinite(value).all()
+            rows.append(recorder.trace.num_tokens - 1)
+            logits.append(value.detach().cpu().flatten())
+            phases.append(phase)
+
         config = engine.config.model_config
         vision = config.vision_config
         patch_dim = vision.in_channels * vision.temporal_patch_size * vision.patch_size**2
@@ -357,6 +366,7 @@ def record_image(args):
 
         raw._forward = capture
         actual = recorder.prefill_block(block, ids, **image)
+        save(actual, "image_prefill")
         raw._forward = original_forward
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         assert len(calls) > 1 and all(len(tokens) <= args.prefill_rows for tokens, _ in calls)
@@ -380,6 +390,7 @@ def record_image(args):
         text = torch.tensor([42, 43, 44], dtype=torch.int32)
         expected = raw.prefill_block(baseline, text)
         actual = recorder.prefill_block(block, text)
+        save(actual, "text_extension")
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         request = recorder.trace.batches[-1].requests[0]
         assert request.write_span == span and request.cache_spans == (span,)
@@ -394,6 +405,7 @@ def record_image(args):
 
         expected = raw.decode_step(group(baseline), token)
         actual = recorder.decode_step(group(block), token)
+        save(actual, "decode")
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         request = recorder.trace.batches[-1].requests[0]
         assert request.write_span == span + 3 and request.cache_spans == (span + 3,)
@@ -403,11 +415,13 @@ def record_image(args):
         assert block.mrope_span == 2 * span and block.num_tokens == 2 * length
         expected = raw.prefill_block(baseline, token)
         actual = recorder.prefill_block(block, token)
+        save(actual, "self_append")
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         assert recorder.trace.batches[-1].requests[0].write_span == 2 * span
         recorder.free_block(block)
         assert block.num_tokens == block.mrope_span == 0
         actual = recorder.prefill_block(block, ids, **{**image, "pixel_values": original_pixels})
+        save(actual, "clear_reuse")
         torch.testing.assert_close(actual, image_logits, rtol=0, atol=0)
         request = recorder.trace.batches[-1].requests[0]
         assert request.write_start == request.write_span == 0 and request.cache_spans == (0,)
@@ -417,19 +431,53 @@ def record_image(args):
         assert data["format_version"] == 2 and "tokens" not in data
         assert len(restored.batches) == 5 and len(restored.updates) == 2
         assert sum(r.pixel_values is not None for b in restored.batches for r in b.requests) == 2
-        with pytest.raises(NotImplementedError, match="(?i)multimodal"):
-            Replay.from_trace(restored)
-        with pytest.raises(NotImplementedError, match="(?i)multimodal"):
-            GDNReplay.from_trace(restored, torch.arange(restored.num_tokens))
+        replay = Replay.from_trace(restored)
+        assert replay.input_ids.numel() == restored.num_tokens
+        gdn = GDNReplay.from_trace(restored, replay.order)
+        assert gdn.conv_sources.shape[0] == restored.num_tokens
         metadata = {
             "image_tokens": len(ids),
             "image_chunks": image_chunks,
             "batches": len(restored.batches),
             "tokens": restored.num_tokens,
             "updates": len(restored.updates),
+            "output_rows": len(rows),
             "max_abs": (actual - image_logits).abs().max().item(),
         }
-        (ROOT / f"{args.name}.json").write_text(json.dumps({"trace": data, "metadata": metadata}))
+        torch.save(
+            {
+                "rows": torch.tensor(rows),
+                "logits": torch.stack(logits),
+                "phases": phases,
+                "features": {},
+            },
+            ROOT / f"{args.name}.pt",
+        )
+        (ROOT / f"{args.name}.json").write_text(
+            json.dumps({"trace": data, "metadata": metadata, "weights": weights})
+        )
+        print(json.dumps(metadata), flush=True)
+    finally:
+        engine.shutdown()
+
+
+def record_image_long(args):
+    from training_image_workload import record_image_workload
+
+    assert args.dtype == "float32"
+    engine = build_engine(args)
+    try:
+        print("Fingerprinting native model weights", flush=True)
+        weights = fingerprints(engine.model.state_dict())
+        print("Recording long multimodal workload", flush=True)
+        started = time.perf_counter()
+        trace, metadata, saved = record_image_workload(engine, args.prefill_rows)
+        torch.cuda.synchronize()
+        metadata.update(dtype=args.dtype, seconds=time.perf_counter() - started)
+        torch.save(saved, ROOT / f"{args.name}.pt")
+        (ROOT / f"{args.name}.json").write_text(
+            json.dumps({"trace": trace, "metadata": metadata, "weights": weights})
+        )
         print(json.dumps(metadata), flush=True)
     finally:
         engine.shutdown()
@@ -438,7 +486,7 @@ def record_image(args):
 def replay(args):
     from minisgl.training.replay import Replay, forward
     from minisgl.training.sft import restore_trace
-    from transformers import AutoConfig, AutoModelForCausalLM
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText
     from transformers.models.qwen3_5 import modeling_qwen3_5 as modeling
 
     for name in (
@@ -455,8 +503,11 @@ def replay(args):
     saved = torch.load(ROOT / f"{args.source}.pt", weights_only=True)
     trace = restore_trace(data["trace"])
     dtype = getattr(torch, args.dtype)
-    config = AutoConfig.from_pretrained(MODEL, local_files_only=True).get_text_config()
-    model = AutoModelForCausalLM.from_pretrained(
+    config = AutoConfig.from_pretrained(MODEL, local_files_only=True)
+    model_class = AutoModelForImageTextToText if trace.multimodal else AutoModelForCausalLM
+    if not trace.multimodal:
+        config = config.get_text_config()
+    model = model_class.from_pretrained(
         MODEL,
         config=config,
         dtype=dtype,
@@ -497,8 +548,9 @@ def replay(args):
 
         return capture
 
-    for index in LAYERS:
-        layer = model.model.layers[index]
+    backbone = model.model.language_model if trace.multimodal else model.model
+    for index in LAYERS if saved["features"] else ():
+        layer = backbone.layers[index]
         layer.input_layernorm.register_forward_hook(hook(f"{index}.input"))
         getattr(layer, "linear_attn", getattr(layer, "self_attn", None)).register_forward_hook(
             hook(f"{index}.attention")
@@ -577,8 +629,11 @@ def fingerprints(state):
 
 
 def canonical_weights(model):
-    state = dict(model.state_dict())
-    if model.config.tie_word_embeddings:
+    state = {
+        name.replace("model.language_model.", "model.", 1): value
+        for name, value in model.state_dict().items()
+    }
+    if model.config.get_text_config().tie_word_embeddings:
         assert torch.equal(state.pop("lm_head.weight"), state["model.embed_tokens.weight"])
     for key in list(state):
         for source, target, parts in (
@@ -699,18 +754,96 @@ def test_prepared_gdn_matches_torch_state_path(engine_runs, record_property):
     record_property("prepared_vs_torch_max_abs", result["logits"]["max_abs"])
 
 
-def test_image_recording_preserves_request_payload(engine_runner, record_property):
+@pytest.fixture(scope="module")
+def image_engine_run(engine_runner):
     directory, run = engine_runner
     run("record_image", "image-recording", "--prefill-rows", "8")
+    return directory, run
+
+
+def test_image_recording_preserves_request_payload(image_engine_run, record_property):
+    directory, _ = image_engine_run
     result = json.loads((directory / "image-recording.json").read_text())["metadata"]
     assert result["image_chunks"] > 1 and result["batches"] == 5
     assert result["max_abs"] == 0
     record_property("report", str(directory / "image-recording.json"))
 
 
+@pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
+def test_sequential_image_minisgl_matches_parallel_torch(
+    image_engine_run, read_mode, record_property
+):
+    directory, run = image_engine_run
+    source, name = "image-recording", "image-" + read_mode
+    run("replay", name, "--source", source, "--read-mode", read_mode)
+    run("compare", name, "--source", source)
+    report = directory / f"{source}--{name}.json"
+    comparison = json.loads(report.read_text())
+    assert comparison["rows"] == 5 and comparison["argmax_mismatches"] == 0
+    assert set(comparison["phases"]) == {
+        "image_prefill",
+        "text_extension",
+        "decode",
+        "self_append",
+        "clear_reuse",
+    }
+    errors = comparison["logits"]
+    assert errors["finite"] and errors["max_abs"] < 2e-4, errors
+    assert errors["rms"] < 2e-5, errors
+    record_property("report", str(report))
+
+
+@pytest.fixture(scope="module")
+def long_image_engine_run(engine_runner):
+    directory, run = engine_runner
+    run("record_image_long", "long-image-recording")
+    return directory, run
+
+
+@pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
+def test_long_image_cache_views_minisgl_matches_parallel_torch(
+    long_image_engine_run, read_mode, record_property
+):
+    directory, run = long_image_engine_run
+    source, name = "long-image-recording", "long-image-" + read_mode
+    metadata = json.loads((directory / f"{source}.json").read_text())["metadata"]
+    assert metadata["tokens"] == 4560 and metadata["output_rows"] == 154
+    assert metadata["images_per_request"] == [2, 1, 1, 1]
+    assert len({tuple(grid) for grid in metadata["image_grids"]}) == 5
+    assert metadata["operations"] == {
+        "prefill": 10,
+        "decode_batch": 48,
+        "copy": 1,
+        "merge": 1,
+        "self_append": 1,
+        "clear": 2,
+        "clear_reuse": 2,
+        "saved_copy_continuation": 1,
+    }
+    assert metadata["saved_copies_survive_source_clear"]
+    assert metadata["repeated_views"] == metadata["omit_self_views"] == 12
+    assert metadata["decode_batch_sizes"] == {"3": 48}
+    assert metadata["max_visible"] < 8192 and metadata["peak_live_tokens"] < 16384
+    assert all(
+        metadata["chunks"][phase] > 1
+        for phase in ("two_images", "image_b", "image_c", "clear_reuse_image")
+    )
+    run("replay", name, "--source", source, "--read-mode", read_mode)
+    run("compare", name, "--source", source)
+    report = directory / f"{source}--{name}.json"
+    comparison = json.loads(report.read_text())
+    assert comparison["rows"] == 154 and comparison["argmax_mismatches"] == 0
+    errors = comparison["logits"]
+    assert errors["finite"] and errors["max_abs"] < 2e-4, errors
+    assert errors["rms"] < 2e-5, errors
+    record_property("report", str(report))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["record", "record_image", "replay", "compare"])
+    parser.add_argument(
+        "mode", choices=["record", "record_image", "record_image_long", "replay", "compare"]
+    )
     parser.add_argument("--name", required=True)
     parser.add_argument("--source")
     parser.add_argument("--dtype", choices=["float32", "float64"], default="float32")

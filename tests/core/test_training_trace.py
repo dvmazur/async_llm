@@ -210,10 +210,10 @@ def test_image_inputs_and_positions_roundtrip_without_aliasing():
     restored = restore_trace(json.loads(json.dumps(asdict(session.trace))))
     assert restored == session.trace
     assert restored.batches[1].requests[0].pixel_values.tensor().sum().item() == 66
-    with pytest.raises((ValueError, NotImplementedError), match="[Mm]ultimodal|[Ii]mage"):
-        Replay.from_trace(restored)
-    with pytest.raises((ValueError, NotImplementedError), match="[Mm]ultimodal|[Ii]mage"):
-        GDNReplay.from_trace(restored, torch.arange(restored.num_tokens))
+    replay = Replay.from_trace(restored)
+    assert replay.input_ids.numel() == restored.num_tokens
+    gdn = GDNReplay.from_trace(restored, replay.order)
+    assert gdn.conv_sources.shape[0] == restored.num_tokens
 
 
 @pytest.mark.parametrize(
