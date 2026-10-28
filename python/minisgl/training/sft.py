@@ -333,7 +333,7 @@ def train(args):
         )
         examples.append((replay, targets))
     multimodal = any(
-        request.pixel_values is not None or request.image_embeds is not None
+        request.pixel_values is not None
         for replay, _ in examples
         for batch in replay.trace.batches
         for request in batch.requests

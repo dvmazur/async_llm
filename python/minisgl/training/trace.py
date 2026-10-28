@@ -48,7 +48,6 @@ class ForwardRequest:
     pixel_values: TensorData | None = None
     image_grid_thw: TensorData | None = None
     mm_token_type_ids: TensorData | None = None
-    image_embeds: TensorData | None = None
     mrope_positions: TensorData | None = None
     write_span: int | None = None
     cache_spans: tuple[int, ...] | None = None
@@ -155,7 +154,6 @@ class Trace:
     def multimodal(self):
         return any(
             request.pixel_values is not None
-            or request.image_embeds is not None
             or request.image_grid_thw is not None
             or request.mm_token_type_ids is not None
             or request.mrope_positions is not None
@@ -193,7 +191,6 @@ class Trace:
             "pixel_values",
             "image_grid_thw",
             "mm_token_type_ids",
-            "image_embeds",
             "mrope_positions",
         )
         batches = []
@@ -211,6 +208,8 @@ class Trace:
                     "input_ids": tuple(item["input_ids"]),
                     "cache_view": tuple(tuple(ref) for ref in item["cache_view"]),
                 }
+                if request.pop("image_embeds", None) is not None:
+                    raise ValueError("Trace image embeddings are unsupported; record pixel_values")
                 if (
                     not request["input_ids"]
                     or (kind == "decode" and len(request["input_ids"]) != 1)
@@ -321,10 +320,14 @@ class RecordingSession:
         requests = []
         for job in jobs:
             self._check([*job.context, job.block])
+            if getattr(job, "image_embeds", None) is not None:
+                raise ValueError(
+                    "Record image requests with pixels before internal prefill chunking"
+                )
             view = [*job.context, job.block]
             tensors = {
                 name: TensorData.capture(getattr(job, name, None))
-                for name in ("pixel_values", "image_grid_thw", "mm_token_type_ids", "image_embeds")
+                for name in ("pixel_values", "image_grid_thw", "mm_token_type_ids")
             }
             positions = getattr(job, "mrope_rel", None)
             if positions is None and tensors["pixel_values"] is not None:

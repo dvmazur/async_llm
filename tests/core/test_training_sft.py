@@ -18,7 +18,7 @@ from test_training_gdn import tiny_hybrid
 from transformers import Qwen3_5ForCausalLM
 
 
-@pytest.mark.parametrize("kind", ["text", "pixels", "mixed_pixels", "embeds", "mixed_embeds"])
+@pytest.mark.parametrize("kind", ["text", "pixels", "mixed_pixels"])
 def test_sft_loads_and_saves_image_model_and_processor(monkeypatch, tmp_path, kind):
     request = ForwardRequest((1, 2, 3), 0, 0, ((0, 0),))
     text = Trace(batches=[ForwardBatch(0, "prefill", (request,))], steps=1)
@@ -29,14 +29,8 @@ def test_sft_loads_and_saves_image_model_and_processor(monkeypatch, tmp_path, ki
             input_ids=(30, 29, 31),
             mm_token_type_ids=TensorData.capture(torch.tensor([0, 1, 0])),
             mrope_positions=TensorData.capture(torch.arange(3).expand(3, -1)),
-            **(
-                {"image_embeds": TensorData.capture(torch.zeros(1, 32))}
-                if "embeds" in kind
-                else {
-                    "pixel_values": TensorData.capture(torch.zeros(4, 12)),
-                    "image_grid_thw": TensorData.capture(torch.tensor([[1, 2, 2]])),
-                }
-            ),
+            pixel_values=TensorData.capture(torch.zeros(4, 12)),
+            image_grid_thw=TensorData.capture(torch.tensor([[1, 2, 2]])),
         )
         image = Trace(batches=[ForwardBatch(0, "prefill", (request,))], steps=1)
         traces = [text, image] if kind.startswith("mixed_") else [image]

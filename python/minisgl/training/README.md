@@ -27,8 +27,8 @@ Hugging Face layers and weights. The inference engine is unchanged.
 
 Image requests retain pixels, grids, token types, and three-axis positions in the
 same trace format. Replay re-encodes saved pixels through the Qwen3.5 vision tower,
-so it receives gradients; traces with only precomputed image embeddings train the
-decoder. Cache visibility still uses token counts, while rotary coordinates use
+so it receives gradients. Image embeddings are recomputed, never stored in traces.
+Cache visibility still uses token counts, while rotary coordinates use
 image-aware spans, including copied/merged blocks. Use the full HF conditional
 generation model for pixel traces; the SFT loader selects it automatically and
 saves its processor with the checkpoint.

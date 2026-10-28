@@ -37,7 +37,7 @@ class MropeLayout:
             if request.cache_spans is not None and tuple(spans) != request.cache_spans:
                 raise ValueError("Recorded cache spans disagree with the cache history")
             if request.mrope_positions is None:
-                if request.pixel_values is not None or request.image_embeds is not None:
+                if request.pixel_values is not None:
                     raise ValueError("Image requests require recorded mRoPE positions")
                 positions = torch.arange(span, span + size).expand(3, -1)
             else:

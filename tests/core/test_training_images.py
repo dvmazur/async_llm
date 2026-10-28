@@ -139,16 +139,13 @@ def tiny_image_model():
     return model
 
 
-def assert_gradients(model, reference, frozen_vision=False):
+def assert_gradients(model, reference):
     for (name, parameter), (native_name, native) in zip(
         model.named_parameters(), reference.named_parameters(), strict=True
     ):
         assert name == native_name
-        if frozen_vision and name.startswith("model.visual."):
-            assert parameter.grad is None and native.grad is None, name
-        else:
-            assert parameter.grad is not None and native.grad is not None, name
-            torch.testing.assert_close(parameter.grad, native.grad, atol=3e-6, rtol=4e-4, msg=name)
+        assert parameter.grad is not None and native.grad is not None, name
+        torch.testing.assert_close(parameter.grad, native.grad, atol=3e-6, rtol=4e-4, msg=name)
 
 
 @pytest.mark.parametrize("loss_path", ["logits", "checkpointed_sft"])
@@ -189,39 +186,7 @@ def test_native_image_logits_and_all_parameter_gradients(loss_path, image_count)
     assert model.model.visual.patch_embed.proj.weight.grad.abs().sum() > 0
 
 
-def test_precomputed_image_embeddings_train_only_decoder():
-    reference = tiny_image_model()
-    model = deepcopy(reference)
-    inputs = image_inputs()
-    with torch.no_grad():
-        features = torch.cat(
-            reference.model.get_image_features(
-                inputs["pixel_values"], inputs["image_grid_thw"], return_dict=True
-            ).pooler_output
-        )
-    trace = single_image_trace()
-    batch = trace.batches[0]
-    request = replace(
-        batch.requests[0],
-        pixel_values=None,
-        image_grid_thw=None,
-        image_embeds=TensorData.capture(features),
-    )
-    trace.batches[0] = replace(batch, requests=(request,))
-    plan = Replay.from_trace(trace, query_chunk_size=2)
-    embedded = reference.model.language_model.embed_tokens(inputs["input_ids"]).clone()
-    embedded[inputs["mm_token_type_ids"].bool()] = features
-    positions = request.mrope_positions.tensor()[:, None]
-    expected = reference(inputs_embeds=embedded, position_ids=positions, use_cache=False).logits[0]
-    actual = forward(model, plan)
-    torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
-    weights = torch.cos(torch.arange(actual.numel())).reshape_as(actual)
-    (actual * weights).sum().backward()
-    (expected * weights).sum().backward()
-    assert_gradients(model, reference, frozen_vision=True)
-
-
-def test_multiple_images_and_frozen_features_follow_packed_token_order():
+def test_multiple_images_follow_packed_token_order():
     reference = tiny_image_model().eval()
     model = deepcopy(reference)
     session = RecordingSession(ImageSession())
@@ -232,38 +197,14 @@ def test_multiple_images_and_frozen_features_follow_packed_token_order():
         "pixel_values": first["pixel_values"].cos(),
         "image_grid_thw": torch.tensor([[1, 6, 4]]),
     }
-    features = torch.cat(
-        reference.get_image_features(
-            first["pixel_values"], first["image_grid_thw"], return_dict=True
-        ).pooler_output
-    ).detach()
     image_prefill(session, c, inputs=first)
     image_prefill(session, b, inputs=first)
     image_prefill(session, a, inputs=second)
     session.prefill_block(text, torch.tensor([2, 3, 4]))
-    frozen_batch = session.trace.batches[1]
-    frozen = replace(
-        frozen_batch.requests[0],
-        pixel_values=None,
-        image_grid_thw=None,
-        image_embeds=TensorData.capture(features),
-    )
-    session.trace.batches[1] = replace(frozen_batch, requests=(frozen,))
-    last_batch = session.trace.batches[2]
-    session.trace.batches[2] = replace(
-        last_batch,
-        requests=(replace(last_batch.requests[0], image_embeds=TensorData.capture(features * 0)),),
-    )
-    embedded = reference.get_input_embeddings()(first["input_ids"]).clone()
-    embedded[first["mm_token_type_ids"].bool()] = features
     expected = torch.cat(
         [
             reference(**first, use_cache=False).logits[0],
-            reference(
-                inputs_embeds=embedded,
-                position_ids=frozen.mrope_positions.tensor()[:, None],
-                use_cache=False,
-            ).logits[0],
+            reference(**first, use_cache=False).logits[0],
             reference(**second, use_cache=False).logits[0],
             reference(input_ids=torch.tensor([[2, 3, 4]]), use_cache=False).logits[0],
         ]
@@ -279,40 +220,24 @@ def test_multiple_images_and_frozen_features_follow_packed_token_order():
 
 
 @torch.no_grad()
-def test_image_chunks_keep_positions_when_grid_coordinates_move_backwards():
+def test_image_prefill_preserves_nonmonotonic_grid_positions():
     reference = tiny_image_model().eval()
     model = deepcopy(reference)
     inputs = image_inputs()
-    features = torch.cat(
-        reference.get_image_features(
-            inputs["pixel_values"], inputs["image_grid_thw"], return_dict=True
-        ).pooler_output
-    )
+
     session = RecordingSession(ImageSession())
     block = session.create_block()
     session.prefill_block(block, torch.tensor([2, 3]))
     ids, types = inputs["input_ids"][0], inputs["mm_token_type_ids"][0]
     positions = get_rope_index(ids, types, 2, inputs["image_grid_thw"]) + block.mrope_span
-    boundaries = [0, 1, 4, 5, 7, len(ids)]
-    for start, end in zip(boundaries, boundaries[1:]):
-        before = int(types[:start].sum())
-        count = int(types[start:end].sum())
-        session.prefill_batch(
-            [
-                NS(
-                    block=block,
-                    input_ids=ids[start:end],
-                    context=[],
-                    pixel_values=None,
-                    image_embeds=features[before : before + count],
-                    mm_token_type_ids=types[start:end],
-                    mrope_rel=positions[:, start:end] - block.mrope_span,
-                )
-            ]
-        )
-    backwards = session.trace.batches[3].requests[0]
-    assert backwards.mrope_positions.tensor().max() < backwards.write_span
-    assert session.trace.batches[1].requests[0].image_embeds.shape == (0, 32)
+    image_prefill(session, block, inputs=inputs)
+    assert (positions[:, 1:] < positions[:, :-1]).any()
+    assert len(session.trace.batches) == 2
+    request = session.trace.batches[1].requests[0]
+    torch.testing.assert_close(
+        request.pixel_values.tensor(), inputs["pixel_values"], atol=0, rtol=0
+    )
+    torch.testing.assert_close(request.mrope_positions.tensor(), positions, atol=0, rtol=0)
     full = {
         **inputs,
         "input_ids": torch.cat((torch.tensor([[2, 3]]), inputs["input_ids"]), 1),
@@ -355,7 +280,7 @@ def test_image_token_ids_require_payload_without_token_types():
         batch.requests[0], pixel_values=None, image_grid_thw=None, mm_token_type_ids=None
     )
     trace.batches[0] = replace(batch, requests=(request,))
-    with pytest.raises(ValueError, match="require recorded pixels or image embeddings"):
+    with pytest.raises(ValueError, match="require recorded pixels"):
         forward(tiny_image_model(), Replay.from_trace(trace))
 
 

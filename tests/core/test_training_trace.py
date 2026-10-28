@@ -8,7 +8,14 @@ import torch
 from minisgl.training.gdn import GDNReplay
 from minisgl.training.replay import Replay
 from minisgl.training.sft import restore_trace
-from minisgl.training.trace import RecordingSession, Token, Trace
+from minisgl.training.trace import (
+    ForwardBatch,
+    ForwardRequest,
+    RecordingSession,
+    TensorData,
+    Token,
+    Trace,
+)
 from test_training import Session, mutation_trace, randomized_trace, repeated_view_trace
 
 
@@ -196,6 +203,7 @@ def test_image_inputs_and_positions_roundtrip_without_aliasing():
         torch.testing.assert_close(tensor.tensor(), expected, rtol=0, atol=0)
     assert request.write_span == 0 and request.cache_spans == (2, 0)
     snapshot = asdict(request)
+    assert "image_embeds" not in snapshot
     pixels.zero_()
     grid.fill_(99)
     types.zero_()
@@ -214,6 +222,58 @@ def test_image_inputs_and_positions_roundtrip_without_aliasing():
     assert replay.input_ids.numel() == restored.num_tokens
     gdn = GDNReplay.from_trace(restored, replay.order)
     assert gdn.conv_sources.shape[0] == restored.num_tokens
+
+
+@pytest.mark.parametrize("has_pixels", [False, True])
+def test_trace_discards_legacy_null_embeddings_and_rejects_saved_features(has_pixels):
+    request = ForwardRequest(
+        (1,),
+        0,
+        0,
+        ((0, 0),),
+        **(
+            {
+                "pixel_values": TensorData.capture(torch.zeros(4, 12)),
+                "image_grid_thw": TensorData.capture(torch.tensor([[1, 2, 2]])),
+                "mm_token_type_ids": TensorData.capture(torch.ones(1, dtype=torch.long)),
+                "mrope_positions": TensorData.capture(torch.zeros(3, 1, dtype=torch.long)),
+            }
+            if has_pixels
+            else {}
+        ),
+    )
+    trace = Trace(batches=[ForwardBatch(0, "prefill", (request,))], steps=1)
+    data = json.loads(json.dumps(asdict(trace)))
+    saved = data["batches"][0]["requests"][0]
+    assert "image_embeds" not in saved
+    saved["image_embeds"] = None
+    restored = Trace.from_dict(data)
+    assert restored == trace
+    assert "image_embeds" not in asdict(restored.batches[0].requests[0])
+    for rows in (0, 1):
+        saved["image_embeds"] = asdict(TensorData.capture(torch.zeros(rows, 32)))
+        with pytest.raises(ValueError, match="record pixel_values"):
+            Trace.from_dict(data)
+
+
+@pytest.mark.parametrize("rows", [0, 1])
+@pytest.mark.parametrize("has_pixels", [False, True])
+def test_recorder_rejects_embedding_jobs_before_session_mutation(rows, has_pixels):
+    session = RecordingSession(RequestSession())
+    block = session.create_block()
+    before = asdict(session.trace)
+    request = job(
+        block,
+        [1],
+        pixel_values=torch.zeros(4, 12) if has_pixels else None,
+        image_embeds=torch.zeros(rows, 32),
+    )
+    with pytest.raises(ValueError, match="before internal prefill chunking"):
+        session.prefill_batch([request])
+    assert asdict(session.trace) == before
+    assert block.num_tokens == 0
+    session.prefill_block(block, torch.tensor([2]))
+    assert session.trace.num_tokens == block.num_tokens == 1
 
 
 @pytest.mark.parametrize(
