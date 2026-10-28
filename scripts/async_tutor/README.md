@@ -25,7 +25,10 @@ Uploaded videos are sampled during playback. Pausing or reaching the end sends
 the stopped frame once for analysis; the connection stays open without repeatedly
 encoding and sending the same image.
 
-The **Prompts** tab edits System and Observe for the current browser tab. **Apply &
+The **Prompts** tab edits System, Observe, and Speak for the current browser tab. Speak
+controls when to respond; the decision format and dialogue context are supplied by
+the application. Saved settings without Speak use its default policy and retain
+their System and Observe values. **Apply &
 restart session** clears that session's conversation, media, and KV cache; upload
 the video again afterward. **Reset to defaults** only fills the editor until Apply
 is clicked. Applied prompts are stored in the tab's `sessionStorage` and survive
