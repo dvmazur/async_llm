@@ -68,6 +68,8 @@ class ModelConfig:
     video_token_id: int = -1
     vision_start_token_id: int = -1
     vision_end_token_id: int = -1
+    # Serialized square FP8 blocks are indivisible when partitioning MLPs.
+    weight_block_size: int = 1
 
     @property
     def is_multimodal(self) -> bool:
@@ -224,4 +226,7 @@ class ModelConfig:
             video_token_id=getattr(top, "video_token_id", -1),
             vision_start_token_id=getattr(top, "vision_start_token_id", -1),
             vision_end_token_id=getattr(top, "vision_end_token_id", -1),
+            weight_block_size=(getattr(top, "quantization_config", None) or {}).get(
+                "weight_block_size", [1, 1]
+            )[0],
         )

@@ -1,17 +1,18 @@
 # Перенос проекта и окружение double_p
 
-Основная ветка робототехнического проекта: rover.
+Основная ветка робототехнического проекта: rover в dvmazur/async_llm.
+Личная копия Doub1e05/async_llm сохраняет историю первоначального переноса.
 Исходный AsyncLLM сохраняется без переименования Python-пакета minisgl.
 
 ## Новый сервер
 
-Репозиторий: git@github.com:Doub1e05/async_llm.git
+Репозиторий: git@github.com:dvmazur/async_llm.git
 Целевой каталог: /home/double/data_scince_expedition/lets/async_llm
 Окружение: /home/double/miniconda3/envs/double_p
 GPU: две RTX 3090 по 24 ГБ, архитектура sm_86.
 
 ```bash
-git clone --branch rover https://github.com/Doub1e05/async_llm.git async_llm
+git clone --branch rover git@github.com:dvmazur/async_llm.git async_llm
 cd async_llm
 conda env create -f robot_sim/environment_double_p.yml
 conda activate double_p
