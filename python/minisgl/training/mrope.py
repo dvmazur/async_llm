@@ -1,6 +1,24 @@
 import torch
 
 
+def rotate(x, positions, inv_freq, mrope_section=None):
+    if positions.ndim == 2:
+        if mrope_section is None:
+            raise ValueError("Three-axis positions require an mRoPE model")
+        frequencies = positions.float()[..., None] * inv_freq.float()
+        angles = frequencies[:, 0].clone()
+        for axis in (1, 2):
+            section = slice(axis, mrope_section[axis] * 3, 3)
+            angles[:, section] = frequencies[:, axis, section]
+    else:
+        angles = positions.float()[:, None] * inv_freq.float()[None, :]
+    cos, sin = angles.cos()[:, None, :], angles.sin()[:, None, :]
+    width = 2 * inv_freq.numel()
+    left, right = x[..., :width].float().chunk(2, dim=-1)
+    rotated = torch.cat((left * cos - right * sin, right * cos + left * sin), -1)
+    return torch.cat((rotated.to(x.dtype), x[..., width:]), -1)
+
+
 class MropeLayout:
     """Block coordinate frames, independent of token-count visibility."""
 

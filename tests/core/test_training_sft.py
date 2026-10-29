@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 import pytest
 import torch
 import torch.nn.functional as F
+from minisgl.training import attention as attention_module
 from minisgl.training import replay as replay_module
 from minisgl.training import sft
 from minisgl.training.gdn import GDNReplay
@@ -184,7 +185,9 @@ def test_sft_checkpointing_switches_are_independent(attention_checkpointing, los
         trace, query_chunk_size=3, attention_checkpointing=attention_checkpointing
     )
     with (
-        patch.object(replay_module, "checkpoint", wraps=replay_module.checkpoint) as attention,
+        patch.object(
+            attention_module, "checkpoint", wraps=attention_module.checkpoint
+        ) as attention,
         patch.object(sft, "checkpoint", wraps=sft.checkpoint) as loss,
     ):
         actual = sft.supervised_loss(

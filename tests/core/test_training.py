@@ -295,13 +295,13 @@ class Float64AttentionMath(TorchFunctionMode):
 
 @pytest.fixture
 def fp64_attention(monkeypatch):
-    from minisgl.training import replay as replay_module
+    from minisgl.training import attention as attention_module
 
     monkeypatch.setattr(
-        replay_module,
+        attention_module,
         "checkpoint",
         partial(
-            replay_module.checkpoint,
+            attention_module.checkpoint,
             context_fn=lambda: (Float64AttentionMath(), Float64AttentionMath()),
         ),
     )
