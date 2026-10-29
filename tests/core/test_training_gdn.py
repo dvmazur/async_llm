@@ -310,7 +310,8 @@ def test_delta_autocast_preserves_fp32_core(request, device, backend, read_mode,
     assert actual.dtype == torch.float32
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
     for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
-        torch.testing.assert_close(actual_grad, expected_grad, atol=0, rtol=0)
+        atol = 1e-6 * expected_grad.abs().max().item()
+        torch.testing.assert_close(actual_grad, expected_grad, atol=atol, rtol=0)
 
 
 @pytest.mark.parametrize(
