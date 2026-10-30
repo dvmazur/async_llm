@@ -9,8 +9,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 from minisgl.training import attention as attention_module
-from minisgl.training import replay as replay_module
-from minisgl.training import sft
+from minisgl.training import replay, sft
 from minisgl.training.gdn import GDNReplay
 from minisgl.training.replay import Replay
 from minisgl.training.trace import ForwardBatch, ForwardRequest, TensorData, Trace
@@ -143,7 +142,7 @@ def test_transient_plans_preserve_logits_and_checkpointed_gradients(device, use_
     transient = Replay.from_trace(trace, query_chunk_size=3, cache_plans=False)
     targets = torch.arange(len(trace.tokens)) % 32
     targets[::3] = -100
-    logits = replay_module.forward(reference, persistent)
+    logits = replay.forward(reference, persistent)
     expected = F.cross_entropy(logits, targets.to(device), reduction="sum")
     actual = sum(sft.supervised_loss(model, transient, targets, chunk_size=4) for _ in range(2)) / 2
     expected.backward()
@@ -152,7 +151,7 @@ def test_transient_plans_preserve_logits_and_checkpointed_gradients(device, use_
     for parameter, original in zip(model.parameters(), reference.parameters(), strict=True):
         torch.testing.assert_close(parameter.grad, original.grad, atol=2e-6, rtol=2e-5)
     with torch.no_grad():
-        actual_logits = replay_module.forward(model.eval(), transient.to(device))
+        actual_logits = replay.forward(model.eval(), transient.to(device))
     torch.testing.assert_close(actual_logits, logits, atol=2e-6, rtol=2e-5)
     assert not transient._gdn and not transient._attention
 

@@ -33,6 +33,11 @@ image-aware spans, including copied/merged blocks. Use the full HF conditional
 generation model for pixel traces; the SFT loader selects it automatically and
 saves its processor with the checkpoint.
 
+Use `replay.forward(model, plan)` for logits or
+`replay.forward(model, plan, hidden_only=True)` for decoder hidden states without
+the vocabulary projection. Both accept `rows` in original trace order.
+`replay.hidden()` is deprecated and emits a `DeprecationWarning`.
+
 Mining uses FP16; the training CLI uses FP32, including the GDN core. Evaluation
 runs every five updates and at the end. Training stops early when every example
 has 100% target accuracy and loss below `0.01`. It saves a standard HF checkpoint

@@ -4,7 +4,8 @@ from itertools import groupby
 
 import pytest
 import torch
-from minisgl.training.replay import Replay, forward
+from minisgl.training import replay
+from minisgl.training.replay import Replay
 from test_training import (
     example_trace,
     mutation_trace,
@@ -14,6 +15,8 @@ from test_training import (
 )
 from test_training_gdn import (
     cuda_delta_math as cuda_delta_math,
+)
+from test_training_gdn import (
     sequential_gdn,
     tiny_hybrid,
 )
@@ -98,7 +101,7 @@ def test_sequential_hybrid_logits_match_cached_huggingface(request, device):
     torch.testing.assert_close(
         sequential_hybrid_logits(model, trace), expected, atol=3e-6, rtol=3e-5
     )
-    actual = forward(model, Replay.from_trace(trace, device=device, query_chunk_size=3))
+    actual = replay.forward(model, Replay.from_trace(trace, device=device, query_chunk_size=3))
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
 
 
@@ -117,7 +120,7 @@ def test_parallel_hybrid_logits_match_sequential(
     trace = trace_factory()
     with torch.no_grad():
         expected = sequential_hybrid_logits(model, trace)
-    replay = Replay.from_trace(
+    plan = Replay.from_trace(
         trace,
         device=device,
         query_chunk_size=query_chunk_size,
@@ -126,14 +129,14 @@ def test_parallel_hybrid_logits_match_sequential(
         gdn_cache_reused=cache_reused,
         gdn_read_backend=backend,
     )
-    actual = forward(model, replay)
+    actual = replay.forward(model, plan)
     assert actual.requires_grad
     assert actual.shape == (len(trace.tokens), model.config.vocab_size)
     assert torch.isfinite(expected).all() and torch.isfinite(actual).all()
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     rows = torch.tensor([len(trace.tokens) - 1, 0, len(trace.tokens) // 2, 0], device=device)
     torch.testing.assert_close(
-        forward(model, replay, rows=rows), expected[rows], atol=3e-6, rtol=3e-5
+        replay.forward(model, plan, rows=rows), expected[rows], atol=3e-6, rtol=3e-5
     )
 
 
@@ -164,9 +167,9 @@ def pretrained_hybrid(torch_reference_kernels):
 def test_pretrained_parallel_hybrid_logits(pretrained_hybrid, trace_factory, read_mode, backend):
     trace = trace_factory()
     expected = sequential_hybrid_logits(pretrained_hybrid, trace)
-    replay = Replay.from_trace(
+    plan = Replay.from_trace(
         trace, device="cuda", query_chunk_size=3, gdn_read_mode=read_mode, gdn_read_backend=backend
     )
-    actual = forward(pretrained_hybrid, replay)
+    actual = replay.forward(pretrained_hybrid, plan)
     assert torch.isfinite(expected).all() and torch.isfinite(actual).all()
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)

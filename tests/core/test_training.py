@@ -8,8 +8,9 @@ from unittest.mock import patch
 
 import pytest
 import torch
-from minisgl.training import sft
-from minisgl.training.replay import Replay, attention, forward
+from minisgl.training import replay, sft
+from minisgl.training.attention import attention
+from minisgl.training.replay import Replay
 from minisgl.training.sft import restore_trace, supervised_loss
 from minisgl.training.stress import workload
 from minisgl.training.trace import BlockUpdate, RecordingSession, Token, Trace
@@ -365,9 +366,9 @@ def sequential(model, trace):
 def test_parallel_logits_and_gradients(trace_factory, query_chunk_size):
     model = tiny_model()
     trace = trace_factory()
-    replay = Replay.from_trace(trace, query_chunk_size=query_chunk_size)
+    plan = Replay.from_trace(trace, query_chunk_size=query_chunk_size)
     expected = sequential(model, trace)
-    actual = forward(model, replay)
+    actual = replay.forward(model, plan)
     torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
     parameters = tuple(model.parameters())
     expected_grads = torch.autograd.grad(expected.square().sum(), parameters)
@@ -380,9 +381,9 @@ def test_parallel_logits_and_gradients(trace_factory, query_chunk_size):
 def test_randomized_mutations_match_sequential_logits_and_gradients(seed):
     model = tiny_model()
     trace = restore_trace(json.loads(json.dumps(asdict(randomized_trace(seed)))))
-    replay = Replay.from_trace(trace, query_chunk_size=5)
+    plan = Replay.from_trace(trace, query_chunk_size=5)
     expected = sequential(model, trace)
-    actual = forward(model, replay)
+    actual = replay.forward(model, plan)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     weights = torch.randn_like(actual)
     parameters = tuple(model.parameters())
@@ -414,8 +415,8 @@ def test_synthetic_stress_workload_logits_and_gradients():
     assert all(update.refs is not None and not update.sources for update in trace.updates)
     assert len(data["targets"]) == len(data["logprobs"]) == len(trace.tokens)
     model = tiny_model()
-    replay = Replay.from_trace(trace, query_chunk_size=7)
-    expected, actual = sequential(model, trace), forward(model, replay)
+    plan = Replay.from_trace(trace, query_chunk_size=7)
+    expected, actual = sequential(model, trace), replay.forward(model, plan)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     weights = torch.randn_like(expected)
     parameters = tuple(model.parameters())
@@ -557,14 +558,14 @@ def test_attention_sparse_self_and_partial_copied_reads():
 
 def test_selected_logits_and_gradients():
     model = tiny_model()
-    replay = Replay.from_trace(mutation_trace(), query_chunk_size=3)
+    plan = Replay.from_trace(mutation_trace(), query_chunk_size=3)
     rows = torch.tensor([18, 0, 7, 7, 13])
-    expected = forward(model, replay)[rows]
+    expected = replay.forward(model, plan)[rows]
     head_rows = []
     hook = model.lm_head.register_forward_pre_hook(
         lambda module, inputs: head_rows.append(inputs[0].shape[-2])
     )
-    actual = forward(model, replay, rows=rows)
+    actual = replay.forward(model, plan, rows=rows)
     hook.remove()
     assert head_rows == [rows.numel()]
     torch.testing.assert_close(actual, expected)
@@ -575,18 +576,57 @@ def test_selected_logits_and_gradients():
         torch.testing.assert_close(actual_grad, expected_grad, atol=1e-5, rtol=2e-4)
 
 
+@pytest.mark.parametrize("rows", [None, torch.tensor([18, 0, 7, 7, 13])])
+def test_forward_hidden_only_and_gradients(rows):
+    model = tiny_model()
+    plan = Replay.from_trace(mutation_trace(), query_chunk_size=3)
+    head_inputs = []
+    hook = model.lm_head.register_forward_pre_hook(
+        lambda module, inputs: head_inputs.append(inputs[0])
+    )
+    expected = replay.forward(model, plan, rows=rows)
+    hook.remove()
+    torch.testing.assert_close(
+        replay.forward(model, plan, rows=rows, hidden_only=False), expected, atol=0, rtol=0
+    )
+    with patch.object(model.lm_head, "forward", side_effect=AssertionError("lm_head was called")):
+        states = replay.forward(model, plan, rows=rows, hidden_only=True)
+    torch.testing.assert_close(states, head_inputs[0][0], atol=0, rtol=0)
+    actual = model.lm_head(states)
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    weights = torch.cos(torch.arange(expected.numel())).reshape_as(expected)
+    parameters = tuple(model.parameters())
+    expected_grads = torch.autograd.grad((expected * weights).sum(), parameters)
+    actual_grads = torch.autograd.grad((actual * weights).sum(), parameters)
+    for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
+        torch.testing.assert_close(actual_grad, expected_grad, atol=1e-5, rtol=2e-4)
+
+
+@pytest.mark.parametrize("rows", [None, torch.tensor([18, 0, 7, 7, 13])])
+def test_hidden_deprecated_alias(rows):
+    model = tiny_model()
+    plan = Replay.from_trace(mutation_trace(), query_chunk_size=3)
+    with pytest.warns(DeprecationWarning, match="hidden_only=True") as warnings:
+        actual = replay.hidden(model, plan, rows=rows)
+    assert warnings[0].filename == __file__
+    expected = replay.forward(model, plan, rows=rows, hidden_only=True)
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+
+
 @pytest.mark.parametrize("chunk_size", [1, 3])
 def test_chunked_supervised_loss_and_gradients(chunk_size):
     model = tiny_model()
-    replay = Replay.from_trace(mutation_trace(), query_chunk_size=3)
-    targets = torch.arange(len(replay.input_ids)) % 32
+    plan = Replay.from_trace(mutation_trace(), query_chunk_size=3)
+    targets = torch.arange(len(plan.input_ids)) % 32
     targets[::3] = -100
-    expected = torch.nn.functional.cross_entropy(forward(model, replay), targets, reduction="sum")
+    expected = torch.nn.functional.cross_entropy(
+        replay.forward(model, plan), targets, reduction="sum"
+    )
     head_rows = []
     hook = model.lm_head.register_forward_pre_hook(
         lambda module, inputs: head_rows.append(inputs[0].shape[-2])
     )
-    actual = supervised_loss(model, replay, targets, chunk_size=chunk_size)
+    actual = supervised_loss(model, plan, targets, chunk_size=chunk_size)
     hook.remove()
     assert max(head_rows) <= chunk_size
     assert sum(head_rows) == targets.ne(-100).sum()
@@ -630,11 +670,11 @@ def test_causal_forward_and_backward_match_huggingface(mixed_steps):
     reference, model = tiny_model().train(), tiny_model().train()
     if mixed_steps:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    replay = Replay.from_trace(single_block_trace(mixed_steps), query_chunk_size=3)
-    expected = reference(replay.input_ids[None], use_cache=False).logits[0]
-    actual = forward(model, replay)
+    plan = Replay.from_trace(single_block_trace(mixed_steps), query_chunk_size=3)
+    expected = reference(plan.input_ids[None], use_cache=False).logits[0]
+    actual = replay.forward(model, plan)
     torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
-    targets = replay.input_ids.roll(-1)
+    targets = plan.input_ids.roll(-1)
     torch.nn.functional.cross_entropy(expected, targets).backward()
     torch.nn.functional.cross_entropy(actual, targets).backward()
     for (name, parameter), (_, native) in zip(
@@ -658,7 +698,7 @@ def test_native_forward_after_replay_stays_causal_and_masked(backend, padded, de
     mask = torch.tensor([[1, 1, 1, 1], [0, 1, 1, 1]], device=device) if padded else None
     with torch.no_grad():
         expected = model(ids, attention_mask=mask, use_cache=False).logits
-        forward(model, Replay.from_trace(mutation_trace(), device=device))
+        replay.forward(model, Replay.from_trace(mutation_trace(), device=device))
         assert model.config._attn_implementation == backend
         with patch(
             "torch.nn.functional.scaled_dot_product_attention",
@@ -682,22 +722,22 @@ def test_attention_inference_warmup_then_training(use_reentrant):
     reference, model = tiny_model().train(), tiny_model().eval()
     trace = repeated_view_trace()
     with torch.inference_mode():
-        replay = Replay.from_trace(trace, query_chunk_size=3).to("cpu")
-        forward(model, replay)
-    chunks = replay._attention[(torch.device("cpu"), 3)]
-    assert not replay.input_ids.is_inference() and not replay.order.is_inference()
+        plan = Replay.from_trace(trace, query_chunk_size=3).to("cpu")
+        replay.forward(model, plan)
+    chunks = plan._attention[(torch.device("cpu"), 3)]
+    assert not plan.input_ids.is_inference() and not plan.order.is_inference()
     assert all(not entries.is_inference() for _, entries in chunks)
     model.train()
     if use_reentrant is not None:
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
         )
-    expected = forward(reference, Replay.from_trace(trace, query_chunk_size=3))
-    actual = forward(model, replay)
+    expected = replay.forward(reference, Replay.from_trace(trace, query_chunk_size=3))
+    actual = replay.forward(model, plan)
     torch.testing.assert_close(actual, expected)
     expected.square().mean().backward()
     actual.square().mean().backward()
-    assert replay._attention[(torch.device("cpu"), 3)] is chunks
+    assert plan._attention[(torch.device("cpu"), 3)] is chunks
     for parameter, target in zip(model.parameters(), reference.parameters(), strict=True):
         torch.testing.assert_close(parameter.grad, target.grad, atol=1e-6, rtol=2e-4)
 
@@ -710,9 +750,9 @@ def test_replay_gradient_checkpointing(use_reentrant, backend):
     checkpointed.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
     )
-    replay = Replay.from_trace(mutation_trace(), query_chunk_size=3)
-    expected = forward(reference, replay)
-    actual = forward(checkpointed, replay)
+    plan = Replay.from_trace(mutation_trace(), query_chunk_size=3)
+    expected = replay.forward(reference, plan)
+    actual = replay.forward(checkpointed, plan)
     torch.testing.assert_close(actual, expected)
     checkpointed(torch.tensor([[1, 2, 3]]), use_cache=False)
     expected.square().mean().backward()
@@ -730,7 +770,7 @@ def test_native_sdpa_cache_continues_after_replay():
     with torch.no_grad():
         original = reference(ids, use_cache=True)
         prefix = model(ids, use_cache=True)
-        forward(model, Replay.from_trace(repeated_view_trace()))
+        replay.forward(model, Replay.from_trace(repeated_view_trace()))
         expected = reference(torch.tensor([[4]]), past_key_values=original.past_key_values).logits
         with patch(
             "torch.nn.functional.scaled_dot_product_attention",
@@ -747,7 +787,7 @@ def test_replay_checkpoint_reloads_as_native_huggingface(tmp_path):
     original_keys = set(model.state_dict())
     with torch.no_grad():
         expected = model(ids, use_cache=False).logits
-        forward(model, Replay.from_trace(mutation_trace()))
+        replay.forward(model, Replay.from_trace(mutation_trace()))
     model.save_pretrained(tmp_path)
     config = json.loads((tmp_path / "config.json").read_text())
     assert not any("attn_implementation" in key for key in config)
@@ -772,7 +812,9 @@ def test_mutation_trace_json_roundtrip():
         torch.testing.assert_close(getattr(loaded, field), getattr(original, field), rtol=0, atol=0)
     model = tiny_model()
     with torch.no_grad():
-        torch.testing.assert_close(forward(model, loaded), forward(model, original), rtol=0, atol=0)
+        torch.testing.assert_close(
+            replay.forward(model, loaded), replay.forward(model, original), rtol=0, atol=0
+        )
 
 
 def test_legacy_and_compact_json_replay_match():
@@ -802,7 +844,7 @@ def test_legacy_and_compact_json_replay_match():
     old_replay, new_replay = Replay.from_trace(legacy), Replay.from_trace(compact)
     assert visible_sources(old_replay) == visible_sources(new_replay)
     model = tiny_model()
-    expected, actual = forward(model, old_replay), forward(model, new_replay)
+    expected, actual = replay.forward(model, old_replay), replay.forward(model, new_replay)
     torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
     parameters = tuple(model.parameters())
     expected_grads = torch.autograd.grad(expected.square().sum(), parameters)
@@ -1019,13 +1061,13 @@ def test_copied_spans_keep_duplicate_occurrences():
 
 def test_overfit():
     model = tiny_model().train()
-    replay = Replay.from_trace(example_trace(), query_chunk_size=3)
-    targets = torch.arange(len(replay.input_ids)) % 32
+    plan = Replay.from_trace(example_trace(), query_chunk_size=3)
+    targets = torch.arange(len(plan.input_ids)) % 32
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.02)
     losses = []
     for _ in range(25):
         optimizer.zero_grad()
-        loss = torch.nn.functional.cross_entropy(forward(model, replay), targets)
+        loss = torch.nn.functional.cross_entropy(replay.forward(model, plan), targets)
         loss.backward()
         optimizer.step()
         losses.append(loss.item())
@@ -1086,13 +1128,13 @@ def test_clear_preserves_copied_gradients_and_isolates_reuse():
     session.free_block(source)
     prefill(source, [3])
     prefill(copied, [4])
-    replay = Replay.from_trace(session.trace)
-    visible = visible_sources(replay)
+    plan = Replay.from_trace(session.trace)
+    visible = visible_sources(plan)
     assert visible[2] == [2]
     assert visible[3] == [0, 1, 3]
 
     model = tiny_model()
-    logits = forward(model, replay)
+    logits = replay.forward(model, plan)
     embeddings = model.model.embed_tokens.weight
     (copied_grad,) = torch.autograd.grad(logits[3].square().sum(), embeddings, retain_graph=True)
     (reused_grad,) = torch.autograd.grad(logits[2].square().sum(), embeddings)

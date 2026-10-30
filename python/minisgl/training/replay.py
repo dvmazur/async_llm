@@ -1,3 +1,4 @@
+import warnings
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from itertools import groupby
@@ -217,7 +218,11 @@ class Replay:
         )
 
 
-def _forward(model, replay: Replay, rows, hidden_only):
+def forward(model, replay: Replay, rows=None, *, hidden_only=False):
+    """Replay logits, or decoder hidden states when ``hidden_only=True``.
+
+    Select ``rows`` in original trace order. Hidden states skip the vocabulary projection.
+    """
     if model.config.model_type not in {"qwen3", "qwen3_5_text", "qwen3_5"}:
         raise ValueError("Only dense text Qwen3 and Qwen3.5 are supported")
     backbone = model.model
@@ -295,10 +300,10 @@ def _forward(model, replay: Replay, rows, hidden_only):
 
 
 def hidden(model, replay: Replay, rows=None):
-    """Native decoder hidden states, optionally selecting rows in original trace order."""
-    return _forward(model, replay, rows, hidden_only=True)
-
-
-def forward(model, replay: Replay, rows=None):
-    """Native HF Qwen3/Qwen3.5 logits, optionally selecting original trace rows."""
-    return _forward(model, replay, rows, hidden_only=False)
+    """Deprecated: use ``replay.forward(..., hidden_only=True)``."""
+    warnings.warn(
+        "replay.hidden() is deprecated; use replay.forward(..., hidden_only=True) instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return forward(model, replay, rows, hidden_only=True)

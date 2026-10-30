@@ -6,7 +6,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 from minisgl.models.qwen3_5_mrope import get_rope_index
-from minisgl.training.replay import Replay, attention, forward, hidden
+from minisgl.training import replay
+from minisgl.training.attention import attention
+from minisgl.training.replay import Replay
 from minisgl.training.sft import supervised_loss
 from minisgl.training.trace import RecordingSession, TensorData
 from test_training import Session
@@ -167,10 +169,10 @@ def test_native_image_logits_and_all_parameter_gradients(loss_path, image_count)
     trace = single_image_trace(inputs)
     plan = Replay.from_trace(trace, query_chunk_size=3)
     expected = reference(**inputs, use_cache=False).logits[0]
-    actual = forward(model, plan)
+    actual = replay.forward(model, plan)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     with torch.no_grad():
-        states = hidden(model, plan, rows=torch.tensor([8, 2, 8]))
+        states = replay.forward(model, plan, rows=torch.tensor([8, 2, 8]), hidden_only=True)
         torch.testing.assert_close(model.lm_head(states), expected[[8, 2, 8]], atol=3e-6, rtol=3e-5)
     targets = torch.tensor([1, -100, 3, -100, 5, -100, 7, 8, 9]).repeat(image_count)
     expected_loss = F.cross_entropy(expected, targets, reduction="sum")
@@ -209,9 +211,9 @@ def test_multiple_images_follow_packed_token_order():
             reference(input_ids=torch.tensor([[2, 3, 4]]), use_cache=False).logits[0],
         ]
     )
-    replay = Replay.from_trace(session.trace, query_chunk_size=4)
-    assert not torch.equal(replay.order, torch.arange(session.trace.num_tokens))
-    actual = forward(model, replay)
+    plan = Replay.from_trace(session.trace, query_chunk_size=4)
+    assert not torch.equal(plan.order, torch.arange(session.trace.num_tokens))
+    actual = replay.forward(model, plan)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     weights = torch.cos(torch.arange(actual.numel())).reshape_as(actual)
     (actual * weights).sum().backward()
@@ -246,8 +248,8 @@ def test_image_prefill_preserves_nonmonotonic_grid_positions():
         ),
     }
     expected = reference(**full, use_cache=False).logits[0]
-    replay = Replay.from_trace(session.trace, query_chunk_size=2)
-    torch.testing.assert_close(forward(model, replay), expected, atol=3e-6, rtol=3e-5)
+    plan = Replay.from_trace(session.trace, query_chunk_size=2)
+    torch.testing.assert_close(replay.forward(model, plan), expected, atol=3e-6, rtol=3e-5)
 
 
 @pytest.mark.parametrize(
@@ -270,7 +272,7 @@ def test_malformed_image_metadata_fails_explicitly(field, value, message):
     value = TensorData.capture(value) if isinstance(value, torch.Tensor) else value
     trace.batches[0] = replace(batch, requests=(replace(batch.requests[0], **{field: value}),))
     with pytest.raises(ValueError, match=message):
-        forward(tiny_image_model(), Replay.from_trace(trace))
+        replay.forward(tiny_image_model(), Replay.from_trace(trace))
 
 
 def test_image_token_ids_require_payload_without_token_types():
@@ -281,7 +283,7 @@ def test_image_token_ids_require_payload_without_token_types():
     )
     trace.batches[0] = replace(batch, requests=(request,))
     with pytest.raises(ValueError, match="require recorded pixels"):
-        forward(tiny_image_model(), Replay.from_trace(trace))
+        replay.forward(tiny_image_model(), Replay.from_trace(trace))
 
 
 def cache_image_trace():
@@ -432,7 +434,7 @@ def test_async_image_model_and_every_parameter_gradient_match_direct_recurrence(
     reference = tiny_image_model()
     model = deepcopy(reference)
     trace = cache_image_trace()
-    replay = Replay.from_trace(trace, query_chunk_size=4)
+    plan = Replay.from_trace(trace, query_chunk_size=4)
     backbone = reference.model.language_model
     ids = torch.tensor([token.token_id for token in trace.tokens])
     x = backbone.embed_tokens(ids).clone()
@@ -471,7 +473,7 @@ def test_async_image_model_and_every_parameter_gradient_match_direct_recurrence(
         x = x + output
         x = x + layer.mlp(layer.post_attention_layernorm(x))
     expected = reference.lm_head(backbone.norm(x))
-    actual = forward(model, replay)
+    actual = replay.forward(model, plan)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     targets = torch.arange(len(ids)) % reference.config.text_config.vocab_size
     F.cross_entropy(actual, targets).backward()

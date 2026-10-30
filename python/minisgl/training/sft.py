@@ -18,7 +18,8 @@ from transformers import (
     AutoTokenizer,
 )
 
-from .replay import Replay, hidden
+from . import replay
+from .replay import Replay
 from .trace import Trace, record
 
 
@@ -242,12 +243,13 @@ async def mine(args):
     )
 
 
-def _supervised(model, replay, targets):
+def _supervised(model, plan, targets):
     device = next(model.parameters()).device
     rows = (targets != -100).nonzero().flatten()
-    if len(targets) != len(replay.input_ids) or not len(rows):
+    if len(targets) != len(plan.input_ids) or not len(rows):
         raise ValueError("Each trace needs aligned, nonempty supervision")
-    return hidden(model, replay.to(device), rows=rows.to(device)), targets[rows].to(device)
+    states = replay.forward(model, plan.to(device), rows=rows.to(device), hidden_only=True)
+    return states, targets[rows].to(device)
 
 
 def supervised_loss(model, replay, targets, chunk_size=128, *, checkpointing=True):
@@ -273,8 +275,8 @@ def evaluate(model, examples, chunk_size=128):
     if chunk_size < 1:
         raise ValueError("Loss chunk size must be positive")
     results = []
-    for replay, targets in examples:
-        states, selected = _supervised(model, replay, targets)
+    for plan, targets in examples:
+        states, selected = _supervised(model, plan, targets)
         nll, correct = [], 0
         for x, y in zip(states.split(chunk_size), selected.split(chunk_size), strict=True):
             logits = model.lm_head(x).float()
@@ -321,7 +323,7 @@ def train(args):
         targets = torch.tensor(example["targets"])
         if len(targets) != trace.num_tokens or not (targets != -100).any():
             raise ValueError("Each trace needs aligned, nonempty supervision")
-        replay = Replay.from_trace(
+        plan = Replay.from_trace(
             trace,
             query_chunk_size=query_chunk_size,
             attention_checkpointing=attention_checkpointing,
@@ -331,11 +333,11 @@ def train(args):
             gdn_cache_reused=gdn_cache_reused,
             gdn_read_backend=gdn_read_backend,
         )
-        examples.append((replay, targets))
+        examples.append((plan, targets))
     multimodal = any(
         request.pixel_values is not None
-        for replay, _ in examples
-        for batch in replay.trace.batches
+        for plan, _ in examples
+        for batch in plan.trace.batches
         for request in batch.requests
     )
     config = AutoConfig.from_pretrained(data["model"])
@@ -367,10 +369,10 @@ def train(args):
     for step in range(1, args.steps + 1):
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        for replay, targets in examples:
+        for plan, targets in examples:
             loss = (
                 supervised_loss(
-                    model, replay, targets, loss_chunk_size, checkpointing=loss_checkpointing
+                    model, plan, targets, loss_chunk_size, checkpointing=loss_checkpointing
                 )
                 / count
             )
