@@ -1013,7 +1013,8 @@ def test_delta_read_saved_storage_grows_with_vectors_not_matrices(record_propert
         record_property(f"read_saved_bytes_{depth}", size)
 
 
-def test_gdn_train_and_eval_no_grad_save_no_tensors(cuda_delta_math):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_gdn_train_and_eval_no_grad_save_no_tensors():
     module = tiny_hybrid().cuda().model.layers[0].linear_attn
     trace = mutation_trace()
     replay = GDNReplay.from_trace(trace, torch.arange(len(trace.tokens)), device="cuda")
@@ -1234,7 +1235,8 @@ def test_delta_factorized_reads_preserve_vector_depth(record_property):
     "trace_factory", [example_trace, mutation_trace, uneven_history_trace, repeated_view_trace]
 )
 @pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
-def test_gdn_parallel_outputs_and_gradients(cuda_delta_math, trace_factory, read_mode):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_gdn_parallel_outputs_and_gradients(trace_factory, read_mode):
     module = tiny_hybrid().cuda().model.layers[0].linear_attn
     trace = trace_factory()
     order = Replay.from_trace(trace).order
@@ -1253,7 +1255,8 @@ def test_gdn_parallel_outputs_and_gradients(cuda_delta_math, trace_factory, read
         torch.testing.assert_close(actual_grad, expected_grad, atol=2e-6, rtol=3e-4)
 
 
-def test_gdn_synthetic_stress_workload_outputs_and_gradients(cuda_delta_math):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_gdn_synthetic_stress_workload_outputs_and_gradients():
     session = RecordingSession(Session())
     workload(session, vocab_size=32, large_size=2)
     trace = session.trace
@@ -1274,7 +1277,8 @@ def test_gdn_synthetic_stress_workload_outputs_and_gradients(cuda_delta_math):
         torch.testing.assert_close(actual_grad, expected_grad, atol=2e-6, rtol=3e-4)
 
 
-def test_gdn_decode_reads_peer_before_batch(cuda_delta_math):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_gdn_decode_reads_peer_before_batch():
     trace = Trace(
         [
             Token(1, 0, 0, 0, ((0, 1),), "prefill"),
@@ -1297,7 +1301,8 @@ def test_gdn_decode_reads_peer_before_batch(cuda_delta_math):
     torch.testing.assert_close(gdn_forward(module, changed, replay)[0, 2], outputs[0, 2])
 
 
-def test_gdn_copied_history_survives_clear_and_isolates_reuse(cuda_delta_math):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_gdn_copied_history_survives_clear_and_isolates_reuse():
     session = RecordingSession(Session())
     source, child, empty = [session.create_block() for _ in range(3)]
 
@@ -1328,7 +1333,8 @@ def test_gdn_copied_history_survives_clear_and_isolates_reuse(cuda_delta_math):
     assert not reused_grad[0, :3].any()
 
 
-def test_hybrid_gdn_options_survive_transfer_and_separate_compiled_cache(cuda_delta_math):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_hybrid_gdn_options_survive_transfer_and_separate_compiled_cache():
     model = tiny_hybrid().cuda()
     replay = Replay.from_trace(mutation_trace(), device="cuda")
     expected = None
@@ -1369,7 +1375,8 @@ def test_hybrid_gdn_options_survive_transfer_and_separate_compiled_cache(cuda_de
 
 
 @pytest.mark.parametrize("mixed_steps", [False, True])
-def test_hybrid_causal_forward_and_backward_match_huggingface(cuda_delta_math, mixed_steps):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_hybrid_causal_forward_and_backward_match_huggingface(mixed_steps):
     reference, model = torch_hybrid().cuda().train(), tiny_hybrid().cuda().train()
     if mixed_steps:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
@@ -1455,7 +1462,8 @@ def test_hybrid_inference_warmup_then_training(cuda_delta_math, backend, use_ree
         torch.testing.assert_close(parameter.grad, original.grad, atol=1e-6, rtol=2e-4)
 
 
-def test_hybrid_replay_checkpoint_reloads_as_native_huggingface(cuda_delta_math, tmp_path):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_hybrid_replay_checkpoint_reloads_as_native_huggingface(tmp_path):
     model = tiny_hybrid().cuda()
     ids = torch.tensor([[1, 2, 3]], device="cuda")
     original_keys = set(model.state_dict())
@@ -1474,7 +1482,8 @@ def test_hybrid_replay_checkpoint_reloads_as_native_huggingface(cuda_delta_math,
         torch.testing.assert_close(restored(ids, use_cache=False).logits, expected)
 
 
-def test_hybrid_replay_preserves_native_sdpa_masks_and_cache(cuda_delta_math):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_hybrid_replay_preserves_native_sdpa_masks_and_cache():
     model = torch_hybrid().cuda().eval()
     model.set_attn_implementation("sdpa")
     ids = torch.tensor([[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]], device="cuda")
@@ -1506,7 +1515,8 @@ def test_hybrid_replay_preserves_native_sdpa_masks_and_cache(cuda_delta_math):
 
 
 @pytest.mark.parametrize("use_reentrant", [False, True])
-def test_hybrid_checkpointed_replay_gradients(cuda_delta_math, use_reentrant):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_hybrid_checkpointed_replay_gradients(use_reentrant):
     reference, checkpointed = tiny_hybrid().cuda().train(), tiny_hybrid().cuda().train()
     reference.set_attn_implementation("sdpa")
     checkpointed.set_attn_implementation("sdpa")
@@ -1536,7 +1546,8 @@ def test_hybrid_checkpointed_replay_gradients(cuda_delta_math, use_reentrant):
         )
 
 
-def test_hybrid_checkpointed_chunked_supervised_loss(cuda_delta_math):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_hybrid_checkpointed_chunked_supervised_loss():
     reference, checkpointed = tiny_hybrid().cuda().train(), tiny_hybrid().cuda().train()
     checkpointed.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": False}
@@ -1553,7 +1564,8 @@ def test_hybrid_checkpointed_chunked_supervised_loss(cuda_delta_math):
         torch.testing.assert_close(actual_grad, expected_grad, atol=1e-5, rtol=2e-4)
 
 
-def test_hybrid_overfits_recorded_sequence_targets(cuda_delta_math):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_hybrid_overfits_recorded_sequence_targets():
     model = tiny_hybrid().cuda().train()
     trace = example_trace()
     replay = Replay.from_trace(trace, device="cuda")
