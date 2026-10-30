@@ -33,10 +33,13 @@ image-aware spans, including copied/merged blocks. Use the full HF conditional
 generation model for pixel traces; the SFT loader selects it automatically and
 saves its processor with the checkpoint.
 
-Mining uses FP16; the training CLI uses FP32, including the GDN core. Evaluation
-runs every five updates and at the end. Training stops early when every example
-has 100% target accuracy and loss below `0.01`. It saves a standard HF checkpoint
-and tokenizer to `--output`, with `metrics.json` in its parent directory.
+Mining uses FP16. Training defaults to FP32, including the GDN core; use
+`--dtype float16` for memory-constrained full-attention experiments. Evaluation
+runs every five updates and at the end. It reports the exact teacher-forced
+probability of each complete recorded target sequence, `exp(-sum(token NLL))`,
+and stops early when every example has 100% target accuracy and reaches
+`--target-sequence-probability`. It saves a standard HF checkpoint and tokenizer
+to `--output`, with `metrics.json` in its parent directory.
 
 ## Run
 
@@ -53,12 +56,19 @@ Mine short Qwen3 trajectories, then overfit them:
 
 ```bash
 uv run --no-sync python -m minisgl.training.sft mine \
-  --model Qwen/Qwen3-0.6B --max-tokens 8 \
+  --model Qwen/Qwen3-0.6B --num-examples 1 --max-tokens 8 \
   --output training_runs/qwen3_demo/trajectories.json
 
 uv run --no-sync python -m minisgl.training.sft train \
   --data training_runs/qwen3_demo/trajectories.json \
-  --output training_runs/qwen3_demo/checkpoint --steps 80 --gradient-checkpointing
+  --output training_runs/qwen3_demo/checkpoint --steps 80 --gradient-checkpointing \
+  --target-sequence-probability 0.99
+
+uv run --no-sync python -m minisgl.training.sft verify \
+  --data training_runs/qwen3_demo/trajectories.json \
+  --checkpoint training_runs/qwen3_demo/checkpoint \
+  --output training_runs/qwen3_demo/verification.json \
+  --target-sequence-probability 0.99
 ```
 
 For asynchronous arithmetic trajectories with more workers and mutations, add
@@ -92,6 +102,7 @@ All commands support `-h` / `--help`. Defaults below are literal CLI defaults.
 | `--stress` | off | Six asynchronous workers with changing views, prefill extensions, copies, merges and clears; more coverage and cost than the default two-worker examples. |
 | `--max-tokens` | `16` | Positive generation limit per worker; longer runs increase trace size and replay cost. |
 | `--temperature` | `0.8` | Positive top-20 sampling temperature; higher values increase diversity. |
+| `--num-examples` | all (`3`, or `2` with `--stress`) | Mine exactly 1–3 built-in trajectories; use `1` for the smallest overfit checkpoint. |
 | `--seed` | `7` | Sampling seed; asynchronous scheduling can still vary. |
 
 ### `minisgl.training.stress`
@@ -117,6 +128,9 @@ The model comes from the data file. There is no separate training model flag.
 | `--output` | `training_runs/qwen3_sft/checkpoint` | New HF checkpoint directory; metrics go in its parent. |
 | `--steps` | `80` | Positive maximum optimizer updates; early stopping may shorten the run. |
 | `--lr` | `3e-5` | Positive AdamW learning rate; larger values may fit faster but destabilize training. |
+| `--adam-eps` | dtype-aware | AdamW epsilon: `1e-6` for FP16 to avoid underflow, otherwise `1e-8`. |
+| `--dtype` | `float32` | Model/training dtype. `float16` substantially reduces memory but may need a smaller learning rate. |
+| `--target-sequence-probability` | `0.99` | Early-stop threshold for every complete recorded target sequence, not an average per-token proxy. |
 | `--seed` | `7` | Torch seed. |
 | `--gradient-checkpointing` | off | Recompute decoder layers in backward: less activation memory, more compute. |
 | `--attention-checkpointing` / `--no-attention-checkpointing` | on | Recompute full-attention chunks: less saved attention memory, more compute. Independent of layer checkpointing. |
@@ -135,6 +149,14 @@ Full attention can still require quadratic work in visible context. GDN avoids
 flattening copied history, but dense summaries, saved read vectors, and deep merge
 dependencies still cost memory/time. Chunking and checkpointing do not reduce
 model weights or optimizer state.
+
+### `minisgl.training.sft verify`
+
+Reloads the saved checkpoint, replays the recorded AsyncLLM schedule, and fails
+unless every supervised target is the argmax and the least-likely complete target
+sequence reaches `--target-sequence-probability`. The JSON report preserves the
+per-token NLLs, sequence log-probabilities, and sequence probabilities. Use the
+same `--dtype` as training when checking a low-memory FP16 run.
 
 ## Validation and limits
 

@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import math
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
@@ -44,7 +45,9 @@ async def mine(args):
     examples = []
     try:
         problems = ["What is 17 + 26?", "What is 9 * 7?", "What is 45 - 18?"]
-        for index, problem in enumerate(problems[:2] if args.stress else problems):
+        requested = getattr(args, "num_examples", None)
+        limit = requested if requested is not None else (2 if args.stress else 3)
+        for index, problem in enumerate(problems[:limit]):
             trace = record(llm)
             blocks = [await llm.create_block() for _ in range(7 if args.stress else 3)]
             prompt, *writers = blocks
@@ -282,11 +285,15 @@ def evaluate(model, examples, chunk_size=128):
             correct = correct + (logits.argmax(-1) == y).sum()
             del logits
         nll = torch.cat(nll)
+        total_nll = nll.sum().item()
         results.append(
             {
                 "tokens": len(selected),
                 "loss": nll.mean().item(),
                 "accuracy": correct.item() / len(selected),
+                "sequence_logprob": -total_nll,
+                "sequence_probability": math.exp(-total_nll),
+                "min_token_probability": math.exp(-nll.max().item()),
                 "nll": nll.cpu().tolist(),
             }
         )
@@ -294,8 +301,55 @@ def evaluate(model, examples, chunk_size=128):
     return {
         "loss": sum(r["loss"] * r["tokens"] for r in results) / count,
         "accuracy": sum(r["accuracy"] * r["tokens"] for r in results) / count,
+        "min_sequence_probability": min(r["sequence_probability"] for r in results),
         "examples": results,
     }
+
+
+def _dtype(name):
+    try:
+        return {"float16": torch.float16, "float32": torch.float32}[name]
+    except KeyError as error:
+        raise ValueError(f"Unsupported training dtype: {name}") from error
+
+
+def _adam_epsilon(dtype_name, override=None):
+    return override if override is not None else (1e-6 if dtype_name == "float16" else 1e-8)
+
+
+def _examples(data, args):
+    examples = []
+    for example in data["examples"]:
+        trace = restore_trace(example["trace"])
+        targets = torch.tensor(example["targets"])
+        if len(targets) != trace.num_tokens or not (targets != -100).any():
+            raise ValueError("Each trace needs aligned, nonempty supervision")
+        replay = Replay.from_trace(
+            trace,
+            query_chunk_size=getattr(args, "query_chunk_size", 128),
+            attention_checkpointing=getattr(args, "attention_checkpointing", True),
+            cache_plans=getattr(args, "cache_replay_plans", True),
+            gdn_segment_size=getattr(args, "gdn_segment_size", 8),
+            gdn_read_mode=getattr(args, "gdn_read_mode", "expanded"),
+            gdn_cache_reused=getattr(args, "gdn_cache_reused", True),
+            gdn_read_backend=getattr(args, "gdn_read_backend", "torch"),
+        )
+        examples.append((replay, targets))
+    return examples
+
+
+def _model(path, examples, dtype):
+    multimodal = any(
+        request.pixel_values is not None
+        for replay, _ in examples
+        for batch in replay.trace.batches
+        for request in batch.requests
+    )
+    config = AutoConfig.from_pretrained(path)
+    model_class = AutoModelForImageTextToText if multimodal else AutoModelForCausalLM
+    if not multimodal:
+        config = config.get_text_config()
+    return model_class.from_pretrained(path, config=config, dtype=dtype).cuda(), multimodal
 
 
 def train(args):
@@ -308,6 +362,9 @@ def train(args):
     gdn_read_mode = getattr(args, "gdn_read_mode", "expanded")
     gdn_cache_reused = getattr(args, "gdn_cache_reused", True)
     gdn_read_backend = getattr(args, "gdn_read_backend", "torch")
+    dtype_name = getattr(args, "dtype", "float32")
+    target_sequence_probability = getattr(args, "target_sequence_probability", 0.99)
+    adam_eps = _adam_epsilon(dtype_name, getattr(args, "adam_eps", None))
     if gdn_segment_size < 1:
         raise ValueError("gdn_segment_size must be positive")
     if gdn_read_mode not in {"expanded", "factorized"}:
@@ -315,34 +372,8 @@ def train(args):
     if gdn_read_backend not in {"torch", "triton"}:
         raise ValueError("gdn_read_backend must be torch or triton")
     data = json.loads(args.data.read_text())
-    examples = []
-    for example in data["examples"]:
-        trace = restore_trace(example["trace"])
-        targets = torch.tensor(example["targets"])
-        if len(targets) != trace.num_tokens or not (targets != -100).any():
-            raise ValueError("Each trace needs aligned, nonempty supervision")
-        replay = Replay.from_trace(
-            trace,
-            query_chunk_size=query_chunk_size,
-            attention_checkpointing=attention_checkpointing,
-            cache_plans=cache_replay_plans,
-            gdn_segment_size=gdn_segment_size,
-            gdn_read_mode=gdn_read_mode,
-            gdn_cache_reused=gdn_cache_reused,
-            gdn_read_backend=gdn_read_backend,
-        )
-        examples.append((replay, targets))
-    multimodal = any(
-        request.pixel_values is not None
-        for replay, _ in examples
-        for batch in replay.trace.batches
-        for request in batch.requests
-    )
-    config = AutoConfig.from_pretrained(data["model"])
-    model_class = AutoModelForImageTextToText if multimodal else AutoModelForCausalLM
-    if not multimodal:
-        config = config.get_text_config()
-    model = model_class.from_pretrained(data["model"], config=config, dtype=torch.float32).cuda()
+    examples = _examples(data, args)
+    model, multimodal = _model(data["model"], examples, _dtype(dtype_name))
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     initial = evaluate(model.eval(), examples, loss_chunk_size)
@@ -361,9 +392,16 @@ def train(args):
         f"max logprob error={max_error:.6f}",
         flush=True,
     )
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, eps=adam_eps)
     count = sum(int((targets != -100).sum()) for _, targets in examples)
-    history = [{"step": 0, "loss": initial["loss"], "accuracy": initial["accuracy"]}]
+    history = [
+        {
+            "step": 0,
+            "loss": initial["loss"],
+            "accuracy": initial["accuracy"],
+            "min_sequence_probability": initial["min_sequence_probability"],
+        }
+    ]
     for step in range(1, args.steps + 1):
         model.train()
         optimizer.zero_grad(set_to_none=True)
@@ -381,12 +419,25 @@ def train(args):
         optimizer.step()
         if step % 5 == 0 or step == args.steps:
             final = evaluate(model.eval(), examples, loss_chunk_size)
-            history.append({"step": step, "loss": final["loss"], "accuracy": final["accuracy"]})
+            if not math.isfinite(final["loss"]):
+                raise RuntimeError("Non-finite evaluation loss after optimizer update")
+            history.append(
+                {
+                    "step": step,
+                    "loss": final["loss"],
+                    "accuracy": final["accuracy"],
+                    "min_sequence_probability": final["min_sequence_probability"],
+                }
+            )
             print(
-                f"step {step}: loss={final['loss']:.6f} accuracy={final['accuracy']:.2%}",
+                f"step {step}: loss={final['loss']:.6f} accuracy={final['accuracy']:.2%} "
+                f"min sequence probability={final['min_sequence_probability']:.6f}",
                 flush=True,
             )
-            if all(r["accuracy"] == 1.0 and r["loss"] < 0.01 for r in final["examples"]):
+            if all(
+                r["accuracy"] == 1.0 and r["sequence_probability"] >= target_sequence_probability
+                for r in final["examples"]
+            ):
                 break
     args.output.parent.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(args.output)
@@ -397,6 +448,10 @@ def train(args):
         "data": str(args.data),
         "seed": args.seed,
         "lr": args.lr,
+        "adam_eps": adam_eps,
+        "dtype": dtype_name,
+        "target_sequence_probability": target_sequence_probability,
+        "target_reached": final["min_sequence_probability"] >= target_sequence_probability,
         "steps": step,
         "supervised_tokens": count,
         "gradient_checkpointing": args.gradient_checkpointing,
@@ -419,6 +474,37 @@ def train(args):
     print(f"Saved checkpoint to {args.output}", flush=True)
 
 
+def verify(args):
+    """Reload a checkpoint and require the recorded sequences to remain near-certain."""
+    data = json.loads(args.data.read_text())
+    examples = _examples(data, args)
+    model, _ = _model(args.checkpoint, examples, _dtype(args.dtype))
+    result = evaluate(model.eval(), examples, args.loss_chunk_size)
+    passed = (
+        result["accuracy"] == 1.0
+        and result["min_sequence_probability"] >= args.target_sequence_probability
+    )
+    report = {
+        "checkpoint": str(args.checkpoint),
+        "data": str(args.data),
+        "dtype": args.dtype,
+        "target_sequence_probability": args.target_sequence_probability,
+        "passed": passed,
+        "result": result,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(report, indent=2))
+    print(
+        f"checkpoint accuracy={result['accuracy']:.2%} "
+        f"min sequence probability={result['min_sequence_probability']:.6f}",
+        flush=True,
+    )
+    if not passed:
+        raise RuntimeError(
+            "Checkpoint did not reproduce every recorded target with the required probability"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -427,6 +513,7 @@ def main():
     mining.add_argument("--stress", action="store_true")
     mining.add_argument("--max-tokens", type=int, default=16)
     mining.add_argument("--temperature", type=float, default=0.8)
+    mining.add_argument("--num-examples", type=int)
     mining.add_argument("--seed", type=int, default=7)
     mining.add_argument(
         "--output", type=Path, default=Path("training_runs/qwen3_sft/trajectories.json")
@@ -438,6 +525,13 @@ def main():
     training.add_argument("--output", type=Path, default=Path("training_runs/qwen3_sft/checkpoint"))
     training.add_argument("--steps", type=int, default=80)
     training.add_argument("--lr", type=float, default=3e-5)
+    training.add_argument(
+        "--adam-eps",
+        type=float,
+        help="AdamW epsilon (default: 1e-6 for float16, otherwise 1e-8)",
+    )
+    training.add_argument("--dtype", choices=("float16", "float32"), default="float32")
+    training.add_argument("--target-sequence-probability", type=float, default=0.99)
     training.add_argument("--seed", type=int, default=7)
     training.add_argument("--gradient-checkpointing", action="store_true")
     training.add_argument(
@@ -484,6 +578,13 @@ def main():
         default="torch",
         help="Use Torch or fused Triton kernels for GDN reads",
     )
+    verification = commands.add_parser("verify")
+    verification.add_argument("--data", type=Path, required=True)
+    verification.add_argument("--checkpoint", type=Path, required=True)
+    verification.add_argument("--output", type=Path, required=True)
+    verification.add_argument("--dtype", choices=("float16", "float32"), default="float32")
+    verification.add_argument("--target-sequence-probability", type=float, default=0.99)
+    verification.add_argument("--loss-chunk-size", type=int, default=128)
     args = parser.parse_args()
     if torch.cuda.device_count() != 1:
         parser.error("Select exactly one GPU with CUDA_VISIBLE_DEVICES")
@@ -491,11 +592,16 @@ def main():
         parser.error("Outputs must be inside the working directory")
     if args.output.exists():
         parser.error(f"Output already exists: {args.output}")
-    if args.command == "mine" and (args.max_tokens < 1 or args.temperature <= 0):
-        parser.error("--max-tokens and --temperature must be positive")
+    if args.command == "mine" and (
+        args.max_tokens < 1
+        or args.temperature <= 0
+        or (args.num_examples is not None and not 1 <= args.num_examples <= 3)
+    ):
+        parser.error("--max-tokens and --temperature must be positive; --num-examples must be 1..3")
     if args.command == "train" and (
         args.steps < 1
         or args.lr <= 0
+        or (args.adam_eps is not None and args.adam_eps <= 0)
         or args.query_chunk_size < 1
         or args.loss_chunk_size < 1
         or args.gdn_segment_size < 1
@@ -504,11 +610,17 @@ def main():
             "--steps, --lr, --query-chunk-size, --loss-chunk-size and --gdn-segment-size "
             "must be positive"
         )
-    torch.manual_seed(args.seed)
+    if hasattr(args, "target_sequence_probability") and not (
+        0 < args.target_sequence_probability <= 1
+    ):
+        parser.error("--target-sequence-probability must be in (0, 1]")
+    torch.manual_seed(getattr(args, "seed", 7))
     if args.command == "mine":
         asyncio.run(mine(args))
-    else:
+    elif args.command == "train":
         train(args)
+    else:
+        verify(args)
 
 
 if __name__ == "__main__":

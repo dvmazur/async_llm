@@ -1,4 +1,5 @@
 import json
+import math
 from copy import deepcopy
 from dataclasses import asdict, replace
 from math import ceil
@@ -70,7 +71,16 @@ def test_sft_loads_and_saves_image_model_and_processor(monkeypatch, tmp_path, ki
     evaluation = {
         "loss": 1.0,
         "accuracy": 0.0,
-        "examples": [{"nll": [1.0], "loss": 1.0, "accuracy": 0.0}] * len(traces),
+        "min_sequence_probability": math.exp(-1.0),
+        "examples": [
+            {
+                "nll": [1.0],
+                "loss": 1.0,
+                "accuracy": 0.0,
+                "sequence_probability": math.exp(-1.0),
+            }
+        ]
+        * len(traces),
     }
     monkeypatch.setattr(sft, "evaluate", Mock(return_value=evaluation))
     monkeypatch.setattr(sft, "supervised_loss", lambda *args, **kwargs: model.weight.square().sum())
@@ -98,6 +108,69 @@ def test_sft_loads_and_saves_image_model_and_processor(monkeypatch, tmp_path, ki
     loaders[unused].from_pretrained.assert_not_called()
     model.save_pretrained.assert_called_once_with(output)
     assert json.loads((tmp_path / "metrics.json").read_text())["supervised_tokens"] == len(traces)
+
+
+def test_evaluate_reports_full_sequence_probability():
+    model = tiny_model().eval()
+    replay = Replay.from_trace(mutation_trace())
+    targets = torch.arange(len(replay.input_ids)) % 32
+    targets[::3] = -100
+
+    result = sft.evaluate(model, [(replay, targets)], chunk_size=4)
+    example = result["examples"][0]
+
+    assert example["sequence_logprob"] == pytest.approx(-sum(example["nll"]))
+    assert example["sequence_probability"] == pytest.approx(math.exp(-sum(example["nll"])))
+    assert result["min_sequence_probability"] == example["sequence_probability"]
+
+
+def test_float16_adam_epsilon_does_not_underflow():
+    assert sft._adam_epsilon("float16") == 1e-6
+    assert sft._adam_epsilon("float32") == 1e-8
+    assert sft._adam_epsilon("float16", 1e-5) == 1e-5
+
+
+@pytest.mark.parametrize("probability,passed", [(0.995, True), (0.98, False)])
+def test_verify_reloads_checkpoint_and_enforces_joint_probability(
+    monkeypatch, tmp_path, probability, passed
+):
+    data = tmp_path / "traces.json"
+    data.write_text('{"model": "unused", "examples": []}')
+    output = tmp_path / "verification.json"
+    model = Mock()
+    model.eval.return_value = model
+    monkeypatch.setattr(sft, "_examples", Mock(return_value=[("replay", "targets")]))
+    loader = Mock(return_value=(model, False))
+    monkeypatch.setattr(sft, "_model", loader)
+    monkeypatch.setattr(
+        sft,
+        "evaluate",
+        Mock(
+            return_value={
+                "loss": 0.0,
+                "accuracy": 1.0,
+                "min_sequence_probability": probability,
+                "examples": [],
+            }
+        ),
+    )
+    args = SimpleNamespace(
+        data=data,
+        checkpoint=tmp_path / "checkpoint",
+        output=output,
+        dtype="float16",
+        target_sequence_probability=0.99,
+        loss_chunk_size=8,
+    )
+
+    if passed:
+        sft.verify(args)
+    else:
+        with pytest.raises(RuntimeError, match="required probability"):
+            sft.verify(args)
+
+    assert json.loads(output.read_text())["passed"] is passed
+    loader.assert_called_once_with(args.checkpoint, [("replay", "targets")], torch.float16)
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])

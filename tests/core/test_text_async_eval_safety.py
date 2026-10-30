@@ -1,7 +1,7 @@
 """Portable CPU coverage for exact-config, fail-fast text evaluation."""
 import asyncio
-from pathlib import Path
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -10,6 +10,12 @@ import pytest
 pytest.importorskip('datasets')
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts/text_async_inputs'))
 import math500_async_thoughts_eval as ev
+
+
+def test_pending_tokens_do_not_depend_on_demo_private_helpers():
+    block = SimpleNamespace(token_ids=[1, 2])
+    assert ev._tokens_with_pending(block, SimpleNamespace(next_input_id=3)) == [1, 2, 3]
+    assert ev._tokens_with_pending(block, SimpleNamespace(next_input_id=None)) == [1, 2]
 
 
 def arguments(directory, start=0, end=2):
