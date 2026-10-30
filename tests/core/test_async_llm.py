@@ -426,6 +426,7 @@ def real_engine():
         tp_info=DistributedInfo(rank=0, size=1),
         dtype=torch.bfloat16,
         max_running_req=8,
+        attention_backend=os.environ.get("MINISGL_TEST_ATTENTION_BACKEND", "auto"),
         cuda_graph_bs=[2, 4],
         cuda_graph_max_bs=4,
         page_size=int(os.environ.get("MINISGL_TEST_PAGE_SIZE", "1")),

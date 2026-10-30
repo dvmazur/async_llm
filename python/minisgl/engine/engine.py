@@ -11,7 +11,7 @@ from minisgl.kvcache import GDNStatePool, PageAllocator, create_kvcache_pool
 from minisgl.layers import set_rope_device
 from minisgl.models import create_model, load_weight
 from minisgl.moe import create_moe_backend
-from minisgl.utils import div_even, init_logger, is_sm90_supported, is_sm100_supported, torch_dtype
+from minisgl.utils import div_even, init_logger, torch_dtype
 
 from .config import EngineConfig
 from .graph import GraphRunner, get_free_memory, mem_GB
@@ -117,13 +117,14 @@ class Engine:
             device=self.device,
             model=self.model,
             attn_backend=self.attn_backend,
-            cuda_graph_bs=config.cuda_graph_bs,
-            cuda_graph_max_bs=config.cuda_graph_max_bs,
+            cuda_graph_bs=[] if config.model_config.is_hybrid else config.cuda_graph_bs,
+            cuda_graph_max_bs=0 if config.model_config.is_hybrid else config.cuda_graph_max_bs,
             free_memory=init_free_memory,
             max_seq_len=aligned_max_seq_len,
             vocab_size=config.model_config.vocab_size,
             dummy_req=self.dummy_req,
         )
+        self._shared_graph_runners = []
 
     def _init_communication(self, config: EngineConfig) -> torch.distributed.ProcessGroup:
         if config.tp_info.size == 1 or config.use_pynccl:
@@ -153,13 +154,23 @@ class Engine:
         return tp_cpu_group
 
     def _load_weight_state_dict(self, config: EngineConfig) -> Dict[str, torch.Tensor]:
+        if config.quantization not in (None, "fp8"):
+            raise ValueError(f"Unsupported quantization: {config.quantization}")
         if config.use_dummy_weight:
+            if config.quantization is not None:
+                raise ValueError("FP8 requires a serialized checkpoint, not dummy weights")
             return {
                 k: torch.randn_like(v, device=self.device)
                 for k, v in self.model.state_dict().items()
             }
         else:
-            return {k: v.to(self.dtype) for k, v in load_weight(config.model_path, self.device)}
+            return {
+                k: (v if v.dtype == torch.float8_e4m3fn else
+                    v.float() if config.quantization == "fp8" and k.endswith("_scale_inv")
+                    else v.to(self.dtype))
+                for k, v in load_weight(config.model_path, self.device,
+                                        quantization=config.quantization)
+            }
 
     def _determine_num_pages(self, old_free_memory: int, config: EngineConfig) -> int:
         new_free_memory = self._sync_get_memory()[1]
@@ -222,6 +233,9 @@ class Engine:
         return ForwardOutput(next_tokens_gpu, next_tokens_cpu, copy_done_event)
 
     def shutdown(self) -> None:
+        for runner in self._shared_graph_runners:
+            runner.destroy_cuda_graphs()
+        self._shared_graph_runners.clear()
         self.graph_runner.destroy_cuda_graphs()
         torch.distributed.destroy_process_group()
         destroy_distributed()
@@ -236,15 +250,18 @@ def _adjust_config(config: EngineConfig):
         object.__setattr__(config, attr, value)
 
     if config.attention_backend == "auto":
-        backend = "trtllm" if is_sm100_supported() else ("fa,fi" if is_sm90_supported() else "fi")
+        # FlashInfer 0.6.17 TRTLLM accepts SM100/103/107, not every SM >= 100.
+        # Consumer Blackwell (SM120/121) uses the portable FlashInfer backend.
+        arch = torch.cuda.get_device_capability(config.tp_info.rank)
+        backend = "trtllm" if arch in ((10, 0), (10, 3), (10, 7)) else ("fa,fi" if arch == (9, 0) else "fi")
         override("attention_backend", backend)
         logger.info_rank0(f"Auto-selected attention backend: {config.attention_backend}")
 
     if config.model_config.is_hybrid and config.cuda_graph_max_bs != 0:
-        # Recurrent-state capture is not wired up yet; run hybrid decode eagerly.
-        override("cuda_graph_max_bs", 0)
-        override("cuda_graph_bs", [])
-        logger.info_rank0("Hybrid model detected: CUDA graph disabled (eager decode).")
+        # Ordinary serving still has dynamic recurrent-pool indexing. Preserve
+        # the user's capture sizes so a SharedCacheSession can initialize its
+        # graph-compatible backends later, after the engine is constructed.
+        logger.info_rank0("Hybrid serving uses eager decode; shared graphs initialize in Session.")
 
     if "trtllm" in config.attention_backend and config.page_size not in [16, 32, 64]:
         override("page_size", 64)

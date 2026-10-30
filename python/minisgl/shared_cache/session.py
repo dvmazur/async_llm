@@ -238,6 +238,7 @@ class SharedCacheSession:
             sc_rope_base = attn0._rope_base
             gdn0 = _first_gdn(engine)  # Qwen3_5GatedDeltaNet
             self.sc_gdn: SharedCacheGDN | None = SharedCacheGDN(
+                state_dtype=torch.bfloat16 if engine.config.shared_gdn_bf16_state else torch.float32,
                 num_heads=gdn0.num_v_heads,
                 head_k_dim=gdn0.head_k_dim,
                 head_v_dim=gdn0.head_v_dim,
@@ -272,6 +273,42 @@ class SharedCacheSession:
             mrope_section=sc_mrope,
             rope_base=sc_rope_base,
         )
+        self.graph_runner = None
+        self.graph_io = None
+        # Shared graphs are explicit opt-in with the existing EngineConfig
+        # sizes (or a positive max); max=0 is global OFF. Prefill has an explicit
+        # row-capacity catalog, otherwise it keeps its eager path.
+        # Unsupported capacities raise instead of silently switching execution.
+        sizes = engine.config.cuda_graph_bs
+        limit = engine.config.cuda_graph_max_bs
+        prefill_rows = engine.config.shared_cuda_graph_prefill_rows or []
+        if sizes is None and limit is not None and limit > 0:
+            from minisgl.engine.graph import _determine_cuda_graph_bs
+            sizes = _determine_cuda_graph_bs(None, limit, 0)
+        if prefill_rows and limit != 0 and not sizes:
+            raise ValueError('Shared prefill graphs require explicit decode graph sizes or a positive max')
+        if sizes and limit != 0:
+            from minisgl.engine.graph import GraphRunner
+            from .graph import SharedGraphIO
+            if any(bs <= 0 or bs > engine.config.max_running_req for bs in sizes):
+                raise ValueError("Shared graph sizes must be within max_running_req")
+            depth = engine.config.shared_cuda_graph_max_depth
+            if depth < 1:
+                raise ValueError("shared_cuda_graph_max_depth must be positive")
+            if any(not isinstance(rows, int) or rows < 1 for rows in prefill_rows):
+                raise ValueError('Shared prefill graph row capacities must be positive integers')
+            self.graph_io = SharedGraphIO(self, depth, prefill_rows)
+            try:
+                self.graph_runner = GraphRunner(
+                    stream=engine.stream, device=self.device, model=engine.model,
+                    attn_backend=self.graph_io, cuda_graph_bs=sorted(set(sizes)),
+                    cuda_graph_max_bs=max(sizes), free_memory=0,
+                    max_seq_len=engine.max_seq_len, vocab_size=engine.config.model_config.vocab_size,
+                    dummy_req=engine.dummy_req, prefill_graph_rows=prefill_rows)
+            except BaseException:
+                self.graph_io.destroy_capture_graph()
+                raise
+            engine._shared_graph_runners.append(self.graph_runner)
 
     # ------------------------------------------------------------------
     # Public API
@@ -402,6 +439,11 @@ class SharedCacheSession:
         for layer_idx in affine_layers:
             left_pair = left.linear_affine.get(layer_idx)
             right_pair = right.linear_affine.get(layer_idx)
+            if self.sc_gdn is not None and self.sc_gdn.state_dtype == torch.bfloat16:
+                # Also cover externally supplied FP32/debug states. Never let
+                # merge/self-append silently promote the stored summaries.
+                left_pair = tuple(t.to(torch.bfloat16) for t in left_pair) if left_pair else None
+                right_pair = tuple(t.to(torch.bfloat16) for t in right_pair) if right_pair else None
             if left_pair is None:
                 assert right_pair is not None
                 merged_affine[layer_idx] = (right_pair[0].clone(), right_pair[1].clone())
@@ -418,8 +460,6 @@ class SharedCacheSession:
                     A_second=right_pair[0],
                     B_second=right_pair[1],
                 )
-        destination.linear_affine = merged_affine
-
         merged_conv: Dict[int, torch.Tensor] = {}
         conv_layers = set(left.linear_conv_state) | set(right.linear_conv_state)
         for layer_idx in conv_layers:
@@ -430,7 +470,7 @@ class SharedCacheSession:
             merged_conv[layer_idx] = (
                 state if keep_left_state and right_state is None else state.clone()
             )
-        destination.linear_conv_state = merged_conv
+        destination._replace_linear_states(merged_affine, merged_conv)
 
     def _validate_block(self, block: CacheBlock) -> None:
         if block.device != self.device:
@@ -548,10 +588,11 @@ class SharedCacheSession:
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
             mm_token_type_ids=mm_token_type_ids,
+            mrope_rel=mrope_rel,
         )
         if self.max_prefill_rows is not None and _job_rows(job) > self.max_prefill_rows:
             return self._prefill_waves([job], self.max_prefill_rows)[0]
-        if context:
+        if context or (self.graph_io is not None and self.graph_io.prefill_rows):
             # An in-context prefill is just a one-request batch: ``prefill_batch``
             # plans exactly the same two wrappers for a single spec (bit-identical
             # results, and the extra scatter-merge is lost in the noise), so there
@@ -664,6 +705,9 @@ class SharedCacheSession:
         jobs = list(jobs)
         write_ids = {id(job.block) for job in jobs}
         assert len(write_ids) == len(jobs), "two prefills write the same block in one batch"
+        # All graph admission checks precede KV allocation or block publication.
+        graph_buffers = (self.graph_io.select_prefill(jobs)
+                         if self.graph_io is not None and self.graph_io.prefill_rows else None)
 
         specs: List[PrefillSpec] = []
         chains: List[List[CacheBlock]] = []
@@ -712,7 +756,8 @@ class SharedCacheSession:
                 mrope_rel = self._mrope_rel(input_ids, job.mm_token_type_ids, job.image_grid_thw)
             page_starts, token_slots = self._alloc_token_storage(seq_len, write_to=block)
             # The self segment reads the block's whole post-write page list.
-            self_pages = torch.cat([block.page_starts_tensor(), page_starts.to(self.device)])
+            self_pages = torch.tensor(block.page_starts + page_starts.cpu().tolist(),
+                                      dtype=torch.int32, device='cpu')
             specs.append(
                 PrefillSpec(
                     context=context,
@@ -784,7 +829,7 @@ class SharedCacheSession:
         batch.input_ids = torch.cat(ids_list).to(self.device)
         batch.positions = torch.cat(positions)
         batch.out_loc = torch.cat(out_locs)
-        batch.attn_metadata = self.sc_attn.prepare_prefill_batch(specs)
+        batch.attn_metadata = self.sc_attn.prepare_prefill_batch(specs, graph_buffers)
         if need_mrope:
             batch.mrope_positions = torch.cat(mrope_parts, dim=1).to(self.device)
         if pixel_parts or embed_parts:
@@ -969,6 +1014,13 @@ class SharedCacheSession:
             for block in context.cache_view:
                 self._validate_block(block)
         num_workers = group.num_workers
+        if self.graph_runner is not None:
+            if num_workers > self.graph_runner.max_graph_bs:
+                raise ValueError("Decode batch exceeds shared CUDA graph capacity")
+            if any(len(c) > self.graph_io.depth for c in group.cache_structure):
+                raise ValueError("Decode chain exceeds shared CUDA graph depth capacity")
+            if group.max_cache_length() + 1 > self.engine.max_seq_len:
+                raise ValueError("Decode context exceeds shared CUDA graph context capacity")
         input_ids = input_ids.to(dtype=torch.int32).reshape(num_workers).cpu()
 
         # Decide, per (distinct) write block, whether the new token starts a
@@ -1001,7 +1053,13 @@ class SharedCacheSession:
         batch.positions = torch.tensor(write_pos, dtype=torch.int64, device=self.device)
         batch.input_ids = input_ids.to(self.device)
         batch.out_loc = new_token_slots
-        batch.attn_metadata = self.sc_attn.prepare(group, new_page_for_block, new_token_slots)
+        graph_buffers = None
+        if self.graph_runner is not None:
+            self.graph_runner.pad_batch(batch)
+            graph_buffers = self.graph_io.attention[batch.padded_size]
+            self.graph_io.pad_inputs(batch)
+        batch.attn_metadata = self.sc_attn.prepare(
+            group, new_page_for_block, new_token_slots, graph_buffers)
 
         logits = self._forward(
             batch, cache_structure=group.cache_structure, write_to=group.write_to
@@ -1067,8 +1125,8 @@ class SharedCacheSession:
 
         if blocks_needing_page:
             fresh = self.page_allocator.alloc_pages(len(blocks_needing_page))
-            for k, wt in enumerate(blocks_needing_page):
-                new_page_for_block[id(wt)] = int(fresh[k].item())
+            for wt, start in zip(blocks_needing_page, fresh.cpu().tolist()):
+                new_page_for_block[id(wt)] = start
 
         out_loc: List[int] = []
         write_pos: List[int] = []
@@ -1130,15 +1188,40 @@ class SharedCacheSession:
         # affine updates.  ``prefill_segments`` splits a batched prefill's rows
         # per request, since a GDN chain is inherently sequential and each
         # request runs its own scan.  No-op for standard models (sc_gdn is None).
-        if self.sc_gdn is not None and cache_structure is not None:
-            self.sc_gdn.set_context(
-                cache_structure,
-                write_to or [c[-1] for c in cache_structure],
-                prefill_segments=prefill_segments,
-            )
-            ctx.gdn_ar = self.sc_gdn
+        success = False
         try:
+            if self.graph_io is not None:
+                self.graph_io.retire_completed()
+            if self.sc_gdn is not None and cache_structure is not None:
+                self.sc_gdn.set_context(
+                    cache_structure,
+                    write_to or [c[-1] for c in cache_structure],
+                    prefill_segments=prefill_segments,
+                )
+                ctx.gdn_ar = self.sc_gdn
+                if batch.is_decode:
+                    buffers = (self.graph_io.gdn[batch.padded_size]
+                               if self.graph_runner is not None else None)
+                    self.sc_gdn.prepare_decode(
+                        self._model_config.num_linear_layers, self.engine.config.dtype,
+                        **({"buffers": buffers} if buffers is not None else {}))
+                else:
+                    graph_buffers = getattr(batch.attn_metadata, 'graph_buffers', None)
+                    buffers = (self.graph_io.prefill_gdn[graph_buffers.rows]
+                               if graph_buffers is not None else None)
+                    self.sc_gdn.prepare_prefill(self._model_config.num_linear_layers,
+                                                self.engine.config.dtype, batch.input_ids.numel(),
+                                                **({'buffers': buffers} if buffers is not None else {}))
             with ctx.forward_batch(batch):
-                return self.engine.model.forward()
+                if self.graph_runner is not None and self.graph_runner.can_use_cuda_graph(batch):
+                    # Public Session results must not alias replay's reusable logits.
+                    logits = self.graph_runner.replay(batch).clone()
+                else:
+                    logits = self.engine.model.forward()
+            success = True
+            return logits
         finally:
+            if self.sc_gdn is not None:
+                self.sc_gdn.finish_decode(success)
+                self.sc_gdn.finish_prefill(success)
             ctx.gdn_ar = None

@@ -1,8 +1,12 @@
-"""End-to-end cache-block merge test on the full Qwen3.5-9B model."""
+"""End-to-end cache-block merge tests on the small hybrid Qwen3.5-0.8B.
+
+Set MINISGL_E2E_MODEL to reuse a local checkpoint instead of downloading it.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 import torch
@@ -12,7 +16,7 @@ from minisgl.llm import AsyncLLM
 from minisgl.shared_cache import AsyncContext, CacheBlock
 
 
-MODEL_PATH = "Qwen/Qwen3.5-9B"
+MODEL_PATH = os.environ.get("MINISGL_E2E_MODEL", "Qwen/Qwen3.5-0.8B")
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(),

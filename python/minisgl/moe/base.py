@@ -15,4 +15,6 @@ class BaseMoeBackend(ABC):
         renormalize: bool,
         activation: str,
         apply_router_weight_on_input: bool,
+        w1_scale: torch.Tensor | None = None,
+        w2_scale: torch.Tensor | None = None,
     ) -> torch.Tensor: ...

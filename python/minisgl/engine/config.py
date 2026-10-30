@@ -23,6 +23,14 @@ class EngineConfig:
     moe_backend: str = "auto"
     cuda_graph_bs: List[int] | None = None
     cuda_graph_max_bs: int | None = None
+    # Shared decode uses explicit graph sizes; topology stays device metadata.
+    shared_cuda_graph_max_depth: int = 16
+    # Explicit full shared-prefill token-row capacities; None keeps prefill eager.
+    # cuda_graph_max_bs=0 disables both phases, including these profiles.
+    shared_cuda_graph_prefill_rows: List[int] | None = None
+    # Experimental shared GDN A/B and composed S storage. Compose uses BF16
+    # operands / FP32 accumulation; False preserves the FP32/IEEE path.
+    shared_gdn_bf16_state: bool = False
     page_size: int = 1
     memory_ratio: float = 0.9
     distributed_timeout: float = 60.0
@@ -33,6 +41,8 @@ class EngineConfig:
     # Default query-row budget per shared-cache prefill forward; None disables chunking.
     # Read by SharedCacheSession, not by the engine itself.
     max_prefill_rows: int | None = None
+    # Opt-in loading of serialized dynamic block-FP8 checkpoints. None keeps BF16/FP16.
+    quantization: str | None = None
     generation_config: GenerationConfig = None
     distributed_addr: str = "tcp://127.0.0.1:2333"
 
@@ -56,7 +66,7 @@ class EngineConfig:
         generation_config = (
             self.generation_config
             if self.generation_config is not None
-            else self._default_generation_config()
+            else self._default_generation_config
         )
         return SamplingParams.from_hf(generation_config)
 

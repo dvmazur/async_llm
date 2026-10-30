@@ -639,20 +639,41 @@ class TestMixedEquivalence:
 def _subprocess_main(mode: str) -> None:
     """Entry point for ``_run_mode``; not collected by pytest."""
     from minisgl.llm import LLM
+    from minisgl.models.config import ModelConfig
+    from transformers import AutoConfig
+
+    hybrid = ModelConfig.from_hf(AutoConfig.from_pretrained(E2E_MODEL_PATH)).is_hybrid
 
     class CountingLLM(LLM):
         mixed_batches = 0
         total_batches = 0
+
+        def offline_receive_msg(self, blocking=False):
+            if not hybrid:
+                return super().offline_receive_msg(blocking)
+            # Ordinary GDN has no prefix-state checkpoint/continuation support.
+            # Reuse the existing serving-test arrival pattern: one whole prompt
+            # per tick, while previous requests decode. Admission/mixing are real.
+            deferred = self.pending_requests[1:]
+            self.pending_requests = self.pending_requests[:1]
+            try:
+                return super().offline_receive_msg(blocking)
+            finally:
+                self.pending_requests.extend(deferred)
 
         def _schedule_next_batch(self):
             forward_input = super()._schedule_next_batch()
             if forward_input is not None:
                 self.total_batches += 1
                 self.mixed_batches += forward_input.batch.is_mixed
+                if hybrid:
+                    batch = forward_input.batch
+                    assert all(r.cached_len == 0 for r in batch.reqs[:batch.num_prefill])
             return forward_input
 
     llm = CountingLLM(
         E2E_MODEL_PATH,
+        cache_type="naive" if hybrid else "radix",
         max_extend_tokens=E2E_EXTEND_BUDGET,
         max_running_req=8,
         cuda_graph_bs=[2, 4, 8],

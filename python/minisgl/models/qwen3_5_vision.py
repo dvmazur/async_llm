@@ -92,6 +92,13 @@ def _rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
+def _vision_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """Transformers' FP32 rotary arithmetic, with one final activation cast."""
+    xf = x.float()
+    return (xf * cos.float().unsqueeze(1) +
+            _rotate_half(xf) * sin.float().unsqueeze(1)).to(x.dtype)
+
+
 # ----------------------------------------------------------------------------
 # Small building blocks
 # ----------------------------------------------------------------------------
@@ -144,10 +151,8 @@ class _VisionAttention(BaseOP):
         n = x.shape[0]
         H, D = self._num_heads, self._head_dim
         q, k, v = self.qkv.forward(x).reshape(n, 3, H, D).permute(1, 0, 2, 3).unbind(0)  # each (n,H,D)
-        c = cos.unsqueeze(1)  # (n,1,D)
-        s = sin.unsqueeze(1)
-        q = (q * c) + (_rotate_half(q) * s)
-        k = (k * c) + (_rotate_half(k) * s)
+        q = _vision_rope(q, cos, sin)
+        k = _vision_rope(k, cos, sin)
         outs: List[torch.Tensor] = []
         off = 0
         for L in seg_lens:
@@ -232,8 +237,8 @@ class Qwen3_5VisionModel(BaseOP):
             )
         rot = (pos_ids[..., None].float() * self._inv_freq).flatten(1)  # (N, rope_dim)
         emb = torch.cat((rot, rot), dim=-1)  # (N, head_dim)
-        cos = emb.cos().to(x.dtype)
-        sin = emb.sin().to(x.dtype)
+        cos = emb.cos()
+        sin = emb.sin()
 
         for blk in self.blocks.op_list:
             x = blk.forward(x, cos, sin, seg_lens)

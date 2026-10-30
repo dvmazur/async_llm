@@ -1,79 +1,127 @@
 # async-thoughts
 
-AsyncReasoning-style "async thoughts" demo on minisgl's shared cache.
+A standalone [AsyncReasoning](https://arxiv.org/abs/2512.10931) demo using
+minisgl's shared cache. A thinker generates private reasoning while a writer
+produces the answer. The terminal shows both streams in different colors and
+logs when writing pauses or resumes.
 
-Port of yandex-research/AsyncReasoning's
-[`notebooks/demo_async_thoughts.ipynb`](https://github.com/yandex-research/AsyncReasoning/blob/main/notebooks/demo_async_thoughts.ipynb)
-to a standalone, installable package driven by minisgl's in-process async
-cache API — no HTTP server, no notebook.  All inference goes through the
-unified `AsyncLLM.forward` method: conditional
-prefill for the cache-block setup, decode-mode custom-generate loops for the
-two streams, and a throwaway prefill for the probe.
+The readiness probe reuses the live thinker and writer cache blocks and encodes
+only a short yes/no question. It runs in a separate coroutine every 20 thinking
+tokens or at a thinker paragraph boundary. A writer paragraph pauses writing
+until the probe allows it to continue. When thinking ends or reaches its token
+budget, the writer finishes up to its own budget. No additional user inputs or
+server are needed.
 
-Two streams run concurrently against the same model:
+## Install and run
 
-- **thinker** — internal chain-of-thought reasoning between `<think>...</think>`
-- **writer** — the user-facing answer, which sees the thinker's partial reasoning
-
-A periodic mode-switching probe decides whether the thinker has produced enough
-new reasoning to let the writer continue, flipping between a single-worker
-`thinker_only` decode and a batched two-worker `thinker_and_writer` decode.
-
-## Install
-
-`minisgl` (the parent repo) must already be installed in the environment. Then,
-from the repo root:
+Install the parent project first (see the [main README](../../README.md)), then
+run these commands from the repository root:
 
 ```bash
 uv pip install -e scripts/async_thoughts
+uv run --no-sync async-thoughts
+uv run --no-sync async-thoughts --model Qwen/Qwen3.5-0.8B \
+  --problem "What is 17 * 23?" --max-think-tokens 192 --max-answer-tokens 192
 ```
 
-## Run
-
-As an installed console script:
-
-```bash
-async-thoughts
-async-thoughts --problem "What is 17 * 23?"
-async-thoughts --max-steps 400 --probe-period 20
-```
-
-Or as a module (no install needed, run from `scripts/async_thoughts/`):
-
-```bash
-uv run python -m async_thoughts
-```
-
-All defaults live in `async_thoughts/config.py`. The model can also be set via
-the `MINISGL_DEMO_MODEL` environment variable. Pick the GPU with
-`CUDA_VISIBLE_DEVICES`.
+The installed package also supports `uv run --no-sync python -m async_thoughts`.
+A CUDA-capable GPU is required. The default model is `Qwen/Qwen3.5-27B` in BF16;
+use a smaller model if GPU memory is limited. Decode and short probe prefills use
+CUDA graphs, including for Qwen3.5's hybrid attention.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--model` | `Qwen/Qwen3-32B` | HF model path (or `MINISGL_DEMO_MODEL`). |
-| `--problem` | polynomial-eval problem | Question for the assistant to solve. |
-| `--max-steps` | `800` | Hard cap on total decode steps. |
-| `--probe-period` | `30` | Run the mode-switching probe every N steps. |
-| `--memory-ratio` | `0.9` | Fraction of free GPU memory for weights + KV cache. |
+| `--model` | `Qwen/Qwen3.5-27B` | Model name or local path; also settable with `MINISGL_DEMO_MODEL`. |
+| `--problem` | polynomial evaluation | Question for the assistant to solve. |
+| `--max-think-tokens` | `1024` | Thinker token budget; `--max-steps` is a backward-compatible alias. |
+| `--max-answer-tokens` | `1024` | Writer token budget. |
+| `--probe-period` | `20` | Readiness check interval in thinking tokens; paragraph boundaries also trigger checks. |
+| `--memory-ratio` | `0.85` | Engine GPU memory fraction; lower it to leave more headroom. |
+| `--page-size` | `1` | Tokens per cache page. |
+| `--trace-output` | off | Save request-batch traces and aligned sampled-token targets to a new JSON file. |
 
-### Notes
+Defaults are defined in `async_thoughts/demo.py`.
 
-- Requires a CUDA-capable GPU; the demo exits if `torch.cuda` is unavailable.
-- `Qwen/Qwen3-32B` at bf16 fits on a single 80 GiB GPU (~64 GiB weights). Lower
-  `--memory-ratio` to ~`0.3` for 8B-class models if you also keep another model
-  resident.
-- Smaller Qwen3 models tend to starve the writer because the probe margin is too
-  small to keep `thinker_and_writer` active for more than one decode step at a time.
+## Record a demo and train from it
 
-### Qwen3.5 (hybrid Gated-DeltaNet) models
-
-Qwen3.5 models are supported and run through the same `SharedCacheSession`: their
-3-in-4 linear-attention layers compose across shared-cache blocks via the GDN
-affine cache, while the 1-in-4 full-attention layers use the (partial-RoPE, gated)
-shared-cache attention. They decode eagerly — CUDA graph is auto-disabled for
-hybrid models. Even small variants keep the writer active, so they make quick demos:
+After installing the demo, record a short run from the repository root:
 
 ```bash
-async-thoughts --model /path/to/Qwen3.5-0.8B --max-steps 140 --probe-period 20
-async-thoughts --model /path/to/Qwen3.5-27B --memory-ratio 0.8
+uv run --no-sync async-thoughts \
+  --model Qwen/Qwen3.5-0.8B --memory-ratio 0.3 \
+  --max-think-tokens 32 --max-answer-tokens 16 --probe-period 4 \
+  --trace-output training_runs/async_thoughts/trace.json
 ```
+
+The file records the actual scheduled prefill/decode requests, ordered cache
+snapshots, probe requests, and block clears. Each thinker/writer sample becomes
+the target of the input row whose logits produced it, including terminal tokens
+and the final sample that has not yet been written to the cache. Targets use
+`-100` for prefills, probe questions, and flush-only forwards. Probe decisions
+are not training labels. Full vocabulary logits are not serialized; the file
+stores each supervised target's raw, unmasked inference log-probability.
+
+Recording wraps the session before prefill and observes `async_generate` results.
+It does not run additional model forwards. Capturing target log-probabilities
+adds synchronization overhead and can affect asynchronous scheduling; the trace
+preserves the schedule that actually executed. A failed run does not export a
+dataset, and an existing output file is never overwritten.
+
+The JSON is accepted directly by the existing trainer. One update exercises
+parallel forward, backward, and an optimizer step, then saves an HF checkpoint:
+
+```bash
+uv run --no-sync python -m minisgl.training.sft train \
+  --data training_runs/async_thoughts/trace.json \
+  --output training_runs/async_thoughts/checkpoint --steps 1 --lr 1e-6 \
+  --gradient-checkpointing
+```
+
+The trainer checks recorded target log-probabilities against FP32 replay before
+updating weights. Demo inference uses BF16, so this is a tolerance check rather
+than a bitwise comparison. Start with a small checkpoint: full FP32 training,
+gradients, and AdamW states need substantially more memory than demo inference.
+Use fresh output paths for another run. More updates overfit this trajectory;
+the command does not measure improvements in answer quality. The small learning
+rate matters for short greedy rollouts: the default `3e-5` overshot on the
+Qwen3.5-0.8B demo trace, while `1e-6` decreased its loss over five updates.
+
+For direct access to forward/backward, after the inference process exits:
+
+```python
+import json
+from pathlib import Path
+
+import torch
+from transformers import AutoConfig, AutoModelForCausalLM
+
+from minisgl.training.replay import Replay, forward
+from minisgl.training.sft import supervised_loss
+from minisgl.training.trace import Trace
+
+data = json.loads(Path("training_runs/async_thoughts/trace.json").read_text())
+example = data["examples"][0]
+trace = Trace.from_dict(example["trace"])
+replay = Replay.from_trace(trace, device="cuda")
+targets = torch.tensor(example["targets"], device="cuda")
+config = AutoConfig.from_pretrained(data["model"]).get_text_config()
+model = AutoModelForCausalLM.from_pretrained(
+    data["model"], config=config, dtype=torch.float32
+).cuda().train()
+
+# Inspect only supervised rows; returned rows follow original trace order.
+with torch.no_grad():
+    logits = forward(model, replay, rows=(targets != -100).nonzero().flatten())
+print(logits.shape)
+del logits
+
+model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+model.zero_grad(set_to_none=True)
+loss = supervised_loss(model, replay, targets) / (targets != -100).sum()
+loss.backward()
+print("loss:", loss.item())
+```
+
+The supervised loss projects vocabulary logits in checkpointed chunks; it still
+replays the context tokens needed by the supervised rows. It does not apply a
+global next-token shift, which would misalign interleaved workers.

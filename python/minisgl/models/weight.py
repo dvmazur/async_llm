@@ -33,7 +33,7 @@ _EXPERT_PATTERN = re.compile(r"^(?P<prefix>.+\.experts)\.(?P<idx>\d+)\.(?P<name>
 
 def _shard_tensor(key: str, value: torch.Tensor, r: int, n: int, num_kv_heads: int):
     """Extract rank r's shard from a single tensor. Returns a contiguous copy."""
-    packed_key = key.removesuffix(".weight")
+    packed_key = key.removesuffix("_scale_inv").removesuffix(".weight")
     if packed_key.endswith(".experts.gate_up_proj"):
         # Qwen3.5-MoE checkpoints already pack all experts and both projections:
         # [experts, gate + up, hidden].  Shard gate and up independently so every
@@ -73,8 +73,8 @@ def _get_merge_info(key: str):
 
 
 def _is_plus_one_norm(name: str) -> bool:
-    """Qwen3.5 standard RMSNorms use the ``(1 + weight)`` convention (like Qwen3-Next),
-    so we fold the +1 into the weight to reuse the plain flashinfer rmsnorm kernels.
+    """Identify raw Qwen3.5 ``(1 + weight)`` RMSNorm weights for diagnostics.
+    The +1 is evaluated in FP32 by the layer, never folded into stored BF16.
     The gated ``linear_attn.norm`` keeps plain weights and is excluded."""
     return (
         name.endswith(".input_layernorm.weight")
@@ -92,18 +92,34 @@ def _get_expert_stack_info(key: str) -> tuple[str, int] | None:
         return None
 
     packed_name = match.group("name")
-    if packed_name.endswith(".weight"):
+    if packed_name.endswith(".weight_scale_inv"):
+        packed_name = packed_name.removesuffix(".weight_scale_inv") + "_scale_inv"
+    elif packed_name.endswith(".weight"):
         packed_name = packed_name.removesuffix(".weight")
     return f"{match.group('prefix')}.{packed_name}", int(match.group("idx"))
 
 
-def load_weight(model_path: str, device: torch.device) -> Iterator[Tuple[str, torch.Tensor]]:
+def load_weight(model_path: str, device: torch.device, *,
+                quantization: str | None = None) -> Iterator[Tuple[str, torch.Tensor]]:
     """Streaming weight loader. Yields (name, tensor) pairs already sharded, merged,
     and on device. Peak CPU memory: one full tensor + a small merge buffer."""
     from .config import ModelConfig
 
     model_folder = download_hf_weight(model_path)
-    config = ModelConfig.from_hf(cached_load_hf_config(model_path))
+    hf_config = cached_load_hf_config(model_path)
+    config = ModelConfig.from_hf(hf_config)
+    quant_config = getattr(hf_config, "quantization_config", None)
+    if quantization not in (None, "fp8"):
+        raise ValueError(f"Unsupported quantization: {quantization}")
+    if quant_config and quantization is None:
+        raise ValueError("Quantized checkpoint requires explicit quantization='fp8'")
+    if quantization == "fp8":
+        if (not isinstance(quant_config, dict)
+                or quant_config.get("quant_method") != "fp8"
+                or quant_config.get("fmt", "e4m3") != "e4m3"
+                or quant_config.get("activation_scheme") != "dynamic"
+                or quant_config.get("weight_block_size") != [128, 128]):
+            raise ValueError("Expected serialized dynamic E4M3 weights with 128x128 block scales")
     files = glob.glob(f"{model_folder}/*.safetensors")
     files = [f for f in files if not f.endswith("consolidated.safetensors")] or files
     tp_info = get_tp_info()
@@ -126,14 +142,13 @@ def load_weight(model_path: str, device: torch.device) -> Iterator[Tuple[str, to
                     if name.startswith("model.visual.") and not config.is_multimodal:
                         continue
                 raw = f.get_tensor(name)
+                if raw.dtype == torch.float8_e4m3fn and quantization != "fp8":
+                    raise ValueError(f"FP8 weight requires quantization='fp8': {name}")
                 if config.is_hybrid:
                     name = name.replace("model.language_model.", "model.", 1)
                 name = name.removeprefix("language_model.")
                 tensor = _shard_tensor(name, raw, tp_info.rank, tp_info.size, config.num_kv_heads)
                 del raw
-                if config.is_hybrid and _is_plus_one_norm(name):
-                    tensor = tensor + 1.0
-
                 if (info := _get_merge_info(name)) is None:
                     out = (name, tensor)
                 else:

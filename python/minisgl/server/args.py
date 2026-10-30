@@ -66,6 +66,8 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     from minisgl.moe import SUPPORTED_MOE_BACKENDS
 
     parser = argparse.ArgumentParser(description="MiniSGL Server Arguments")
+    parser.add_argument('--shared-gdn-bf16-state', action='store_true',
+                        help='Experimental shared GDN BF16 A/B/S storage and BF16 compose with FP32 accumulation; not the serving state pool.')
 
     parser.add_argument(
         "--model-path",

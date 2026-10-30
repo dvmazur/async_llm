@@ -17,6 +17,11 @@ def _rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
+def _sigmoid_output_gate(x: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
+    """SGLang's gate rounding, expressed without a fused kernel."""
+    return (x.float() * gate.float().sigmoid()).to(x.dtype)
+
+
 class Qwen3_5Attention(BaseOP):
     """Qwen3.5 full-attention layer: GQA + per-head q/k RMSNorm, partial (neox) RoPE,
     and a sigmoid output gate (q_proj is 2x width, the second half is the gate).
@@ -41,8 +46,8 @@ class Qwen3_5Attention(BaseOP):
         self.qkv_proj = LinearReplicated(
             config.hidden_size, 2 * self.qo_dim + 2 * self.kv_dim, has_bias=False
         )
-        self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps, weight_plus_one=True)
+        self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps, weight_plus_one=True)
         self.o_proj = LinearOProj(self.qo_dim, config.hidden_size, has_bias=False)
 
     def _apply_rope(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
@@ -122,7 +127,7 @@ class Qwen3_5Attention(BaseOP):
                 k = self._apply_rope(k, ctx.batch.positions)
             o = ctx.attn_backend.forward(q, k.reshape(-1, self.kv_dim), v, self._kv_idx, ctx.batch)
 
-        o = o.view(-1, self.num_qo_heads, self.head_dim) * torch.sigmoid(gate)
+        o = _sigmoid_output_gate(o.view(-1, self.num_qo_heads, self.head_dim), gate)
         return self.o_proj.forward(o.reshape(-1, self.qo_dim))
 
 

@@ -29,9 +29,9 @@ class Qwen3_5DecoderLayer(BaseOP):
             self.self_attn = Qwen3_5Attention(config, kv_idx)
             self._is_linear = False
         self.mlp = self.mlp_cls(config)
-        self.input_layernorm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps, weight_plus_one=True)
         self.post_attention_layernorm = RMSNormFused(
-            size=config.hidden_size, eps=config.rms_norm_eps
+            size=config.hidden_size, eps=config.rms_norm_eps, weight_plus_one=True
         )
         self._layer_id = layer_id
 
@@ -75,7 +75,7 @@ class Qwen3_5Model(BaseOP):
             else:
                 kv_idx += 1
         self.layers = OPList(layers)
-        self.norm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = RMSNormFused(size=config.hidden_size, eps=config.rms_norm_eps, weight_plus_one=True)
 
     def forward(
         self,
@@ -100,8 +100,11 @@ class Qwen3_5Model(BaseOP):
         if image_embeds is not None:
             assert mm_token_type_ids is not None
             image_mask = mm_token_type_ids == 1  # 0 - text, 1 - image, 2 - video, etc
-            x = x.clone()
-            x[image_mask] = image_embeds.to(x.dtype)
+            if batch.image_embeds_token_aligned:
+                x = torch.where(image_mask[:, None], image_embeds.to(x.dtype), x)
+            else:
+                x = x.clone()
+                x[image_mask] = image_embeds.to(x.dtype)
             if mrope_positions is None:
                 assert pixel_values is not None, "precomputed embeds need mrope_positions"
                 # This fallback reads the batch as ONE sequence: get_rope_index knows

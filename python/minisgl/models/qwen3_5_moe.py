@@ -13,6 +13,15 @@ if TYPE_CHECKING:
     from .config import ModelConfig
 
 
+def _shared_expert_gate(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """Keep the scalar gate FP32 through the expert sum, as in SGLang.
+
+    A BF16 Linear followed by BF16 sigmoid loses two intermediate roundings.
+    This is intentionally eager arithmetic, not a new fused implementation.
+    """
+    return (x.float() * weight.float()).sum(-1, keepdim=True).sigmoid()
+
+
 class Qwen3_5MoeMLP(BaseOP):
     """Qwen3.5-MoE routed experts plus gated shared expert."""
 
@@ -51,10 +60,10 @@ class Qwen3_5MoeMLP(BaseOP):
         # The fused MoE backend may reuse ``hidden_states`` as its output buffer.
         # Compute every shared-expert input before dispatching routed experts.
         shared = self.shared_expert.forward(hidden_states)
-        shared_gate = torch.sigmoid(self.shared_expert_gate.forward(hidden_states))
+        shared_gate = _shared_expert_gate(hidden_states, self.shared_expert_gate.weight)
         router_logits = self.gate.forward(hidden_states)
         routed = self.experts.forward(hidden_states, router_logits)
-        return (routed + shared_gate * shared).view(num_tokens, hidden_dim)
+        return (routed.float() + shared_gate * shared.float()).to(x.dtype).view(num_tokens, hidden_dim)
 
 
 class Qwen3_5MoeDecoderLayer(Qwen3_5DecoderLayer):

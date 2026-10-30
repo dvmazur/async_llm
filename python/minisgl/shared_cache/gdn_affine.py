@@ -18,7 +18,8 @@ worker's chain of shared blocks fold into a single initial recurrent state.
 
 State convention here is the **block convention** ``[B, H, d_v, d_k]`` (the
 transpose of the HF kernel state ``[B, H, d_k, d_v]``), chosen so right-multiply
-by ``A`` is a plain ``matmul``.  Everything is meant to run in float32.
+by ``A`` is a plain ``matmul``. Default storage/math is float32; optional BF16
+composition accumulates in FP32 and rounds at the stored-summary boundary.
 
 Ported from AsyncReasoning ``shared_cache/gdn_cache_block.py`` (ar_on_gdn).
 """
@@ -109,6 +110,17 @@ def compose_gdn_affines(
 ) -> Tuple[Tensor, Tensor]:
     """Compose ``S_mid = S_in A1 + B1`` then ``S_out = S_mid A2 + B2``:
     ``A = A1 A2``, ``B = B1 A2 + B2``."""
+    if A_first.dtype == torch.bfloat16:
+        # CUDA bmm uses BF16 operands with FP32 output/accumulation. Add B in
+        # FP32 and round only the final stored summary, just like compose_level.
+        def mm(x, y):
+            if x.is_cuda:
+                return torch.bmm(x.flatten(0, 1), y.flatten(0, 1),
+                                 out_dtype=torch.float32).reshape(*x.shape[:-1], y.shape[-1])
+            return torch.matmul(x.float(), y.float())
+        A = mm(A_first, A_second).to(torch.bfloat16)
+        B = (mm(B_first, A_second) + B_second.float()).to(torch.bfloat16)
+        return A, B
     A = torch.matmul(A_first, A_second)
     B = torch.matmul(B_first, A_second)
     B.add_(B_second)
