@@ -12,12 +12,12 @@ from .trace import Trace
 
 @dataclass
 class Replay:
-    """Spans: (source start/end, block offset); reads: (version, start/end, query position)."""
+    """Token spans and cache reads with scalar or three-axis rotary coordinates."""
 
     input_ids: torch.Tensor
     order: torch.Tensor
     spans: list[list[tuple[int, int, int]]]
-    reads: list[list[tuple[int, int, int, int]]]
+    reads: list[list[tuple[int, int, int, int | tuple[int, int, int]]]]
     copies: list[list[tuple[int, int, int]]]
     query_chunk_size: int = 128
     trace: Trace | None = None
@@ -27,31 +27,46 @@ class Replay:
     gdn_read_backend: str = "torch"
     attention_checkpointing: bool = True
     cache_plans: bool = True
+    rope_positions: torch.Tensor | None = None
+    rope_offsets: list[list[int]] | None = None
     _gdn: dict = field(default_factory=dict, repr=False)
     _attention: dict = field(default_factory=dict, repr=False)
 
-    def source_spans(self, version, start, end):
-        stack = [(version, start, end, 0)]
+    def source_spans(self, version, start, end, with_rope=False):
+        stack = [(version, start, end, 0, 0)]
         while stack:
-            version, start, end, offset = stack.pop()
+            version, start, end, offset, rope_offset = stack.pop()
             if version < 0:
-                yield start, end, offset
+                yield (start, end, offset, rope_offset) if with_rope else (start, end, offset)
                 continue
             for left, right, position in reversed(self.spans[version]):
                 lo, hi = max(start, position), min(end, position + right - left)
                 if lo < hi:
-                    stack.append((-1, left + lo - position, left + hi - position, offset + lo))
-            for parent, length, position in reversed(self.copies[version]):
+                    stack.append(
+                        (-1, left + lo - position, left + hi - position, offset + lo, rope_offset)
+                    )
+            for index in range(len(self.copies[version]) - 1, -1, -1):
+                parent, length, position = self.copies[version][index]
                 lo, hi = max(start, position), min(end, position + length)
                 if lo < hi:
-                    stack.append((parent, lo - position, hi - position, offset + position))
+                    shift = self.rope_offsets[version][index] if with_rope else 0
+                    stack.append(
+                        (
+                            parent,
+                            lo - position,
+                            hi - position,
+                            offset + position,
+                            rope_offset + shift,
+                        )
+                    )
 
     @torch.inference_mode(False)
     def to(self, device):
         input_ids, order = self.input_ids.to(device), self.order.to(device)
         if input_ids is self.input_ids and order is self.order:
             return self
-        return replace(self, input_ids=input_ids, order=order)
+        positions = None if self.rope_positions is None else self.rope_positions.to(device)
+        return replace(self, input_ids=input_ids, order=order, rope_positions=positions)
 
     @classmethod
     @torch.inference_mode(False)
@@ -75,8 +90,9 @@ class Replay:
             raise ValueError("gdn_read_mode must be expanded or factorized")
         if gdn_read_backend not in {"torch", "triton"}:
             raise ValueError("gdn_read_backend must be torch or triton")
-        if trace.multimodal:
-            raise NotImplementedError("Multimodal training replay is not implemented")
+        from .mrope import MropeLayout
+
+        layout = MropeLayout(trace) if trace.multimodal else None
         tokens = trace.tokens
         if not tokens:
             raise ValueError("Cannot replay an empty trace")
@@ -111,6 +127,8 @@ class Replay:
                 if length:
                     parents.append((parent, length, position))
                     position += length
+            if layout is not None:
+                layout.replace(block, sources, refs)
             current[block] = len(spans)
             spans.append([])
             copies.append(parents)
@@ -133,6 +151,9 @@ class Replay:
             for row, token in group:
                 if token.block not in current:
                     replace(token.block)
+            if layout is not None:
+                layout.begin_step(step)
+            for row, token in group:
                 version = current[token.block]
                 if token.position != lengths[version]:
                     raise ValueError("Writes must append to a contiguous block span")
@@ -162,6 +183,11 @@ class Replay:
                     entries.append(
                         (current[token.block], token.position, token.position + 1, token.position)
                     )
+                if layout is not None:
+                    entries = [
+                        (*entry[:3], position)
+                        for entry, position in zip(entries, layout.queries[row], strict=True)
+                    ]
                 rows.append(entries)
 
         for update in trace.updates[update_index:]:
@@ -180,11 +206,24 @@ class Replay:
             gdn_read_mode=gdn_read_mode,
             gdn_cache_reused=gdn_cache_reused,
             gdn_read_backend=gdn_read_backend,
+            rope_positions=(
+                None if layout is None else torch.tensor(layout.keys, device=device)[order]
+            ),
+            rope_offsets=None if layout is None else layout.copy_offsets,
         )
 
 
-def rotate(x, positions, inv_freq):
-    angles = positions.float()[:, None] * inv_freq.float()[None, :]
+def rotate(x, positions, inv_freq, mrope_section=None):
+    if positions.ndim == 2:
+        if mrope_section is None:
+            raise ValueError("Three-axis positions require an mRoPE model")
+        frequencies = positions.float()[..., None] * inv_freq.float()
+        angles = frequencies[:, 0].clone()
+        for axis in (1, 2):
+            section = slice(axis, mrope_section[axis] * 3, 3)
+            angles[:, section] = frequencies[:, axis, section]
+    else:
+        angles = positions.float()[:, None] * inv_freq.float()[None, :]
     cos, sin = angles.cos()[:, None, :], angles.sin()[:, None, :]
     width = 2 * inv_freq.numel()
     left, right = x[..., :width].float().chunk(2, dim=-1)
@@ -192,24 +231,31 @@ def rotate(x, positions, inv_freq):
     return torch.cat((rotated.to(x.dtype), x[..., width:]), -1)
 
 
-def attention_chunk(q, k, v, inv_freq, *, replay, blocks, entries, scaling):
+def attention_chunk(q, k, v, inv_freq, *, replay, blocks, entries, scaling, mrope_section=None):
     groups = q.shape[1] // k.shape[1]
-    sources, positions = [], []
+    sources, positions, rope_positions = [], [], []
     for version, lo, hi, _ in blocks:
         positions.append(torch.arange(lo, hi, device=q.device))
-        for start, end, _ in replay.source_spans(version, lo, hi):
-            sources.append(torch.arange(start, end, device=q.device))
+        if replay.rope_positions is None:
+            for start, end, _ in replay.source_spans(version, lo, hi):
+                sources.append(torch.arange(start, end, device=q.device))
+        else:
+            for start, end, _, shift in replay.source_spans(version, lo, hi, with_rope=True):
+                sources.append(torch.arange(start, end, device=q.device))
+                rope_positions.append(replay.rope_positions[start:end] + shift)
     sources, positions = torch.cat(sources), torch.cat(positions)
     key_sizes = [hi - lo for _, lo, hi, _ in blocks]
     row_sizes = [count for _, _, _, count in blocks]
-    queries = rotate(q[entries[:, 0]], entries[:, 3], inv_freq).split(row_sizes)
-    keys = rotate(k[sources], positions, inv_freq).split(key_sizes)
+    query_positions = entries[:, 3:] if rope_positions else entries[:, 3]
+    key_positions = torch.cat(rope_positions) if rope_positions else positions
+    queries = rotate(q[entries[:, 0]], query_positions, inv_freq, mrope_section).split(row_sizes)
+    keys = rotate(k[sources], key_positions, inv_freq, mrope_section).split(key_sizes)
     values = v[sources].transpose(0, 1)
     scores = []
     for query, key, position, entry in zip(
         queries, keys, positions.split(key_sizes), entries.split(row_sizes), strict=True
     ):
-        rows, starts, ends, _ = entry.unbind(1)
+        rows, starts, ends = entry[:, :3].unbind(1)
         query = query.reshape(-1, k.shape[1], groups, q.shape[-1]).permute(1, 2, 0, 3)
         score = (query.flatten(1, 2) @ key.permute(1, 2, 0)).view(k.shape[1], groups, len(rows), -1)
         score = score.float() * scaling
@@ -225,7 +271,7 @@ def attention_chunk(q, k, v, inv_freq, *, replay, blocks, entries, scaling):
     return output.permute(2, 0, 1, 3).flatten(1)
 
 
-def attention(q, k, v, replay, inv_freq, scaling):
+def attention(q, k, v, replay, inv_freq, scaling, mrope_section=None):
     cache_key = (q.device, replay.query_chunk_size)
     if cache_key not in replay._attention:
         chunks = []
@@ -236,8 +282,9 @@ def attention(q, k, v, replay, inv_freq, scaling):
                 for version, left, right, position in reads:
                     occurrence = occurrences.get(version, 0)
                     occurrences[version] = occurrence + 1
+                    position = (position,) if isinstance(position, int) else position
                     grouped.setdefault((version, occurrence), []).append(
-                        (row, left, right, position)
+                        (row, left, right, *position)
                     )
             blocks, entries = [], []
             for (version, _), reads in grouped.items():
@@ -252,7 +299,13 @@ def attention(q, k, v, replay, inv_freq, scaling):
     for query, (blocks, entries) in zip(
         q.split(replay.query_chunk_size), replay._attention[cache_key], strict=True
     ):
-        kwargs = {"replay": replay, "blocks": blocks, "entries": entries, "scaling": scaling}
+        kwargs = {
+            "replay": replay,
+            "blocks": blocks,
+            "entries": entries,
+            "scaling": scaling,
+            "mrope_section": mrope_section,
+        }
         if (
             replay.attention_checkpointing
             and torch.is_grad_enabled()
@@ -268,7 +321,16 @@ def attention(q, k, v, replay, inv_freq, scaling):
 
 
 def replay_attention(
-    module, query, key, value, attention_mask, scaling, replay=None, inv_freq=None, **kwargs
+    module,
+    query,
+    key,
+    value,
+    attention_mask,
+    scaling,
+    replay=None,
+    inv_freq=None,
+    mrope_section=None,
+    **kwargs,
 ):
     if query.shape[0] != 1:
         raise ValueError("Replay packs all tokens into one sequence")
@@ -279,6 +341,7 @@ def replay_attention(
         replay,
         inv_freq,
         scaling,
+        mrope_section,
     )
     return output.view(1, query.shape[2], query.shape[1], query.shape[3]), None
 
@@ -362,14 +425,20 @@ def _forward(model, replay: Replay, rows, hidden_only):
         indices = indices[rows]
     if not hidden_only:
         kwargs["logits_to_keep"] = indices
+    if replay.trace is not None and replay.trace.multimodal:
+        from .images import inputs_embeds
+
+        kwargs["inputs_embeds"] = inputs_embeds(model, replay)[None]
+    else:
+        kwargs["input_ids"] = replay.input_ids[None]
     output = (backbone if hidden_only else model)(
-        input_ids=replay.input_ids[None],
         # Identity native RoPE; the attention backend applies block-relative rotations.
         position_ids=torch.zeros_like(replay.input_ids)[None],
         attention_mask={"full_attention": None, "linear_attention": None},
         use_cache=False,
         replay=replay,
         inv_freq=rotary.inv_freq,
+        mrope_section=getattr(rotary, "mrope_section", None),
         return_dict=True,
         **kwargs,
     )

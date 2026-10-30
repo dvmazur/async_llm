@@ -1,6 +1,9 @@
+import json
 from copy import deepcopy
+from dataclasses import asdict, replace
 from math import ceil
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
@@ -9,9 +12,92 @@ from minisgl.training import replay as replay_module
 from minisgl.training import sft
 from minisgl.training.gdn import GDNReplay
 from minisgl.training.replay import Replay
+from minisgl.training.trace import ForwardBatch, ForwardRequest, TensorData, Trace
 from test_training import mutation_trace, tiny_model
 from test_training_gdn import tiny_hybrid
 from transformers import Qwen3_5ForCausalLM
+
+
+@pytest.mark.parametrize("kind", ["text", "pixels", "mixed_pixels"])
+def test_sft_loads_and_saves_image_model_and_processor(monkeypatch, tmp_path, kind):
+    request = ForwardRequest((1, 2, 3), 0, 0, ((0, 0),))
+    text = Trace(batches=[ForwardBatch(0, "prefill", (request,))], steps=1)
+    traces = [text]
+    if kind != "text":
+        request = replace(
+            request,
+            input_ids=(30, 29, 31),
+            mm_token_type_ids=TensorData.capture(torch.tensor([0, 1, 0])),
+            mrope_positions=TensorData.capture(torch.arange(3).expand(3, -1)),
+            pixel_values=TensorData.capture(torch.zeros(4, 12)),
+            image_grid_thw=TensorData.capture(torch.tensor([[1, 2, 2]])),
+        )
+        image = Trace(batches=[ForwardBatch(0, "prefill", (request,))], steps=1)
+        traces = [text, image] if kind.startswith("mixed_") else [image]
+    data = tmp_path / "traces.json"
+    data.write_text(
+        json.dumps(
+            {
+                "model": "tiny-image-model",
+                "examples": [
+                    {
+                        "trace": asdict(trace),
+                        "targets": [-100, -100, 2],
+                        "logprobs": [None, None, -1.0],
+                    }
+                    for trace in traces
+                ],
+            }
+        )
+    )
+    model = torch.nn.Linear(1, 1)
+    monkeypatch.setattr(model, "cuda", lambda: model)
+    model.save_pretrained = Mock()
+    config = Mock()
+    loaders = {}
+    for name in (
+        "AutoConfig",
+        "AutoModelForCausalLM",
+        "AutoModelForImageTextToText",
+        "AutoTokenizer",
+        "AutoProcessor",
+    ):
+        loaders[name] = Mock()
+        monkeypatch.setattr(sft, name, loaders[name])
+    loaders["AutoConfig"].from_pretrained.return_value = config
+    for name in ("AutoModelForCausalLM", "AutoModelForImageTextToText"):
+        loaders[name].from_pretrained.return_value = model
+    evaluation = {
+        "loss": 1.0,
+        "accuracy": 0.0,
+        "examples": [{"nll": [1.0], "loss": 1.0, "accuracy": 0.0}] * len(traces),
+    }
+    monkeypatch.setattr(sft, "evaluate", Mock(return_value=evaluation))
+    monkeypatch.setattr(sft, "supervised_loss", lambda *args, **kwargs: model.weight.square().sum())
+    output = tmp_path / "checkpoint"
+    sft.train(
+        SimpleNamespace(
+            data=data, output=output, gradient_checkpointing=False, lr=1e-3, steps=1, seed=7
+        )
+    )
+    multimodal = kind != "text"
+    selected = "AutoModelForImageTextToText" if multimodal else "AutoModelForCausalLM"
+    unused = "AutoModelForCausalLM" if multimodal else "AutoModelForImageTextToText"
+    loaders[selected].from_pretrained.assert_called_once_with(
+        "tiny-image-model",
+        config=config if multimodal else config.get_text_config.return_value,
+        dtype=torch.float32,
+    )
+    loaders[unused].from_pretrained.assert_not_called()
+    assert config.get_text_config.call_count == int(not multimodal)
+    processor, unused = (
+        ("AutoProcessor", "AutoTokenizer") if multimodal else ("AutoTokenizer", "AutoProcessor")
+    )
+    loaders[processor].from_pretrained.assert_called_once_with("tiny-image-model")
+    loaders[processor].from_pretrained.return_value.save_pretrained.assert_called_once_with(output)
+    loaders[unused].from_pretrained.assert_not_called()
+    model.save_pretrained.assert_called_once_with(output)
+    assert json.loads((tmp_path / "metrics.json").read_text())["supervised_tokens"] == len(traces)
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])

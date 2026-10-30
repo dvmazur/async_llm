@@ -1,7 +1,7 @@
 # Training from AsyncLLM traces
 
 Replay asynchronous inference as a differentiable forward pass, then overfit its
-recorded targets. Supports dense text **Qwen3** and **Qwen3.5** using native
+recorded targets. Supports dense text **Qwen3** and text/image **Qwen3.5** using native
 Hugging Face layers and weights. The inference engine is unchanged.
 
 ## Pipeline
@@ -25,6 +25,14 @@ Hugging Face layers and weights. The inference engine is unchanged.
    log-probability error must be ≤ `0.1`), then trains all weights with AdamW.
    Each update accumulates all examples, normalized by supervised token count.
 
+Image requests retain pixels, grids, token types, and three-axis positions in the
+same trace format. Replay re-encodes saved pixels through the Qwen3.5 vision tower,
+so it receives gradients. Image embeddings are recomputed, never stored in traces.
+Cache visibility still uses token counts, while rotary coordinates use
+image-aware spans, including copied/merged blocks. Use the full HF conditional
+generation model for pixel traces; the SFT loader selects it automatically and
+saves its processor with the checkpoint.
+
 Mining uses FP16; the training CLI uses FP32, including the GDN core. Evaluation
 runs every five updates and at the end. Training stops early when every example
 has 100% target accuracy and loss below `0.01`. It saves a standard HF checkpoint
@@ -38,21 +46,17 @@ Run from the repository root. `uv` manages the environment:
 uv sync --extra dev
 ```
 
-Check availability before **each** GPU command and replace `0` with one idle GPU.
-Set `CUDA_VISIBLE_DEVICES` separately for each run; the CLIs require exactly one
-visible GPU. Keep `HF_HOME=/mnt/LLM`. Output paths must be new and inside the
-working directory; use a separate run directory for each experiment's metrics.
+The CLIs require exactly one visible GPU. Output paths must be new; use a
+separate run directory for each experiment's metrics.
 
 Mine short Qwen3 trajectories, then overfit them:
 
 ```bash
-nvidia-smi
-CUDA_VISIBLE_DEVICES=0 HF_HOME=/mnt/LLM OMP_NUM_THREADS=1 uv run --no-sync python -m minisgl.training.sft mine \
+uv run --no-sync python -m minisgl.training.sft mine \
   --model Qwen/Qwen3-0.6B --max-tokens 8 \
   --output training_runs/qwen3_demo/trajectories.json
 
-nvidia-smi
-CUDA_VISIBLE_DEVICES=0 HF_HOME=/mnt/LLM OMP_NUM_THREADS=1 uv run --no-sync python -m minisgl.training.sft train \
+uv run --no-sync python -m minisgl.training.sft train \
   --data training_runs/qwen3_demo/trajectories.json \
   --output training_runs/qwen3_demo/checkpoint --steps 80 --gradient-checkpointing
 ```
@@ -62,13 +66,11 @@ For asynchronous arithmetic trajectories with more workers and mutations, add
 session, use the separate stress miner; its JSON trains through the same CLI:
 
 ```bash
-nvidia-smi
-CUDA_VISIBLE_DEVICES=0 HF_HOME=/mnt/LLM OMP_NUM_THREADS=1 uv run --no-sync python -m minisgl.training.stress \
+uv run --no-sync python -m minisgl.training.stress \
   --model Qwen/Qwen3.5-0.8B --large-size 16 \
   --output training_runs/qwen35_demo/trajectories.json
 
-nvidia-smi
-CUDA_VISIBLE_DEVICES=0 HF_HOME=/mnt/LLM OMP_NUM_THREADS=1 uv run --no-sync python -m minisgl.training.sft train \
+uv run --no-sync python -m minisgl.training.sft train \
   --data training_runs/qwen35_demo/trajectories.json \
   --output training_runs/qwen35_demo/checkpoint --steps 80 --gradient-checkpointing
 ```
@@ -138,19 +140,18 @@ model weights or optimizer state.
 
 Tests cover regular HF versus replay forward/backward on one block, sequential
 references, complex mutations/views, overfitting, checkpointing, and Torch/Triton
-parity. Run CPU cases without creating coverage artifacts:
+parity. Run selected tests without creating coverage artifacts:
 
 ```bash
-CUDA_VISIBLE_DEVICES='' HF_HOME=/mnt/LLM OMP_NUM_THREADS=1 uv run --no-sync pytest -o addopts='' \
+uv run --no-sync pytest -o addopts='' \
   tests/core/test_training.py tests/core/test_training_gdn.py tests/core/test_training_sft.py
 ```
 
-For CUDA cases, check `nvidia-smi` first and run the same command with one GPU ID
-instead of the empty value. CPU runs skip CUDA cases. Numerical parity uses
-tolerances because replay changes reduction order and mining uses FP16.
+CUDA cases are skipped when CUDA is unavailable. Numerical parity uses tolerances
+because replay changes reduction order and mining uses FP16.
 
 Supported configurations require default RoPE, zero attention dropout, full
-attention (no sliding windows), and SiLU GDN convolution. Multimodal inputs, MoE,
+attention (no sliding windows), and SiLU GDN convolution. Video inputs, MoE,
 externally modified recurrent states, and higher-order GDN gradients are
 unsupported. This CLI is a single-GPU overfitting harness; it has no mixed
 precision, distributed training, or resume flag.

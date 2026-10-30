@@ -149,8 +149,6 @@ class GDNReplay:
         """Compile shared snapshot summaries and original convolution windows."""
         if read_backend not in {"torch", "triton"}:
             raise ValueError("Read backend must be torch or triton")
-        if trace.multimodal:
-            raise NotImplementedError("Multimodal training replay is not implemented")
         tokens = trace.tokens
         n = len(tokens)
         order = torch.as_tensor(order).cpu().tolist()
