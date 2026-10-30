@@ -25,7 +25,7 @@ from transformers import AutoTokenizer
 
 ASYNC_THOUGHTS = Path(__file__).resolve().parents[1] / "async_thoughts"
 sys.path.insert(0, str(ASYNC_THOUGHTS))
-from async_thoughts.demo import Prompting, _tokens_with_pending  # noqa: E402
+from async_thoughts.demo import Prompting  # noqa: E402
 from async_thoughts.engine import (  # noqa: E402
     ModeSwitchProbe,
     encode,
@@ -36,6 +36,13 @@ from async_thoughts.engine import (  # noqa: E402
 from math500_async_eval import check_equality, find_last_boxed_answer  # noqa: E402
 
 WRITER_REMINDER = " ... [SYSTEM: additional user input detected]\n"
+
+
+def _tokens_with_pending(block, context):
+    tokens = list(block.token_ids)
+    if context.next_input_id is not None:
+        tokens.append(context.next_input_id)
+    return tokens
 
 
 def arguments():
