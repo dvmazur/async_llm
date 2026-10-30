@@ -18,8 +18,7 @@ from transformers import (
     AutoTokenizer,
 )
 
-from . import replay
-from .replay import Replay
+from .forward import replay_trace
 from .trace import Trace, record
 
 
@@ -246,9 +245,9 @@ async def mine(args):
 def _supervised(model, plan, targets):
     device = next(model.parameters()).device
     rows = (targets != -100).nonzero().flatten()
-    if len(targets) != len(plan.input_ids) or not len(rows):
+    if len(targets) != plan.num_tokens or not len(rows):
         raise ValueError("Each trace needs aligned, nonempty supervision")
-    states = replay.forward(model, plan.to(device), rows=rows.to(device), hidden_only=True)
+    states = replay_trace(model, plan, rows=rows)
     return states, targets[rows].to(device)
 
 
@@ -323,8 +322,8 @@ def train(args):
         targets = torch.tensor(example["targets"])
         if len(targets) != trace.num_tokens or not (targets != -100).any():
             raise ValueError("Each trace needs aligned, nonempty supervision")
-        plan = Replay.from_trace(
-            trace,
+        plan = trace.to(
+            "cpu",
             query_chunk_size=query_chunk_size,
             attention_checkpointing=attention_checkpointing,
             cache_plans=cache_replay_plans,
@@ -337,7 +336,7 @@ def train(args):
     multimodal = any(
         request.pixel_values is not None
         for plan, _ in examples
-        for batch in plan.trace.batches
+        for batch in plan.batches
         for request in batch.requests
     )
     config = AutoConfig.from_pretrained(data["model"])

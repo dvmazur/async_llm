@@ -7,10 +7,9 @@ from dataclasses import asdict
 import pytest
 import torch
 import torch.nn.functional as F
-from minisgl.training import replay
-from minisgl.training.replay import Replay
+from minisgl.training import Trace, replay_trace
 from minisgl.training.sft import supervised_loss
-from minisgl.training.trace import ForwardBatch, ForwardRequest, TensorData, Trace
+from minisgl.training.trace import ForwardBatch, ForwardRequest, TensorData
 from PIL import Image
 from test_training_logits import torch_reference_kernels as torch_reference_kernels
 from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -176,8 +175,7 @@ def test_pretrained_image_training_checkpoint(pretrained_source, read_mode, tmp_
     model = load_model(pretrained_source).train()
     text, inputs = processed_inputs(processor)
     trace = saved_trace(model, inputs, tmp_path / "trace.json")
-    plan = Replay.from_trace(
-        trace,
+    plan = trace.to(
         device="cuda",
         query_chunk_size=32,
         gdn_segment_size=8,
@@ -213,7 +211,7 @@ def test_pretrained_image_training_checkpoint(pretrained_source, read_mode, tmp_
 
     progress("replay_forward")
     with torch.no_grad():
-        actual = replay.forward(model, plan).cpu()
+        actual = replay_trace(model, plan, hidden_only=False).cpu()
     metrics = logit_errors(actual, expected_logits)
     progress("replay_logits", forward=metrics)
     check_logits("initial_logits", metrics)
@@ -282,7 +280,7 @@ def test_pretrained_image_training_checkpoint(pretrained_source, read_mode, tmp_
     with torch.no_grad():
         updated_logits = model(**cuda_inputs, use_cache=False).logits[0].cpu()
         updated_loss = F.cross_entropy(updated_logits, targets)
-        updated_replay = replay.forward(model, plan).cpu()
+        updated_replay = replay_trace(model, plan, hidden_only=False).cpu()
     metrics = logit_errors(updated_replay, updated_logits)
     progress(
         "optimizer_step", updates=updates, updated_loss=updated_loss.item(), updated_forward=metrics
@@ -310,7 +308,7 @@ def test_pretrained_image_training_checkpoint(pretrained_source, read_mode, tmp_
     assert hashes == weight_hashes(reloaded)
     with torch.no_grad():
         reloaded_logits = reloaded(**cuda_inputs, use_cache=False).logits[0].cpu()
-        reloaded_replay = replay.forward(reloaded, plan).cpu()
+        reloaded_replay = replay_trace(reloaded, plan, hidden_only=False).cpu()
         reloaded_loss = supervised_loss(reloaded, plan, targets, chunk_size=16) / count
     reload_metrics = logit_errors(reloaded_logits, updated_logits)
     replay_metrics = logit_errors(reloaded_replay, updated_logits)
@@ -329,6 +327,6 @@ def test_pretrained_image_training_checkpoint(pretrained_source, read_mode, tmp_
         status="failed" if parity_failures else "passed",
         peak_cuda_bytes=torch.cuda.max_memory_allocated(),
     )
-    assert (
-        not parity_failures
-    ), f"Numerical parity failures: {parity_failures}; see {tmp_path / 'report.json'}"
+    assert not parity_failures, (
+        f"Numerical parity failures: {parity_failures}; see {tmp_path / 'report.json'}"
+    )

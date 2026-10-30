@@ -10,7 +10,8 @@ import torch
 
 def record_image_workload(engine, prefill_rows):
     from minisgl.shared_cache import PrefillJob, SharedCacheSession, WorkerGroup
-    from minisgl.training.trace import RecordingSession, Trace
+    from minisgl.training import Trace
+    from minisgl.training.trace import RecordingSession
 
     raw = SharedCacheSession(engine)
     recorder = RecordingSession(raw)

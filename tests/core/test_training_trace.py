@@ -1,22 +1,29 @@
 import asyncio
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from types import SimpleNamespace as NS
 
 import pytest
 import torch
+from minisgl.training import Trace, replay_trace
 from minisgl.training.gdn import GDNReplay
-from minisgl.training.replay import Replay
 from minisgl.training.sft import restore_trace
 from minisgl.training.trace import (
+    BlockUpdate,
     ForwardBatch,
     ForwardRequest,
     RecordingSession,
     TensorData,
     Token,
-    Trace,
 )
-from test_training import Session, mutation_trace, randomized_trace, repeated_view_trace
+from test_training import (
+    Session,
+    mutation_trace,
+    randomized_trace,
+    repeated_view_trace,
+    sequential,
+    tiny_model,
+)
 
 
 class RequestSession(Session):
@@ -68,7 +75,7 @@ def test_request_and_legacy_trace_compile_identically(factory):
     assert restored == trace
     assert restored.tokens == legacy.tokens == trace.tokens
     assert restored.num_tokens == len(trace.tokens)
-    a, b = Replay.from_trace(restored), Replay.from_trace(legacy)
+    a, b = restored.to(), legacy.to()
     equal_tree(
         (a.input_ids, a.order, a.spans, a.reads, a.copies),
         (b.input_ids, b.order, b.spans, b.reads, b.copies),
@@ -81,6 +88,103 @@ def test_request_and_legacy_trace_compile_identically(factory):
             (a.conv_sources, a.levels, a.reads, a.partitions),
             (b.conv_sources, b.levels, b.reads, b.partitions),
         )
+
+
+def test_preparation_keeps_recording_serializable_and_reuses_unchanged_cache():
+    trace, model = mutation_trace(), tiny_model()
+    recorded = asdict(trace)
+    expected = replay_trace(model, trace)
+    chunks = next(iter(trace._attention.values()))
+    actual = replay_trace(model, trace)
+    assert next(iter(trace._attention.values())) is chunks
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    assert asdict(trace) == recorded
+    assert Trace.from_dict(json.loads(json.dumps(asdict(trace)))) == trace
+
+
+def test_recording_append_recompiles_and_configured_trace_keeps_snapshot():
+    session = RecordingSession(RequestSession())
+    block = session.create_block()
+    session.prefill_block(block, torch.tensor([1, 2]))
+    trace, model = session.trace, tiny_model()
+    before = replay_trace(model, trace, hidden_only=False)
+    chunks = next(iter(trace._attention.values()))
+    configured = trace.to(query_chunk_size=1, attention_checkpointing=False)
+    assert configured is not trace
+    assert configured.query_chunk_size == 1 and trace.query_chunk_size == 128
+    session.prefill_block(block, torch.tensor([3, 4]))
+    actual = replay_trace(model, trace, hidden_only=False)
+    torch.testing.assert_close(actual, sequential(model, trace), atol=2e-6, rtol=2e-5)
+    assert actual.shape[0] == trace.num_tokens == 4
+    assert next(iter(trace._attention.values())) is not chunks
+    assert configured.num_tokens == 2 and len(configured.batches) == 1
+    torch.testing.assert_close(replay_trace(model, configured, hidden_only=False), before)
+
+
+def test_recording_can_continue_between_replay_forward_and_backward():
+    session = RecordingSession(RequestSession())
+    block = session.create_block()
+    session.prefill_block(block, torch.tensor([1, 2]))
+    reference, model = tiny_model(), tiny_model()
+    trace = session.trace
+    trace.query_chunk_size = 1
+    expected = replay_trace(reference, Trace.from_dict(asdict(trace)), hidden_only=False)
+    actual = replay_trace(model, trace, hidden_only=False)
+    session.prefill_block(block, torch.tensor([3, 4]))
+    replay_trace(model, trace, hidden_only=False)
+    expected.square().sum().backward()
+    actual.square().sum().backward()
+    for expected_parameter, actual_parameter in zip(
+        reference.parameters(), model.parameters(), strict=True
+    ):
+        torch.testing.assert_close(
+            actual_parameter.grad, expected_parameter.grad, atol=1e-5, rtol=2e-4
+        )
+
+
+def test_replacing_recorded_batch_invalidates_cached_inputs_and_visibility():
+    trace, model = mutation_trace(), tiny_model()
+    before = replay_trace(model, trace, hidden_only=False)
+    chunks = next(iter(trace._attention.values()))
+    batch = trace.batches[0]
+    first, *rest = batch.requests
+    trace.batches[0] = replace(batch, requests=(replace(first, input_ids=(21, 22)), *rest))
+    actual = replay_trace(model, trace, hidden_only=False)
+    torch.testing.assert_close(actual, sequential(model, trace), atol=2e-6, rtol=2e-5)
+    assert not torch.allclose(actual, before)
+    assert next(iter(trace._attention.values())) is not chunks
+
+
+def test_row_selection_uses_token_count_after_recorded_batch_changes():
+    trace = Trace([Token(i, 0, 0, i - 1, ((0, i),), "prefill") for i in (1, 2)])
+    model = tiny_model()
+    replay_trace(model, trace)
+    batch = trace.batches[0]
+    request = batch.requests[0]
+    trace.batches[0] = replace(batch, requests=(replace(request, input_ids=(1, 2, 3)),))
+    actual = replay_trace(model, trace, rows=[2], hidden_only=False)
+    torch.testing.assert_close(actual, sequential(model, trace)[[2]], atol=2e-6, rtol=2e-5)
+    assert trace.num_tokens == 3
+
+
+def test_replacing_block_update_invalidates_cached_provenance():
+    trace = Trace(
+        [
+            Token(1, 0, 0, 0, ((0, 1),), "prefill"),
+            Token(2, 0, 1, 0, ((1, 1),), "prefill"),
+            Token(3, 1, 2, 1, ((2, 2),), "decode"),
+        ],
+        updates=[BlockUpdate(1, 2, sources=(0,))],
+    )
+    model = tiny_model()
+    before = replay_trace(model, trace, hidden_only=False)
+    chunks = next(iter(trace._attention.values()))
+    trace.updates[0] = BlockUpdate(1, 2, sources=(1,))
+    actual = replay_trace(model, trace, hidden_only=False)
+    torch.testing.assert_close(actual, sequential(model, trace), atol=2e-6, rtol=2e-5)
+    torch.testing.assert_close(actual[:2], before[:2], atol=0, rtol=0)
+    assert not torch.allclose(actual[2], before[2])
+    assert next(iter(trace._attention.values())) is not chunks
 
 
 def test_requests_preserve_batch_visibility_order_and_causal_prefixes():
@@ -143,7 +247,7 @@ def test_request_snapshot_survives_input_mutation_and_block_reuse():
         (b.block_id, 0),
     )
     assert session.trace.updates[-1].refs == ()
-    Replay.from_trace(restore_trace(json.loads(json.dumps(asdict(session.trace)))))
+    restore_trace(json.loads(json.dumps(asdict(session.trace)))).to()
 
 
 def test_long_prefill_stores_one_request_without_repeated_metadata(record_property):
@@ -218,7 +322,7 @@ def test_image_inputs_and_positions_roundtrip_without_aliasing():
     restored = restore_trace(json.loads(json.dumps(asdict(session.trace))))
     assert restored == session.trace
     assert restored.batches[1].requests[0].pixel_values.tensor().sum().item() == 66
-    replay = Replay.from_trace(restored)
+    replay = restored.to()
     assert replay.input_ids.numel() == restored.num_tokens
     gdn = GDNReplay.from_trace(restored, replay.order)
     assert gdn.conv_sources.shape[0] == restored.num_tokens

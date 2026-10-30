@@ -13,10 +13,10 @@ def attention_chunk(q, k, v, inv_freq, *, replay, blocks, entries, scaling, mrop
     for version, lo, hi, _ in blocks:
         positions.append(torch.arange(lo, hi, device=q.device))
         if replay.rope_positions is None:
-            for start, end, _ in replay.source_spans(version, lo, hi):
+            for start, end, _ in replay.compute_source_spans(version, lo, hi):
                 sources.append(torch.arange(start, end, device=q.device))
         else:
-            for start, end, _, shift in replay.source_spans(version, lo, hi, with_rope=True):
+            for start, end, _, shift in replay.compute_source_spans(version, lo, hi, with_rope=True):
                 sources.append(torch.arange(start, end, device=q.device))
                 rope_positions.append(replay.rope_positions[start:end] + shift)
     sources, positions = torch.cat(sources), torch.cat(positions)

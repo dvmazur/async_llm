@@ -57,8 +57,9 @@ def build_engine(args):
 
 def record(args):
     from minisgl.shared_cache import AsyncContext, PrefillJob, SharedCacheSession, WorkerGroup
+    from minisgl.training import Trace
     from minisgl.training.stress import workload
-    from minisgl.training.trace import RecordingSession, Trace
+    from minisgl.training.trace import RecordingSession
 
     engine = build_engine(args)
     dtype = getattr(torch, args.dtype)
@@ -223,7 +224,9 @@ def record(args):
                     else (
                         [c, prompt, b]
                         if turn % 4 == 1
-                        else [prompt, b, prompt, a] if turn % 4 == 2 else [b, a, c, prompt]
+                        else [prompt, b, prompt, a]
+                        if turn % 4 == 2
+                        else [b, a, c, prompt]
                     )
                 ),
                 [prompt, c, *extra, a, b],
@@ -273,9 +276,8 @@ def record(args):
             ),
             "peak_gpu_bytes": torch.cuda.max_memory_allocated(),
         }
-        from minisgl.training.replay import Replay
 
-        metadata["provenance"] = history.assert_replay(Replay.from_trace(capture.trace))
+        metadata["provenance"] = history.assert_replay(capture.trace.to())
         assert metadata["tokens"] == 4099 and metadata["updates"] == 39
         assert metadata["output_rows"] == 213 and metadata["max_depth"] == 12
         features = {}
@@ -317,9 +319,9 @@ def record(args):
 
 def record_image(args):
     from minisgl.shared_cache import SharedCacheSession, WorkerGroup
+    from minisgl.training import Trace
     from minisgl.training.gdn import GDNReplay
-    from minisgl.training.replay import Replay
-    from minisgl.training.trace import RecordingSession, Trace
+    from minisgl.training.trace import RecordingSession
 
     engine = build_engine(args)
     try:
@@ -431,7 +433,7 @@ def record_image(args):
         assert data["format_version"] == 2 and "tokens" not in data
         assert len(restored.batches) == 5 and len(restored.updates) == 2
         assert sum(r.pixel_values is not None for b in restored.batches for r in b.requests) == 2
-        replay = Replay.from_trace(restored)
+        replay = restored.to()
         assert replay.input_ids.numel() == restored.num_tokens
         gdn = GDNReplay.from_trace(restored, replay.order)
         assert gdn.conv_sources.shape[0] == restored.num_tokens
@@ -484,8 +486,7 @@ def record_image_long(args):
 
 
 def replay(args):
-    from minisgl.training import replay
-    from minisgl.training.replay import Replay
+    from minisgl.training import replay_trace
     from minisgl.training.sft import restore_trace
     from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText
     from transformers.models.qwen3_5 import modeling_qwen3_5 as modeling
@@ -529,8 +530,7 @@ def replay(args):
 
     math_mode = DoubleMath() if args.dtype == "float64" else nullcontext()
     math_mode.__enter__()
-    plan = Replay.from_trace(
-        trace,
+    plan = trace.to(
         device="cuda",
         query_chunk_size=32,
         gdn_segment_size=args.segment,
@@ -558,7 +558,7 @@ def replay(args):
         )
     started = time.perf_counter()
     with torch.no_grad():
-        logits = replay.forward(model, plan, rows=saved["rows"].to("cuda")).cpu()
+        logits = replay_trace(model, plan, rows=saved["rows"].to("cuda"), hidden_only=False).cpu()
         assert logits.dtype == dtype and logits.shape == saved["logits"].shape
         assert torch.isfinite(logits).all()
     torch.cuda.synchronize()

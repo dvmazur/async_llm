@@ -8,12 +8,11 @@ from unittest.mock import patch
 import pytest
 import torch
 import torch.nn.functional as F
-from minisgl.training import replay
+from minisgl.training import Trace, replay_trace
 from minisgl.training.gdn import GDNReplay, delta, gdn_forward
-from minisgl.training.replay import Replay
 from minisgl.training.sft import supervised_loss
 from minisgl.training.stress import workload
-from minisgl.training.trace import BlockUpdate, RecordingSession, Token, Trace
+from minisgl.training.trace import BlockUpdate, RecordingSession, Token
 from test_training import (
     Session,
     apply_updates,
@@ -495,10 +494,10 @@ def test_triton_hybrid_parameter_gradients(cuda_delta_math, read_mode, use_reent
         )
     trace = mutation_trace()
     options = {"device": "cuda", "gdn_read_mode": read_mode}
-    native = Replay.from_trace(trace, **options, gdn_read_backend="torch")
-    plan = Replay.from_trace(trace, **options, gdn_read_backend="triton")
-    expected = replay.forward(reference, native)
-    actual = replay.forward(model, plan)
+    native = trace.to(**options, gdn_read_backend="torch")
+    plan = trace.to(**options, gdn_read_backend="triton")
+    expected = replay_trace(reference, native, hidden_only=False)
+    actual = replay_trace(model, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     targets = plan.input_ids.roll(-1)
     F.cross_entropy(expected, targets).backward()
@@ -1240,7 +1239,7 @@ def test_delta_factorized_reads_preserve_vector_depth(record_property):
 def test_gdn_parallel_outputs_and_gradients(trace_factory, read_mode):
     module = tiny_hybrid().cuda().model.layers[0].linear_attn
     trace = trace_factory()
-    order = Replay.from_trace(trace).order
+    order = trace.to().order
     replay = GDNReplay.from_trace(
         trace, order, device="cuda", conv_kernel_size=module.conv_kernel_size, read_mode=read_mode
     )
@@ -1262,7 +1261,7 @@ def test_gdn_synthetic_stress_workload_outputs_and_gradients():
     workload(session, vocab_size=32, large_size=2)
     trace = session.trace
     module = tiny_hybrid().cuda().model.layers[0].linear_attn
-    order = Replay.from_trace(trace).order
+    order = trace.to().order
     replay = GDNReplay.from_trace(
         trace, order, device="cuda", conv_kernel_size=module.conv_kernel_size
     )
@@ -1337,7 +1336,7 @@ def test_gdn_copied_history_survives_clear_and_isolates_reuse():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_hybrid_gdn_options_survive_transfer_and_separate_compiled_cache():
     model = tiny_hybrid().cuda()
-    plan = Replay.from_trace(mutation_trace(), device="cuda")
+    plan = mutation_trace().to(device="cuda")
     expected = None
     for i, (segment_size, read_mode, cache_reused) in enumerate(
         (
@@ -1351,7 +1350,7 @@ def test_hybrid_gdn_options_survive_transfer_and_separate_compiled_cache():
         plan.gdn_segment_size, plan.gdn_read_mode = segment_size, read_mode
         plan.gdn_cache_reused = cache_reused
         with torch.no_grad():
-            actual = replay.forward(model, plan)
+            actual = replay_trace(model, plan, hidden_only=False)
         if expected is None:
             expected = actual
         torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
@@ -1371,7 +1370,7 @@ def test_hybrid_gdn_options_survive_transfer_and_separate_compiled_cache():
         assert transferred is plan
         assert transferred._gdn is plan._gdn
     with torch.no_grad():
-        replay.forward(model, plan)
+        replay_trace(model, plan, hidden_only=False)
     assert len(plan._gdn) == 4 and list(plan._gdn.values())[-1] is compiled
 
 
@@ -1381,12 +1380,12 @@ def test_hybrid_causal_forward_and_backward_match_huggingface(mixed_steps):
     reference, model = torch_hybrid().cuda().train(), tiny_hybrid().cuda().train()
     if mixed_steps:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    plan = Replay.from_trace(single_block_trace(mixed_steps), device="cuda", query_chunk_size=3)
+    plan = single_block_trace(mixed_steps).to(device="cuda", query_chunk_size=3)
     ids = plan.input_ids[None]
     expected = reference(ids, use_cache=False).logits[0]
     with torch.no_grad():
         native = model(ids, use_cache=False).logits[0]
-    actual = replay.forward(model, plan)
+    actual = replay_trace(model, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
     targets = plan.input_ids.roll(-1)
     F.cross_entropy(expected, targets).backward()
@@ -1413,11 +1412,9 @@ def test_hybrid_autocast_parameter_gradients(cuda_delta_math, backend, use_reent
             gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
         )
     trace = Trace([Token(i, 0, 0, i, ((0, i + 1),), "prefill") for i in range(17)])
-    plan = Replay.from_trace(
-        trace, device="cuda", gdn_read_mode="factorized", gdn_read_backend=backend
-    )
+    plan = trace.to(device="cuda", gdn_read_mode="factorized", gdn_read_backend=backend)
     with torch.autocast("cuda", dtype=torch.bfloat16):
-        logits = replay.forward(model, plan)
+        logits = replay_trace(model, plan, hidden_only=False)
         loss = F.cross_entropy(logits, plan.input_ids.roll(-1))
         loss.backward()
     assert logits.dtype == torch.bfloat16
@@ -1447,15 +1444,15 @@ def test_hybrid_inference_warmup_then_training(cuda_delta_math, backend, use_ree
         )
     trace = mutation_trace()
     options = {"device": "cuda", "gdn_read_mode": read_mode, "gdn_read_backend": backend}
-    native = Replay.from_trace(trace, **options)
-    expected = replay.forward(reference, native)
+    native = trace.to(**options)
+    expected = replay_trace(reference, native, hidden_only=False)
     expected.square().mean().backward()
     with torch.inference_mode():
-        plan = Replay.from_trace(trace, **options)
-        warmed = replay.forward(model.eval(), plan)
+        plan = trace.to(**options)
+        warmed = replay_trace(model.eval(), plan, hidden_only=False)
         compiled = next(iter(plan._gdn.values()))
         assert warmed.is_inference()
-    actual = replay.forward(model.train(), plan)
+    actual = replay_trace(model.train(), plan, hidden_only=False)
     actual.square().mean().backward()
     assert next(iter(plan._gdn.values())) is compiled
     torch.testing.assert_close(actual, expected)
@@ -1470,7 +1467,7 @@ def test_hybrid_replay_checkpoint_reloads_as_native_huggingface(tmp_path):
     original_keys = set(model.state_dict())
     with torch.no_grad():
         expected = model(ids, use_cache=False).logits
-        replay.forward(model, Replay.from_trace(mutation_trace(), device="cuda"))
+        replay_trace(model, mutation_trace().to(device="cuda"), hidden_only=False)
     model.save_pretrained(tmp_path)
     config = json.loads((tmp_path / "config.json").read_text())
     assert not any("attn_implementation" in key for key in config)
@@ -1498,7 +1495,7 @@ def test_hybrid_replay_preserves_native_sdpa_masks_and_cache():
         expected = model(ids, attention_mask=mask, use_cache=False).logits
         cache = model(ids[:1, :-1], use_cache=True).past_key_values
         assert sdpa.call_count == 2
-        replay.forward(model, Replay.from_trace(mutation_trace(), device="cuda"))
+        replay_trace(model, mutation_trace().to(device="cuda"), hidden_only=False)
         assert sdpa.call_count == 2 and cache.get_seq_length() == ids.shape[1] - 1
         assert model.config._attn_implementation == "sdpa"
         assert model.model.layers[1].self_attn.config._attn_implementation == "sdpa"
@@ -1524,12 +1521,12 @@ def test_hybrid_checkpointed_replay_gradients(use_reentrant):
     checkpointed.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
     )
-    plan = Replay.from_trace(mutation_trace(), device="cuda")
+    plan = mutation_trace().to(device="cuda")
     with patch.object(
         F, "scaled_dot_product_attention", wraps=F.scaled_dot_product_attention
     ) as sdpa:
-        expected = replay.forward(reference, plan)
-        actual = replay.forward(checkpointed, plan)
+        expected = replay_trace(reference, plan, hidden_only=False)
+        actual = replay_trace(checkpointed, plan, hidden_only=False)
         torch.testing.assert_close(actual, expected)
         assert sdpa.call_count == 0
         with torch.no_grad():
@@ -1553,10 +1550,12 @@ def test_hybrid_checkpointed_chunked_supervised_loss():
     checkpointed.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
-    plan = Replay.from_trace(mutation_trace(), device="cuda", query_chunk_size=3)
+    plan = mutation_trace().to(device="cuda", query_chunk_size=3)
     targets = torch.arange(len(plan.input_ids), device="cuda") % 32
     targets[::3] = -100
-    expected = F.cross_entropy(replay.forward(reference, plan), targets, reduction="sum")
+    expected = F.cross_entropy(
+        replay_trace(reference, plan, hidden_only=False), targets, reduction="sum"
+    )
     actual = supervised_loss(checkpointed, plan, targets, chunk_size=3)
     torch.testing.assert_close(actual, expected)
     expected_grads = torch.autograd.grad(expected, tuple(reference.parameters()))
@@ -1569,7 +1568,7 @@ def test_hybrid_checkpointed_chunked_supervised_loss():
 def test_hybrid_overfits_recorded_sequence_targets():
     model = tiny_hybrid().cuda().train()
     trace = example_trace()
-    plan = Replay.from_trace(trace, device="cuda")
+    plan = trace.to(device="cuda")
     targets = torch.full((len(trace.tokens),), -100, dtype=torch.long, device="cuda")
     latest = {}
     for row, token in enumerate(trace.tokens):
@@ -1580,7 +1579,7 @@ def test_hybrid_overfits_recorded_sequence_targets():
     losses = []
     for _ in range(30):
         optimizer.zero_grad()
-        loss = F.cross_entropy(replay.forward(model, plan), targets)
+        loss = F.cross_entropy(replay_trace(model, plan, hidden_only=False), targets)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()

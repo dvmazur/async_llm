@@ -8,11 +8,10 @@ from unittest.mock import Mock, patch
 import pytest
 import torch
 import torch.nn.functional as F
+from minisgl.training import Trace, replay_trace, sft
 from minisgl.training import attention as attention_module
-from minisgl.training import replay, sft
 from minisgl.training.gdn import GDNReplay
-from minisgl.training.replay import Replay
-from minisgl.training.trace import ForwardBatch, ForwardRequest, TensorData, Trace
+from minisgl.training.trace import ForwardBatch, ForwardRequest, TensorData
 from test_training import mutation_trace, tiny_model
 from test_training_gdn import tiny_hybrid
 from transformers import Qwen3_5ForCausalLM
@@ -109,7 +108,7 @@ def test_sft_reuses_compiled_plans_from_cpu_replay(device, cache_plans):
     config.num_hidden_layers = 3
     config.layer_types = ["linear_attention", "full_attention", "linear_attention"]
     model = Qwen3_5ForCausalLM(config).to(device).train()
-    replay = Replay.from_trace(mutation_trace(), query_chunk_size=3, cache_plans=cache_plans)
+    replay = mutation_trace().to(query_chunk_size=3, cache_plans=cache_plans)
     targets = torch.arange(len(replay.input_ids)) % 32
     with patch.object(GDNReplay, "from_trace", wraps=GDNReplay.from_trace) as compile:
         for i in range(2):
@@ -138,11 +137,11 @@ def test_transient_plans_preserve_logits_and_checkpointed_gradients(device, use_
             gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
         )
     trace = mutation_trace()
-    persistent = Replay.from_trace(trace, device=device, query_chunk_size=3)
-    transient = Replay.from_trace(trace, query_chunk_size=3, cache_plans=False)
+    persistent = trace.to(device=device, query_chunk_size=3)
+    transient = trace.to(query_chunk_size=3, cache_plans=False)
     targets = torch.arange(len(trace.tokens)) % 32
     targets[::3] = -100
-    logits = replay.forward(reference, persistent)
+    logits = replay_trace(reference, persistent, hidden_only=False)
     expected = F.cross_entropy(logits, targets.to(device), reduction="sum")
     actual = sum(sft.supervised_loss(model, transient, targets, chunk_size=4) for _ in range(2)) / 2
     expected.backward()
@@ -151,14 +150,14 @@ def test_transient_plans_preserve_logits_and_checkpointed_gradients(device, use_
     for parameter, original in zip(model.parameters(), reference.parameters(), strict=True):
         torch.testing.assert_close(parameter.grad, original.grad, atol=2e-6, rtol=2e-5)
     with torch.no_grad():
-        actual_logits = replay.forward(model.eval(), transient.to(device))
+        actual_logits = replay_trace(model.eval(), transient.to(device), hidden_only=False)
     torch.testing.assert_close(actual_logits, logits, atol=2e-6, rtol=2e-5)
     assert not transient._gdn and not transient._attention
 
 
 def test_switching_off_plan_cache_releases_previous_plans():
     model = tiny_hybrid().eval()
-    replay = Replay.from_trace(mutation_trace())
+    replay = mutation_trace().to()
     targets = torch.arange(len(replay.input_ids)) % 32
     expected = sft.evaluate(model, [(replay, targets)])
     caches = replay._gdn, replay._attention
@@ -177,12 +176,10 @@ def test_sft_checkpointing_switches_are_independent(attention_checkpointing, los
     trace = mutation_trace()
     targets = torch.arange(len(trace.tokens)) % 32
     targets[::3] = -100
-    native = Replay.from_trace(trace, query_chunk_size=3, attention_checkpointing=False)
+    native = trace.to(query_chunk_size=3, attention_checkpointing=False)
     expected = sft.supervised_loss(reference, native, targets, chunk_size=4, checkpointing=False)
     expected.backward()
-    replay = Replay.from_trace(
-        trace, query_chunk_size=3, attention_checkpointing=attention_checkpointing
-    )
+    replay = trace.to(query_chunk_size=3, attention_checkpointing=attention_checkpointing)
     with (
         patch.object(
             attention_module, "checkpoint", wraps=attention_module.checkpoint

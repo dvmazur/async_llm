@@ -1,23 +1,25 @@
 # Training from AsyncLLM traces
 
 Replay asynchronous inference as a differentiable forward pass, then overfit its
-recorded targets. Supports dense text **Qwen3** and text/image **Qwen3.5** using native
-Hugging Face layers and weights. The inference engine is unchanged.
+recorded targets. Supports dense text **Qwen3** and text/image **Qwen3.5** using
+Hugging Face layers with live AsyncLLM weights or an HF model. The inference
+engine is unchanged.
 
 ## Pipeline
 
-1. **Record.** Attach `trace.record(llm)` to an idle, empty session before prefill.
+1. **Record.** Attach `record(llm)` to an idle, empty session before prefill.
    Each input token records its ID, scheduled step, prefill/decode kind, block
    position, and ordered view with visible lengths. Copy/merge operations store
    compact snapshot references; clearing starts a new live block version while
    old snapshots retain their gradients. Numeric KV/GDN states are never saved.
-2. **Replay.** `Replay.from_trace(trace)` compiles the history into shared block
-   spans and indices. Full attention reconstructs visibility and block-relative
-   RoPE, with one softmax over each complete view. Prefill prefixes, concurrent
-   decodes, reordered/repeated blocks, copies, merges, and clears retain their
-   semantics. Qwen3.5 GDN rebuilds differentiable affine summaries `(A, B)` from
-   current activations, composes them in view order, and reconstructs convolution
-   history from source indices. Plans cache metadata only.
+2. **Replay.** `replay_trace(model, trace)` compiles the history into shared block
+   spans and indices cached on the trace. Full attention reconstructs visibility
+   and block-relative RoPE, with one softmax over each complete view. Prefill
+   prefixes, concurrent decodes, reordered/repeated blocks, copies, merges, and
+   clears retain their semantics. Qwen3.5 GDN rebuilds differentiable affine
+   summaries `(A, B)` from current activations, composes them in view order, and
+   reconstructs convolution history from source indices. Cached plans contain
+   metadata only.
 3. **Train.** Mining writes JSON containing the model ID, traces, aligned targets,
    and inference log-probabilities. Targets belong to original trace rows;
    unsupervised rows use `-100`. A global next-token shift is incorrect for
@@ -33,10 +35,62 @@ image-aware spans, including copied/merged blocks. Use the full HF conditional
 generation model for pixel traces; the SFT loader selects it automatically and
 saves its processor with the checkpoint.
 
-Use `replay.forward(model, plan)` for logits or
-`replay.forward(model, plan, hidden_only=True)` for decoder hidden states without
-the vocabulary projection. Both accept `rows` in original trace order.
-`replay.hidden()` is deprecated and emits a `DeprecationWarning`.
+Use `replay_trace(model, trace)` for decoder hidden states without the vocabulary
+projection. Set `hidden_only=False` to return logits; use `logits.softmax(-1)` for
+probabilities. `model` can be an `AsyncLLM` or a compatible HF model. Optional
+`rows` accepts a list/tuple of integers or a one-dimensional integer tensor,
+indexing the original trace rows; output follows the requested order, including
+duplicates, while retaining the context needed to compute those rows. Pass the
+recorded `Trace` directly, or use `trace.to(device, **options)` to choose the
+device and replay tuning options.
+
+## Record and backpropagate
+
+This text example records a single causal prefill, then backpropagates a
+next-token loss. It uses the same live model weights for inference and replay:
+
+```python
+import asyncio
+
+import minisgl
+import torch
+import torch.nn.functional as F
+
+
+async def main():
+    llm = minisgl.AsyncLLM(
+        "Qwen/Qwen3-0.6B",
+        dtype=torch.bfloat16,
+        attention_backend="fi",
+        cuda_graph_max_bs=0,
+        num_page_override=1024,
+        max_seq_len_override=512,
+    )
+    try:
+        trace = minisgl.training.record(llm)
+        ids = llm.tokenizer.encode("The capital of France is Paris.", add_special_tokens=False)
+        block = await llm.create_block()
+        await llm.forward(ids[:-1], write_to=block, return_logits=False)
+        await llm.free_block(block)
+
+        # Default replay returns hidden states; request logits for this loss.
+        logits = minisgl.training.replay_trace(llm, trace, hidden_only=False)
+        targets = torch.tensor(ids[1:], device=logits.device)
+        loss = F.cross_entropy(logits.float(), targets)
+        loss.backward()
+        print("loss:", loss.item())
+    finally:
+        await llm.close()
+
+
+asyncio.run(main())
+```
+
+The AsyncLLM adapter supports unquantized dense models on one rank. It enables
+gradients on the current engine weights without reloading a checkpoint. Finish
+all inference requests before replay, and free cached blocks before resuming
+inference after weight updates. The next-token shift above applies to this
+single contiguous prefill; interleaved traces need their recorded row targets.
 
 Mining uses FP16; the training CLI uses FP32, including the GDN core. Evaluation
 runs every five updates and at the end. Training stops early when every example

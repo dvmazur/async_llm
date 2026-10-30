@@ -6,9 +6,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 from minisgl.models.qwen3_5_mrope import get_rope_index
-from minisgl.training import replay
+from minisgl.training import replay_trace
 from minisgl.training.attention import attention
-from minisgl.training.replay import Replay
 from minisgl.training.sft import supervised_loss
 from minisgl.training.trace import RecordingSession, TensorData
 from test_training import Session
@@ -167,12 +166,12 @@ def test_native_image_logits_and_all_parameter_gradients(loss_path, image_count)
             for name, value in inputs.items()
         }
     trace = single_image_trace(inputs)
-    plan = Replay.from_trace(trace, query_chunk_size=3)
+    plan = trace.to(query_chunk_size=3)
     expected = reference(**inputs, use_cache=False).logits[0]
-    actual = replay.forward(model, plan)
+    actual = replay_trace(model, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     with torch.no_grad():
-        states = replay.forward(model, plan, rows=torch.tensor([8, 2, 8]), hidden_only=True)
+        states = replay_trace(model, plan, rows=torch.tensor([8, 2, 8]), hidden_only=True)
         torch.testing.assert_close(model.lm_head(states), expected[[8, 2, 8]], atol=3e-6, rtol=3e-5)
     targets = torch.tensor([1, -100, 3, -100, 5, -100, 7, 8, 9]).repeat(image_count)
     expected_loss = F.cross_entropy(expected, targets, reduction="sum")
@@ -211,9 +210,9 @@ def test_multiple_images_follow_packed_token_order():
             reference(input_ids=torch.tensor([[2, 3, 4]]), use_cache=False).logits[0],
         ]
     )
-    plan = Replay.from_trace(session.trace, query_chunk_size=4)
+    plan = session.trace.to(query_chunk_size=4)
     assert not torch.equal(plan.order, torch.arange(session.trace.num_tokens))
-    actual = replay.forward(model, plan)
+    actual = replay_trace(model, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     weights = torch.cos(torch.arange(actual.numel())).reshape_as(actual)
     (actual * weights).sum().backward()
@@ -248,8 +247,10 @@ def test_image_prefill_preserves_nonmonotonic_grid_positions():
         ),
     }
     expected = reference(**full, use_cache=False).logits[0]
-    plan = Replay.from_trace(session.trace, query_chunk_size=2)
-    torch.testing.assert_close(replay.forward(model, plan), expected, atol=3e-6, rtol=3e-5)
+    plan = session.trace.to(query_chunk_size=2)
+    torch.testing.assert_close(
+        replay_trace(model, plan, hidden_only=False), expected, atol=3e-06, rtol=3e-05
+    )
 
 
 @pytest.mark.parametrize(
@@ -272,7 +273,7 @@ def test_malformed_image_metadata_fails_explicitly(field, value, message):
     value = TensorData.capture(value) if isinstance(value, torch.Tensor) else value
     trace.batches[0] = replace(batch, requests=(replace(batch.requests[0], **{field: value}),))
     with pytest.raises(ValueError, match=message):
-        replay.forward(tiny_image_model(), Replay.from_trace(trace))
+        replay_trace(tiny_image_model(), trace.to(), hidden_only=False)
 
 
 def test_image_token_ids_require_payload_without_token_types():
@@ -283,7 +284,7 @@ def test_image_token_ids_require_payload_without_token_types():
     )
     trace.batches[0] = replace(batch, requests=(request,))
     with pytest.raises(ValueError, match="require recorded pixels"):
-        replay.forward(tiny_image_model(), Replay.from_trace(trace))
+        replay_trace(tiny_image_model(), trace.to(), hidden_only=False)
 
 
 def cache_image_trace():
@@ -416,7 +417,7 @@ def sequential_image_attention(q, k, v, trace, order, inv_freq, section):
 def test_image_cache_attention_matches_sequential_logits_and_gradients(query_chunk_size):
     torch.manual_seed(37)
     trace = cache_image_trace()
-    replay = Replay.from_trace(trace, query_chunk_size=query_chunk_size)
+    replay = trace.to(query_chunk_size=query_chunk_size)
     n = trace.num_tokens
     inputs = [torch.randn(n, heads, 12, requires_grad=True) for heads in (4, 2, 2)]
     native = [tensor.detach().clone().requires_grad_() for tensor in inputs]
@@ -434,7 +435,7 @@ def test_async_image_model_and_every_parameter_gradient_match_direct_recurrence(
     reference = tiny_image_model()
     model = deepcopy(reference)
     trace = cache_image_trace()
-    plan = Replay.from_trace(trace, query_chunk_size=4)
+    plan = trace.to(query_chunk_size=4)
     backbone = reference.model.language_model
     ids = torch.tensor([token.token_id for token in trace.tokens])
     x = backbone.embed_tokens(ids).clone()
@@ -473,7 +474,7 @@ def test_async_image_model_and_every_parameter_gradient_match_direct_recurrence(
         x = x + output
         x = x + layer.mlp(layer.post_attention_layernorm(x))
     expected = reference.lm_head(backbone.norm(x))
-    actual = replay.forward(model, plan)
+    actual = replay_trace(model, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     targets = torch.arange(len(ids)) % reference.config.text_config.vocab_size
     F.cross_entropy(actual, targets).backward()

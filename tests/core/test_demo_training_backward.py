@@ -16,10 +16,8 @@ from unittest.mock import patch
 
 import pytest
 import torch
-from minisgl.training import gdn
-from minisgl.training.replay import Replay
+from minisgl.training import Trace, gdn
 from minisgl.training.sft import supervised_loss
-from minisgl.training.trace import Trace
 from test_training import apply_updates, example_trace, mutation_trace
 from test_training_gdn import Float64DeltaMath, sequential_delta, tiny_hybrid
 from test_training_logits import torch_reference_kernels as torch_reference_kernels
@@ -313,7 +311,7 @@ def test_chunked_recurrence_vjp_matches_existing_sequential_reference(checkpoint
 @pytest.mark.parametrize("checkpoint_layers", [False, True])
 def test_reference_backward_matches_full_hybrid_parameter_gradients(checkpoint_layers):
     trace = example_trace()
-    replay = Replay.from_trace(trace, gdn_segment_size=2, gdn_read_mode="factorized")
+    replay = trace.to(gdn_segment_size=2, gdn_read_mode="factorized")
     model = tiny_hybrid().train()
     if checkpoint_layers:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
@@ -363,7 +361,7 @@ def test_recorded_demo_core_gradients_against_recurrence(dtype, record_property)
         dk, dv = config.linear_key_head_dim, config.linear_value_head_dim
     torch.manual_seed(19)
     n = trace.num_tokens
-    order = Replay.from_trace(trace).order.to(device)
+    order = trace.to().order.to(device)
     replay = gdn.GDNReplay.from_trace(
         trace, order, device=device, segment_size=8, read_mode="expanded"
     )
@@ -440,7 +438,7 @@ def test_pretrained_demo_parameter_gradients_against_recurrence(record_property)
     ).to(device)
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.train()
-    replay = Replay.from_trace(trace)
+    replay = trace.to()
     baseline_loss = supervised_loss(model, replay, targets) / count
     baseline_loss.backward()
     expected = {

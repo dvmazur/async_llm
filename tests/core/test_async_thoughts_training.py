@@ -5,15 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from contextlib import aclosing
+from contextlib import aclosing, nullcontext
 from pathlib import Path
 
 import pytest
 import torch
 import torch.nn.functional as F
 from minisgl.shared_cache import AsyncContext
-from minisgl.training import replay
-from minisgl.training.replay import Replay
+from minisgl.training import replay_trace
 from minisgl.training.sft import restore_trace, supervised_loss
 from minisgl.training.trace import RecordingSession
 from test_async_llm import _make_llm
@@ -26,6 +25,11 @@ if _SCRIPTS_DIR not in sys.path:
 
 from async_thoughts import demo
 from async_thoughts.training import DemoRecorder
+
+
+@pytest.fixture(autouse=True)
+def cpu_stub_profiling(monkeypatch):
+    monkeypatch.setattr(torch.cuda.nvtx, "range", lambda *args, **kwargs: nullcontext())
 
 
 @pytest.fixture
@@ -132,13 +136,13 @@ def test_demo_export_aligns_batched_samples_and_masks_nongeneration_rows(exporte
 def test_export_reloads_for_hybrid_forward_and_backward(exported_example, read_mode):
     (example,) = exported_example["data"]["examples"]
     trace = restore_trace(example["trace"])
-    plan = Replay.from_trace(trace, gdn_segment_size=2, gdn_read_mode=read_mode)
+    plan = trace.to(gdn_segment_size=2, gdn_read_mode=read_mode)
     targets = torch.tensor(example["targets"])
     rows = (targets != -100).nonzero().flatten()
     assert not torch.equal(plan.order, torch.arange(trace.num_tokens))
     model = tiny_hybrid().train()
     with torch.no_grad():
-        logits = replay.forward(model, plan)
+        logits = replay_trace(model, plan, hidden_only=False)
         expected = F.cross_entropy(logits[rows], targets[rows], reduction="sum")
     loss = supervised_loss(model, plan, targets, chunk_size=2)
     torch.testing.assert_close(loss, expected)

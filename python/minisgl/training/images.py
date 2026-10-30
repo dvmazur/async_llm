@@ -1,16 +1,14 @@
 import torch
 
 
-def inputs_embeds(model, replay):
+def inputs_embeds(model, trace):
     """Re-encode recorded images and scatter them into packed token embeddings."""
-    states = model.get_input_embeddings()(replay.input_ids)
-    if replay.trace is None:
-        raise ValueError("Image replay requires its original trace")
+    states = model.get_input_embeddings()(trace.input_ids)
     image_id = getattr(model.config, "image_token_id", None)
-    inverse = replay.order.argsort()
+    inverse = trace.order.argsort()
     pixels, grids, image_rows = [], [], []
     start = 0
-    for batch in replay.trace.batches:
+    for batch in trace.batches:
         for request in batch.requests:
             ids = torch.tensor(request.input_ids)
             types = request.mm_token_type_ids

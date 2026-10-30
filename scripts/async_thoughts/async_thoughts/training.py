@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from minisgl.training.trace import record
+from minisgl.training import record
 
 
 class DemoRecorder:

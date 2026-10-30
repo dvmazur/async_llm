@@ -8,12 +8,11 @@ from unittest.mock import patch
 
 import pytest
 import torch
-from minisgl.training import replay, sft
+from minisgl.training import Trace, replay_trace, sft
 from minisgl.training.attention import attention
-from minisgl.training.replay import Replay
 from minisgl.training.sft import restore_trace, supervised_loss
 from minisgl.training.stress import workload
-from minisgl.training.trace import BlockUpdate, RecordingSession, Token, Trace
+from minisgl.training.trace import BlockUpdate, RecordingSession, Token
 from torch.overrides import TorchFunctionMode
 from transformers import Qwen3Config, Qwen3ForCausalLM
 
@@ -223,7 +222,7 @@ def visible_sources(replay):
     rows = [[] for _ in replay.reads]
     for original, reads in zip(replay.order.tolist(), replay.reads):
         for version, start, end, _ in reads:
-            for source_start, source_end, _ in replay.source_spans(version, start, end):
+            for source_start, source_end, _ in replay.compute_source_spans(version, start, end):
                 rows[original].extend(replay.order[source_start:source_end].tolist())
     return rows
 
@@ -366,9 +365,9 @@ def sequential(model, trace):
 def test_parallel_logits_and_gradients(trace_factory, query_chunk_size):
     model = tiny_model()
     trace = trace_factory()
-    plan = Replay.from_trace(trace, query_chunk_size=query_chunk_size)
+    plan = trace.to(query_chunk_size=query_chunk_size)
     expected = sequential(model, trace)
-    actual = replay.forward(model, plan)
+    actual = replay_trace(model, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
     parameters = tuple(model.parameters())
     expected_grads = torch.autograd.grad(expected.square().sum(), parameters)
@@ -381,9 +380,9 @@ def test_parallel_logits_and_gradients(trace_factory, query_chunk_size):
 def test_randomized_mutations_match_sequential_logits_and_gradients(seed):
     model = tiny_model()
     trace = restore_trace(json.loads(json.dumps(asdict(randomized_trace(seed)))))
-    plan = Replay.from_trace(trace, query_chunk_size=5)
+    plan = trace.to(query_chunk_size=5)
     expected = sequential(model, trace)
-    actual = replay.forward(model, plan)
+    actual = replay_trace(model, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     weights = torch.randn_like(actual)
     parameters = tuple(model.parameters())
@@ -415,8 +414,8 @@ def test_synthetic_stress_workload_logits_and_gradients():
     assert all(update.refs is not None and not update.sources for update in trace.updates)
     assert len(data["targets"]) == len(data["logprobs"]) == len(trace.tokens)
     model = tiny_model()
-    plan = Replay.from_trace(trace, query_chunk_size=7)
-    expected, actual = sequential(model, trace), replay.forward(model, plan)
+    plan = trace.to(query_chunk_size=7)
+    expected, actual = sequential(model, trace), replay_trace(model, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     weights = torch.randn_like(expected)
     parameters = tuple(model.parameters())
@@ -431,7 +430,7 @@ def test_synthetic_stress_workload_logits_and_gradients():
 def test_grouped_attention_and_partial_rotary_gradients(kv_heads, rotary_width):
     torch.manual_seed(7)
     trace = mutation_trace()
-    replay = Replay.from_trace(trace, query_chunk_size=3)
+    replay = trace.to(query_chunk_size=3)
     q = torch.randn(len(trace.tokens), 4, 8, requires_grad=True)
     k = torch.randn(len(trace.tokens), kv_heads, 8, requires_grad=True)
     v = torch.randn_like(k, requires_grad=True)
@@ -462,7 +461,7 @@ def test_attention_fp64_algebra_and_fp32_rounding(
     else:
         trace = single_block_trace(True) if trace_kind == "single" else mutation_trace()
     n = len(trace.tokens)
-    replay = Replay.from_trace(trace, query_chunk_size=query_chunk_size or n)
+    replay = trace.to(query_chunk_size=query_chunk_size or n)
     torch.manual_seed(7)
     inputs = tuple(
         torch.randn(n, heads, 8).double().requires_grad_() for heads in (4, kv_heads, kv_heads)
@@ -511,7 +510,7 @@ def test_attention_copied_cleared_history_gradcheck(fp64_attention):
             BlockUpdate(1, 0, refs=()),
         ],
     )
-    replay = Replay.from_trace(trace, query_chunk_size=2)
+    replay = trace.to(query_chunk_size=2)
     torch.manual_seed(7)
     inputs = tuple(
         torch.randn(4, heads, 2, dtype=torch.float64, requires_grad=True) for heads in (2, 1, 1)
@@ -539,7 +538,7 @@ def test_attention_sparse_self_and_partial_copied_reads():
         + [Token(1, 1, 2, 96, ((0, 11),), "decode"), Token(2, 1, 4, 0, ((2, 75),), "decode")],
         updates=[BlockUpdate(1, 2, copied), BlockUpdate(1, 3, copied), BlockUpdate(1, 3, ())],
     )
-    replay = Replay.from_trace(trace, query_chunk_size=128)
+    replay = trace.to(query_chunk_size=128)
     torch.manual_seed(7)
     q = torch.randn(len(trace.tokens), 4, 8, requires_grad=True)
     k = torch.randn(len(trace.tokens), 2, 8, requires_grad=True)
@@ -558,14 +557,14 @@ def test_attention_sparse_self_and_partial_copied_reads():
 
 def test_selected_logits_and_gradients():
     model = tiny_model()
-    plan = Replay.from_trace(mutation_trace(), query_chunk_size=3)
+    plan = mutation_trace().to(query_chunk_size=3)
     rows = torch.tensor([18, 0, 7, 7, 13])
-    expected = replay.forward(model, plan)[rows]
+    expected = replay_trace(model, plan, hidden_only=False)[rows]
     head_rows = []
     hook = model.lm_head.register_forward_pre_hook(
         lambda module, inputs: head_rows.append(inputs[0].shape[-2])
     )
-    actual = replay.forward(model, plan, rows=rows)
+    actual = replay_trace(model, plan, rows=rows, hidden_only=False)
     hook.remove()
     assert head_rows == [rows.numel()]
     torch.testing.assert_close(actual, expected)
@@ -576,21 +575,18 @@ def test_selected_logits_and_gradients():
         torch.testing.assert_close(actual_grad, expected_grad, atol=1e-5, rtol=2e-4)
 
 
-@pytest.mark.parametrize("rows", [None, torch.tensor([18, 0, 7, 7, 13])])
-def test_forward_hidden_only_and_gradients(rows):
+@pytest.mark.parametrize("rows", [None, [18, 0, 7, 7, 13], torch.tensor([18, 0, 7, 7, 13])])
+def test_replay_trace_hidden_states_and_gradients(rows):
     model = tiny_model()
-    plan = Replay.from_trace(mutation_trace(), query_chunk_size=3)
+    plan = mutation_trace().to(query_chunk_size=3)
     head_inputs = []
     hook = model.lm_head.register_forward_pre_hook(
         lambda module, inputs: head_inputs.append(inputs[0])
     )
-    expected = replay.forward(model, plan, rows=rows)
+    expected = replay_trace(model, plan, rows=rows, hidden_only=False)
     hook.remove()
-    torch.testing.assert_close(
-        replay.forward(model, plan, rows=rows, hidden_only=False), expected, atol=0, rtol=0
-    )
     with patch.object(model.lm_head, "forward", side_effect=AssertionError("lm_head was called")):
-        states = replay.forward(model, plan, rows=rows, hidden_only=True)
+        states = replay_trace(model, plan, rows=rows)
     torch.testing.assert_close(states, head_inputs[0][0], atol=0, rtol=0)
     actual = model.lm_head(states)
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
@@ -602,25 +598,61 @@ def test_forward_hidden_only_and_gradients(rows):
         torch.testing.assert_close(actual_grad, expected_grad, atol=1e-5, rtol=2e-4)
 
 
-@pytest.mark.parametrize("rows", [None, torch.tensor([18, 0, 7, 7, 13])])
-def test_hidden_deprecated_alias(rows):
+@pytest.mark.parametrize(
+    "rows",
+    [
+        None,
+        [18, 0, 7, 7, 13],
+        (18, 0, 7, 7, 13),
+        torch.tensor([18, 0, 7, 7, 13], dtype=torch.int32),
+        [],
+        torch.tensor([], dtype=torch.int64),
+    ],
+)
+@pytest.mark.parametrize("hidden_only", [True, False])
+def test_replay_trace_accepts_unprepared_trace_and_row_sequences(rows, hidden_only):
     model = tiny_model()
-    plan = Replay.from_trace(mutation_trace(), query_chunk_size=3)
-    with pytest.warns(DeprecationWarning, match="hidden_only=True") as warnings:
-        actual = replay.hidden(model, plan, rows=rows)
-    assert warnings[0].filename == __file__
-    expected = replay.forward(model, plan, rows=rows, hidden_only=True)
-    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    trace = mutation_trace()
+    expected = replay_trace(model, trace, hidden_only=hidden_only)
+    if rows is not None:
+        expected = expected[
+            torch.tensor(rows, dtype=torch.long) if not isinstance(rows, torch.Tensor) else rows
+        ]
+    actual = replay_trace(model, mutation_trace(), rows=rows, hidden_only=hidden_only)
+    torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
+    assert actual.shape == (trace.num_tokens if rows is None else len(rows), 32)
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        True,
+        1,
+        [True],
+        [1.5],
+        torch.tensor([True]),
+        torch.tensor([1.0]),
+        torch.tensor(1),
+        torch.tensor([[1]]),
+        [-1],
+        [19],
+        torch.tensor([-1]),
+        torch.tensor([19]),
+    ],
+)
+def test_replay_trace_rejects_invalid_rows(rows):
+    with pytest.raises((TypeError, ValueError, IndexError), match="rows"):
+        replay_trace(tiny_model(), mutation_trace(), rows=rows)
 
 
 @pytest.mark.parametrize("chunk_size", [1, 3])
 def test_chunked_supervised_loss_and_gradients(chunk_size):
     model = tiny_model()
-    plan = Replay.from_trace(mutation_trace(), query_chunk_size=3)
+    plan = mutation_trace().to(query_chunk_size=3)
     targets = torch.arange(len(plan.input_ids)) % 32
     targets[::3] = -100
     expected = torch.nn.functional.cross_entropy(
-        replay.forward(model, plan), targets, reduction="sum"
+        replay_trace(model, plan, hidden_only=False), targets, reduction="sum"
     )
     head_rows = []
     hook = model.lm_head.register_forward_pre_hook(
@@ -641,7 +673,7 @@ def test_chunked_supervised_loss_and_gradients(chunk_size):
 def test_attention_checkpoint_does_not_save_dense_scores():
     length = 128
     trace = Trace([Token(i % 32, 0, 0, i, ((0, i + 1),), "prefill") for i in range(length)])
-    replay = Replay.from_trace(trace, query_chunk_size=7)
+    replay = trace.to(query_chunk_size=7)
     q = torch.randn(length, 4, 8, requires_grad=True)
     k = torch.randn(length, 2, 8, requires_grad=True)
     v = torch.randn(length, 2, 8, requires_grad=True)
@@ -670,9 +702,9 @@ def test_causal_forward_and_backward_match_huggingface(mixed_steps):
     reference, model = tiny_model().train(), tiny_model().train()
     if mixed_steps:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    plan = Replay.from_trace(single_block_trace(mixed_steps), query_chunk_size=3)
+    plan = single_block_trace(mixed_steps).to(query_chunk_size=3)
     expected = reference(plan.input_ids[None], use_cache=False).logits[0]
-    actual = replay.forward(model, plan)
+    actual = replay_trace(model, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
     targets = plan.input_ids.roll(-1)
     torch.nn.functional.cross_entropy(expected, targets).backward()
@@ -698,7 +730,7 @@ def test_native_forward_after_replay_stays_causal_and_masked(backend, padded, de
     mask = torch.tensor([[1, 1, 1, 1], [0, 1, 1, 1]], device=device) if padded else None
     with torch.no_grad():
         expected = model(ids, attention_mask=mask, use_cache=False).logits
-        replay.forward(model, Replay.from_trace(mutation_trace(), device=device))
+        replay_trace(model, mutation_trace().to(device=device), hidden_only=False)
         assert model.config._attn_implementation == backend
         with patch(
             "torch.nn.functional.scaled_dot_product_attention",
@@ -722,8 +754,8 @@ def test_attention_inference_warmup_then_training(use_reentrant):
     reference, model = tiny_model().train(), tiny_model().eval()
     trace = repeated_view_trace()
     with torch.inference_mode():
-        plan = Replay.from_trace(trace, query_chunk_size=3).to("cpu")
-        replay.forward(model, plan)
+        plan = trace.to(query_chunk_size=3).to("cpu")
+        replay_trace(model, plan, hidden_only=False)
     chunks = plan._attention[(torch.device("cpu"), 3)]
     assert not plan.input_ids.is_inference() and not plan.order.is_inference()
     assert all(not entries.is_inference() for _, entries in chunks)
@@ -732,8 +764,8 @@ def test_attention_inference_warmup_then_training(use_reentrant):
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
         )
-    expected = replay.forward(reference, Replay.from_trace(trace, query_chunk_size=3))
-    actual = replay.forward(model, plan)
+    expected = replay_trace(reference, trace.to(query_chunk_size=3), hidden_only=False)
+    actual = replay_trace(model, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected)
     expected.square().mean().backward()
     actual.square().mean().backward()
@@ -750,9 +782,9 @@ def test_replay_gradient_checkpointing(use_reentrant, backend):
     checkpointed.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
     )
-    plan = Replay.from_trace(mutation_trace(), query_chunk_size=3)
-    expected = replay.forward(reference, plan)
-    actual = replay.forward(checkpointed, plan)
+    plan = mutation_trace().to(query_chunk_size=3)
+    expected = replay_trace(reference, plan, hidden_only=False)
+    actual = replay_trace(checkpointed, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected)
     checkpointed(torch.tensor([[1, 2, 3]]), use_cache=False)
     expected.square().mean().backward()
@@ -770,7 +802,7 @@ def test_native_sdpa_cache_continues_after_replay():
     with torch.no_grad():
         original = reference(ids, use_cache=True)
         prefix = model(ids, use_cache=True)
-        replay.forward(model, Replay.from_trace(repeated_view_trace()))
+        replay_trace(model, repeated_view_trace().to(), hidden_only=False)
         expected = reference(torch.tensor([[4]]), past_key_values=original.past_key_values).logits
         with patch(
             "torch.nn.functional.scaled_dot_product_attention",
@@ -787,7 +819,7 @@ def test_replay_checkpoint_reloads_as_native_huggingface(tmp_path):
     original_keys = set(model.state_dict())
     with torch.no_grad():
         expected = model(ids, use_cache=False).logits
-        replay.forward(model, Replay.from_trace(mutation_trace()))
+        replay_trace(model, mutation_trace().to(), hidden_only=False)
     model.save_pretrained(tmp_path)
     config = json.loads((tmp_path / "config.json").read_text())
     assert not any("attn_implementation" in key for key in config)
@@ -804,7 +836,7 @@ def test_mutation_trace_json_roundtrip():
     trace = mutation_trace()
     restored = restore_trace(json.loads(json.dumps(asdict(trace))))
     assert restored == trace
-    original, loaded = Replay.from_trace(trace), Replay.from_trace(restored)
+    original, loaded = trace.to(), restored.to()
     assert loaded.spans == original.spans
     assert loaded.copies == original.copies
     assert loaded.reads == original.reads
@@ -813,7 +845,10 @@ def test_mutation_trace_json_roundtrip():
     model = tiny_model()
     with torch.no_grad():
         torch.testing.assert_close(
-            replay.forward(model, loaded), replay.forward(model, original), rtol=0, atol=0
+            replay_trace(model, loaded, hidden_only=False),
+            replay_trace(model, original, hidden_only=False),
+            rtol=0,
+            atol=0,
         )
 
 
@@ -841,10 +876,13 @@ def test_legacy_and_compact_json_replay_match():
     legacy, compact = [restore_trace(json.loads(json.dumps(data))) for data in (legacy, compact)]
     assert all(update.refs is None for update in legacy.updates)
     assert compact == trace
-    old_replay, new_replay = Replay.from_trace(legacy), Replay.from_trace(compact)
+    old_replay, new_replay = legacy.to(), compact.to()
     assert visible_sources(old_replay) == visible_sources(new_replay)
     model = tiny_model()
-    expected, actual = replay.forward(model, old_replay), replay.forward(model, new_replay)
+    expected, actual = (
+        replay_trace(model, old_replay, hidden_only=False),
+        replay_trace(model, new_replay, hidden_only=False),
+    )
     torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
     parameters = tuple(model.parameters())
     expected_grads = torch.autograd.grad(expected.square().sum(), parameters)
@@ -871,7 +909,7 @@ def test_serialized_self_append_history_stays_compact():
     assert session._contents[block.block_id] == block.num_tokens
     session.decode_step([NS(cache_view=[], output_block=block)], torch.tensor([2]))
     trace = restore_trace(json.loads(json.dumps(asdict(session.trace))))
-    replay = Replay.from_trace(trace)
+    replay = trace.to()
     assert sum(map(len, replay.spans)) == 2
     assert visible_sources(replay) == [[0], [1]]
 
@@ -885,7 +923,7 @@ def test_deep_copy_chain_resolves_without_flattening_or_recursion():
     for _ in range(1100):
         block = session.merge_blocks(block, empty)
     session.decode_step([NS(cache_view=[block], output_block=block)], torch.tensor([3]))
-    replay = Replay.from_trace(session.trace)
+    replay = session.trace.to()
     assert sum(map(len, replay.spans)) == 2
     assert visible_sources(replay) == [[0], [0, 1], [0, 1, 2]]
 
@@ -900,9 +938,9 @@ def test_nested_copy_ranges_keep_destination_offsets():
             BlockUpdate(1, 3, refs=((2, 8), (1, 2))),
         ],
     )
-    replay = Replay.from_trace(trace)
+    replay = trace.to()
     version = replay.reads[-1][0][0]
-    assert list(replay.source_spans(version, 2, 9)) == [
+    assert list(replay.compute_source_spans(version, 2, 9)) == [
         (2, 3, 2),
         (3, 5, 3),
         (0, 3, 5),
@@ -933,14 +971,14 @@ def test_reject_invalid_copy_references(update):
         updates=[update],
     )
     with pytest.raises(ValueError):
-        Replay.from_trace(trace)
+        trace.to()
 
 
 def test_recording_and_masks():
     trace = example_trace()
     assert trace.tokens[7].step == trace.tokens[8].step
     assert trace.tokens[9].position == 3
-    replay = Replay.from_trace(trace)
+    replay = trace.to()
     visible = visible_sources(replay)
     assert 8 in visible[7] and 7 in visible[8]
     assert 9 in visible[9] and 10 not in visible[9]
@@ -951,7 +989,7 @@ def test_recording_and_masks():
 def test_causal_metadata_is_compact():
     length = 1024
     trace = Trace([Token(i % 32, 0, 0, i, ((0, i + 1),), "prefill") for i in range(length)])
-    replay = Replay.from_trace(trace)
+    replay = trace.to()
     assert replay.spans == [[(0, length, 0)]]
     assert len(replay.reads) == length
     assert sum(map(len, replay.reads)) == length
@@ -971,14 +1009,14 @@ def test_causal_metadata_is_compact():
 )
 def test_gdn_options_are_rejected_before_training_data_is_loaded(options):
     with pytest.raises(ValueError, match="gdn_"):
-        Replay.from_trace(example_trace(), **options)
+        example_trace().to(**options)
     with pytest.raises(ValueError, match="gdn_"):
         sft.train(NS(**options))
 
 
 @pytest.mark.parametrize("backend", ["torch", "triton"])
 def test_replay_preserves_gdn_read_backend_on_transfer(backend):
-    replay = Replay.from_trace(example_trace(), gdn_read_backend=backend)
+    replay = example_trace().to(gdn_read_backend=backend)
     replay._gdn["cached"] = object()
     transferred = replay.to("cpu")
     assert replay.gdn_read_backend == transferred.gdn_read_backend == backend
@@ -1036,7 +1074,7 @@ def test_sft_cli_rejects_invalid_gdn_options(monkeypatch, tmp_path, flags):
 def test_attention_reuses_only_compact_metadata():
     length = 128
     trace = Trace([Token(i % 32, 0, 0, i, ((0, i + 1),), "prefill") for i in range(length)])
-    replay = Replay.from_trace(trace, query_chunk_size=4)
+    replay = trace.to(query_chunk_size=4)
     q, k, v = torch.randn(length, 4, 8), torch.randn(length, 2, 8), torch.randn(length, 2, 8)
     inv_freq = tiny_model().model.rotary_emb.inv_freq
     expected = attention(q, k, v, replay, inv_freq, 8**-0.5)
@@ -1053,7 +1091,7 @@ def test_attention_reuses_only_compact_metadata():
 
 
 def test_copied_spans_keep_duplicate_occurrences():
-    replay = Replay.from_trace(mutation_trace())
+    replay = mutation_trace().to()
     visible = visible_sources(replay)
     assert len(visible[14]) > len(set(visible[14]))
     assert visible[14].count(2) == 4
@@ -1061,13 +1099,15 @@ def test_copied_spans_keep_duplicate_occurrences():
 
 def test_overfit():
     model = tiny_model().train()
-    plan = Replay.from_trace(example_trace(), query_chunk_size=3)
+    plan = example_trace().to(query_chunk_size=3)
     targets = torch.arange(len(plan.input_ids)) % 32
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.02)
     losses = []
     for _ in range(25):
         optimizer.zero_grad()
-        loss = torch.nn.functional.cross_entropy(replay.forward(model, plan), targets)
+        loss = torch.nn.functional.cross_entropy(
+            replay_trace(model, plan, hidden_only=False), targets
+        )
         loss.backward()
         optimizer.step()
         losses.append(loss.item())
@@ -1107,7 +1147,7 @@ def test_recording_mutations():
     context = NS(cache_view=[copied_again, block], output_block=block)
     session.decode_step([context], torch.tensor([3]))
     assert len(session.trace.tokens) == 5
-    replay = Replay.from_trace(session.trace)
+    replay = session.trace.to()
     assert replay.input_ids.numel() == 5
     visible = visible_sources(replay)
     assert visible[2] == [2] and visible[3] == [2, 3]
@@ -1128,13 +1168,13 @@ def test_clear_preserves_copied_gradients_and_isolates_reuse():
     session.free_block(source)
     prefill(source, [3])
     prefill(copied, [4])
-    plan = Replay.from_trace(session.trace)
+    plan = session.trace.to()
     visible = visible_sources(plan)
     assert visible[2] == [2]
     assert visible[3] == [0, 1, 3]
 
     model = tiny_model()
-    logits = replay.forward(model, plan)
+    logits = replay_trace(model, plan, hidden_only=False)
     embeddings = model.model.embed_tokens.weight
     (copied_grad,) = torch.autograd.grad(logits[3].square().sum(), embeddings, retain_graph=True)
     (reused_grad,) = torch.autograd.grad(logits[2].square().sum(), embeddings)
@@ -1182,4 +1222,4 @@ def test_reject_future_visibility():
         ]
     )
     with pytest.raises(ValueError, match="future"):
-        Replay.from_trace(trace)
+        trace.to()
