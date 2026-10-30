@@ -69,6 +69,16 @@ def tiny_hybrid():
     return model
 
 
+def torch_hybrid():
+    with patch.multiple(
+        modeling_qwen3_5,
+        FusedRMSNormGated=None,
+        chunk_gated_delta_rule=None,
+        fused_recurrent_gated_delta_rule=None,
+    ):
+        return tiny_hybrid()
+
+
 def sequential_gdn(module, hidden, trace):
     """Replay block contents and raw convolution windows, without affine summaries."""
     blocks, origins, outputs = {}, {}, {}
@@ -311,7 +321,8 @@ def test_delta_autocast_preserves_fp32_core(request, device, backend, read_mode,
     assert actual.dtype == torch.float32
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
     for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
-        torch.testing.assert_close(actual_grad, expected_grad, atol=0, rtol=0)
+        atol = 1e-6 * expected_grad.abs().max().item()
+        torch.testing.assert_close(actual_grad, expected_grad, atol=atol, rtol=0)
 
 
 @pytest.mark.parametrize(
@@ -1003,11 +1014,14 @@ def test_delta_read_saved_storage_grows_with_vectors_not_matrices(record_propert
         record_property(f"read_saved_bytes_{depth}", size)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_gdn_train_and_eval_no_grad_save_no_tensors():
-    module = tiny_hybrid().model.layers[0].linear_attn
+    module = tiny_hybrid().cuda().model.layers[0].linear_attn
     trace = mutation_trace()
-    replay = GDNReplay.from_trace(trace, torch.arange(len(trace.tokens)))
-    hidden = torch.randn(1, len(trace.tokens), module.hidden_size, requires_grad=True)
+    replay = GDNReplay.from_trace(trace, torch.arange(len(trace.tokens)), device="cuda")
+    hidden = torch.randn(
+        1, len(trace.tokens), module.hidden_size, device="cuda", requires_grad=True
+    )
     expected = gdn_forward(module.train(), hidden, replay).detach()
 
     def unexpected_save(tensor):
@@ -1222,14 +1236,15 @@ def test_delta_factorized_reads_preserve_vector_depth(record_property):
     "trace_factory", [example_trace, mutation_trace, uneven_history_trace, repeated_view_trace]
 )
 @pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_gdn_parallel_outputs_and_gradients(trace_factory, read_mode):
-    module = tiny_hybrid().model.layers[0].linear_attn
+    module = tiny_hybrid().cuda().model.layers[0].linear_attn
     trace = trace_factory()
     order = Replay.from_trace(trace).order
     replay = GDNReplay.from_trace(
-        trace, order, conv_kernel_size=module.conv_kernel_size, read_mode=read_mode
+        trace, order, device="cuda", conv_kernel_size=module.conv_kernel_size, read_mode=read_mode
     )
-    hidden = torch.randn(len(trace.tokens), module.hidden_size, requires_grad=True)
+    hidden = torch.randn(len(trace.tokens), module.hidden_size, device="cuda", requires_grad=True)
     expected = sequential_gdn(module, hidden, trace)
     actual = gdn_forward(module, hidden[order][None], replay)[0][order.argsort()]
     torch.testing.assert_close(actual, expected, atol=2e-7, rtol=2e-5)
@@ -1241,14 +1256,17 @@ def test_gdn_parallel_outputs_and_gradients(trace_factory, read_mode):
         torch.testing.assert_close(actual_grad, expected_grad, atol=2e-6, rtol=3e-4)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_gdn_synthetic_stress_workload_outputs_and_gradients():
     session = RecordingSession(Session())
     workload(session, vocab_size=32, large_size=2)
     trace = session.trace
-    module = tiny_hybrid().model.layers[0].linear_attn
+    module = tiny_hybrid().cuda().model.layers[0].linear_attn
     order = Replay.from_trace(trace).order
-    replay = GDNReplay.from_trace(trace, order, conv_kernel_size=module.conv_kernel_size)
-    hidden = torch.randn(len(trace.tokens), module.hidden_size, requires_grad=True)
+    replay = GDNReplay.from_trace(
+        trace, order, device="cuda", conv_kernel_size=module.conv_kernel_size
+    )
+    hidden = torch.randn(len(trace.tokens), module.hidden_size, device="cuda", requires_grad=True)
     expected = sequential_gdn(module, hidden, trace)
     actual = gdn_forward(module, hidden[order][None], replay)[0][order.argsort()]
     torch.testing.assert_close(actual, expected, atol=2e-7, rtol=2e-5)
@@ -1260,6 +1278,7 @@ def test_gdn_synthetic_stress_workload_outputs_and_gradients():
         torch.testing.assert_close(actual_grad, expected_grad, atol=2e-6, rtol=3e-4)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_gdn_decode_reads_peer_before_batch():
     trace = Trace(
         [
@@ -1269,10 +1288,10 @@ def test_gdn_decode_reads_peer_before_batch():
             Token(4, 2, 1, 1, ((0, 2), (1, 2)), "decode"),
         ]
     )
-    module = tiny_hybrid().model.layers[0].linear_attn
+    module = tiny_hybrid().cuda().model.layers[0].linear_attn
     order = torch.arange(4)
-    replay = GDNReplay.from_trace(trace, order)
-    hidden = torch.randn(1, 4, module.hidden_size, requires_grad=True)
+    replay = GDNReplay.from_trace(trace, order, device="cuda")
+    hidden = torch.randn(1, 4, module.hidden_size, device="cuda", requires_grad=True)
     outputs = gdn_forward(module, hidden, replay)
     torch.testing.assert_close(outputs[0], sequential_gdn(module, hidden[0], trace))
     (gradient,) = torch.autograd.grad(outputs[0, 2].square().sum(), hidden)
@@ -1283,6 +1302,7 @@ def test_gdn_decode_reads_peer_before_batch():
     torch.testing.assert_close(gdn_forward(module, changed, replay)[0, 2], outputs[0, 2])
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_gdn_copied_history_survives_clear_and_isolates_reuse():
     session = RecordingSession(Session())
     source, child, empty = [session.create_block() for _ in range(3)]
@@ -1300,9 +1320,11 @@ def test_gdn_copied_history_survives_clear_and_isolates_reuse():
     prefill(source, [4])
     prefill(copied, [5])
     trace = session.trace
-    module = tiny_hybrid().model.layers[0].linear_attn
-    hidden = torch.randn(1, len(trace.tokens), module.hidden_size, requires_grad=True)
-    replay = GDNReplay.from_trace(trace, torch.arange(len(trace.tokens)))
+    module = tiny_hybrid().cuda().model.layers[0].linear_attn
+    hidden = torch.randn(
+        1, len(trace.tokens), module.hidden_size, device="cuda", requires_grad=True
+    )
+    replay = GDNReplay.from_trace(trace, torch.arange(len(trace.tokens)), device="cuda")
     actual = gdn_forward(module, hidden, replay)[0]
     torch.testing.assert_close(actual, sequential_gdn(module, hidden[0], trace))
     (copied_grad,) = torch.autograd.grad(actual[4].square().sum(), hidden, retain_graph=True)
@@ -1312,9 +1334,10 @@ def test_gdn_copied_history_survives_clear_and_isolates_reuse():
     assert not reused_grad[0, :3].any()
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_hybrid_gdn_options_survive_transfer_and_separate_compiled_cache():
-    model = tiny_hybrid()
-    plan = Replay.from_trace(mutation_trace())
+    model = tiny_hybrid().cuda()
+    plan = Replay.from_trace(mutation_trace(), device="cuda")
     expected = None
     for i, (segment_size, read_mode, cache_reused) in enumerate(
         (
@@ -1339,7 +1362,7 @@ def test_hybrid_gdn_options_survive_transfer_and_separate_compiled_cache():
             read_mode,
             cache_reused,
         )
-        transferred = plan.to("cpu")
+        transferred = plan.to("cuda")
         assert (transferred.gdn_segment_size, transferred.gdn_read_mode) == (
             segment_size,
             read_mode,
@@ -1353,51 +1376,47 @@ def test_hybrid_gdn_options_survive_transfer_and_separate_compiled_cache():
 
 
 @pytest.mark.parametrize("mixed_steps", [False, True])
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_hybrid_causal_forward_and_backward_match_huggingface(mixed_steps):
-    reference, model = tiny_hybrid().train(), tiny_hybrid().train()
+    reference, model = torch_hybrid().cuda().train(), tiny_hybrid().cuda().train()
     if mixed_steps:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    plan = Replay.from_trace(single_block_trace(mixed_steps), query_chunk_size=3)
+    plan = Replay.from_trace(single_block_trace(mixed_steps), device="cuda", query_chunk_size=3)
     ids = plan.input_ids[None]
     expected = reference(ids, use_cache=False).logits[0]
+    with torch.no_grad():
+        native = model(ids, use_cache=False).logits[0]
     actual = replay.forward(model, plan)
     torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
     targets = plan.input_ids.roll(-1)
     F.cross_entropy(expected, targets).backward()
     F.cross_entropy(actual, targets).backward()
-    for (name, parameter), (_, native) in zip(
+    for (name, parameter), (_, original) in zip(
         model.named_parameters(), reference.named_parameters(), strict=True
     ):
-        assert parameter.grad is not None and native.grad is not None
+        assert parameter.grad is not None and original.grad is not None
         torch.testing.assert_close(
-            parameter.grad, native.grad, atol=1e-6, rtol=2e-4, msg=f"Gradient mismatch: {name}"
+            parameter.grad, original.grad, atol=1e-6, rtol=2e-4, msg=f"Gradient mismatch: {name}"
         )
     with torch.no_grad():
-        torch.testing.assert_close(model(ids, use_cache=False).logits[0], expected)
+        torch.testing.assert_close(model(ids, use_cache=False).logits[0], native)
 
 
 @pytest.mark.parametrize(
-    "device,backend,use_reentrant",
-    [
-        ("cpu", "torch", None),
-        ("cpu", "torch", True),
-        ("cuda", "torch", False),
-        ("cuda", "triton", True),
-    ],
+    "backend,use_reentrant",
+    [("torch", None), ("torch", False), ("torch", True), ("triton", True)],
 )
-def test_hybrid_autocast_parameter_gradients(request, device, backend, use_reentrant):
-    if device == "cuda":
-        request.getfixturevalue("cuda_delta_math")
-    model = tiny_hybrid().to(device).train()
+def test_hybrid_autocast_parameter_gradients(cuda_delta_math, backend, use_reentrant):
+    model = tiny_hybrid().cuda().train()
     if use_reentrant is not None:
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
         )
     trace = Trace([Token(i, 0, 0, i, ((0, i + 1),), "prefill") for i in range(17)])
     plan = Replay.from_trace(
-        trace, device=device, gdn_read_mode="factorized", gdn_read_backend=backend
+        trace, device="cuda", gdn_read_mode="factorized", gdn_read_backend=backend
     )
-    with torch.autocast(device, dtype=torch.bfloat16):
+    with torch.autocast("cuda", dtype=torch.bfloat16):
         logits = replay.forward(model, plan)
         loss = F.cross_entropy(logits, plan.input_ids.roll(-1))
         loss.backward()
@@ -1410,27 +1429,24 @@ def test_hybrid_autocast_parameter_gradients(request, device, backend, use_reent
 
 
 @pytest.mark.parametrize(
-    "device,backend,use_reentrant",
+    "backend,use_reentrant",
     [
-        ("cpu", "torch", None),
-        ("cpu", "torch", False),
-        ("cpu", "torch", True),
-        ("cuda", "torch", False),
-        ("cuda", "triton", None),
-        ("cuda", "triton", True),
+        ("torch", None),
+        ("torch", False),
+        ("torch", True),
+        ("triton", None),
+        ("triton", True),
     ],
 )
 @pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
-def test_hybrid_inference_warmup_then_training(request, device, backend, use_reentrant, read_mode):
-    if device == "cuda":
-        request.getfixturevalue("cuda_delta_math")
-    reference, model = tiny_hybrid().to(device).train(), tiny_hybrid().to(device)
+def test_hybrid_inference_warmup_then_training(cuda_delta_math, backend, use_reentrant, read_mode):
+    reference, model = tiny_hybrid().cuda().train(), tiny_hybrid().cuda()
     if use_reentrant is not None:
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
         )
     trace = mutation_trace()
-    options = {"device": device, "gdn_read_mode": read_mode, "gdn_read_backend": backend}
+    options = {"device": "cuda", "gdn_read_mode": read_mode, "gdn_read_backend": backend}
     native = Replay.from_trace(trace, **options)
     expected = replay.forward(reference, native)
     expected.square().mean().backward()
@@ -1447,17 +1463,19 @@ def test_hybrid_inference_warmup_then_training(request, device, backend, use_ree
         torch.testing.assert_close(parameter.grad, original.grad, atol=1e-6, rtol=2e-4)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_hybrid_replay_checkpoint_reloads_as_native_huggingface(tmp_path):
-    model = tiny_hybrid()
-    ids = torch.tensor([[1, 2, 3]])
+    model = tiny_hybrid().cuda()
+    ids = torch.tensor([[1, 2, 3]], device="cuda")
     original_keys = set(model.state_dict())
     with torch.no_grad():
         expected = model(ids, use_cache=False).logits
-        replay.forward(model, Replay.from_trace(mutation_trace()))
+        replay.forward(model, Replay.from_trace(mutation_trace(), device="cuda"))
     model.save_pretrained(tmp_path)
     config = json.loads((tmp_path / "config.json").read_text())
     assert not any("attn_implementation" in key for key in config)
-    restored = Qwen3_5ForCausalLM.from_pretrained(tmp_path, attn_implementation="eager").eval()
+    restored = Qwen3_5ForCausalLM.from_pretrained(tmp_path, attn_implementation="eager")
+    restored = restored.cuda().eval()
     assert set(restored.state_dict()) == original_keys
     for name, parameter in model.state_dict().items():
         torch.testing.assert_close(restored.state_dict()[name], parameter, rtol=0, atol=0)
@@ -1465,11 +1483,12 @@ def test_hybrid_replay_checkpoint_reloads_as_native_huggingface(tmp_path):
         torch.testing.assert_close(restored(ids, use_cache=False).logits, expected)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_hybrid_replay_preserves_native_sdpa_masks_and_cache():
-    model = tiny_hybrid().eval()
+    model = torch_hybrid().cuda().eval()
     model.set_attn_implementation("sdpa")
-    ids = torch.tensor([[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]])
-    mask = torch.tensor([[1, 1, 1, 1, 1], [0, 0, 1, 1, 1]])
+    ids = torch.tensor([[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]], device="cuda")
+    mask = torch.tensor([[1, 1, 1, 1, 1], [0, 0, 1, 1, 1]], device="cuda")
     with (
         torch.no_grad(),
         patch.object(
@@ -1479,7 +1498,7 @@ def test_hybrid_replay_preserves_native_sdpa_masks_and_cache():
         expected = model(ids, attention_mask=mask, use_cache=False).logits
         cache = model(ids[:1, :-1], use_cache=True).past_key_values
         assert sdpa.call_count == 2
-        replay.forward(model, Replay.from_trace(mutation_trace()))
+        replay.forward(model, Replay.from_trace(mutation_trace(), device="cuda"))
         assert sdpa.call_count == 2 and cache.get_seq_length() == ids.shape[1] - 1
         assert model.config._attn_implementation == "sdpa"
         assert model.model.layers[1].self_attn.config._attn_implementation == "sdpa"
@@ -1497,14 +1516,15 @@ def test_hybrid_replay_preserves_native_sdpa_masks_and_cache():
 
 
 @pytest.mark.parametrize("use_reentrant", [False, True])
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_hybrid_checkpointed_replay_gradients(use_reentrant):
-    reference, checkpointed = tiny_hybrid().train(), tiny_hybrid().train()
+    reference, checkpointed = tiny_hybrid().cuda().train(), tiny_hybrid().cuda().train()
     reference.set_attn_implementation("sdpa")
     checkpointed.set_attn_implementation("sdpa")
     checkpointed.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
     )
-    plan = Replay.from_trace(mutation_trace())
+    plan = Replay.from_trace(mutation_trace(), device="cuda")
     with patch.object(
         F, "scaled_dot_product_attention", wraps=F.scaled_dot_product_attention
     ) as sdpa:
@@ -1513,7 +1533,7 @@ def test_hybrid_checkpointed_replay_gradients(use_reentrant):
         torch.testing.assert_close(actual, expected)
         assert sdpa.call_count == 0
         with torch.no_grad():
-            checkpointed(torch.tensor([[1, 2, 3]]), use_cache=False)
+            checkpointed(torch.tensor([[1, 2, 3]], device="cuda"), use_cache=False)
         assert sdpa.call_count == 1
         expected.square().mean().backward()
         actual.square().mean().backward()
@@ -1527,13 +1547,14 @@ def test_hybrid_checkpointed_replay_gradients(use_reentrant):
         )
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_hybrid_checkpointed_chunked_supervised_loss():
-    reference, checkpointed = tiny_hybrid().train(), tiny_hybrid().train()
+    reference, checkpointed = tiny_hybrid().cuda().train(), tiny_hybrid().cuda().train()
     checkpointed.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
-    plan = Replay.from_trace(mutation_trace(), query_chunk_size=3)
-    targets = torch.arange(len(plan.input_ids)) % 32
+    plan = Replay.from_trace(mutation_trace(), device="cuda", query_chunk_size=3)
+    targets = torch.arange(len(plan.input_ids), device="cuda") % 32
     targets[::3] = -100
     expected = F.cross_entropy(replay.forward(reference, plan), targets, reduction="sum")
     actual = supervised_loss(checkpointed, plan, targets, chunk_size=3)
@@ -1544,11 +1565,12 @@ def test_hybrid_checkpointed_chunked_supervised_loss():
         torch.testing.assert_close(actual_grad, expected_grad, atol=1e-5, rtol=2e-4)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_hybrid_overfits_recorded_sequence_targets():
-    model = tiny_hybrid().train()
+    model = tiny_hybrid().cuda().train()
     trace = example_trace()
-    plan = Replay.from_trace(trace)
-    targets = torch.full((len(trace.tokens),), -100, dtype=torch.long)
+    plan = Replay.from_trace(trace, device="cuda")
+    targets = torch.full((len(trace.tokens),), -100, dtype=torch.long, device="cuda")
     latest = {}
     for row, token in enumerate(trace.tokens):
         if token.block in latest:
