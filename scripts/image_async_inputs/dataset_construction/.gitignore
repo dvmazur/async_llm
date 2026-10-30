@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+work/
+exports/
+!datasets/**/*.json
+!datasets/**/*.jsonl
+# Packaged Parquet files contain the release images. Keep redundant raw
+# images and gateway request/response logs local.
+datasets/**/evidence/
+datasets/diverse_corrections_v2/assets/
+datasets/diverse_corrections_v3/assets/
+!pilot_v1/*.jsonl
+!datasets/diverse_corrections_v3/construction_evidence/work/
+!datasets/diverse_corrections_v3/construction_evidence/work/**

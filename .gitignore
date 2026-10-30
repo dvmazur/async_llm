@@ -31,6 +31,7 @@ env/
 # .vscode
 .vscode/
 .coverage
+.env
 
 # local Doom experiment
 /scripts/doom_basic/deadly_corridor_probe.ipynb

@@ -16,10 +16,13 @@ class RMSNorm(BaseOP):
         self.rmsnorm = gemma_rmsnorm if weight_plus_one else rmsnorm
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.rmsnorm(x, self.weight, self.eps)
+        shape = x.shape
+        y = self.rmsnorm(x.reshape(-1, shape[-1]), self.weight, self.eps)
+        return y.reshape(shape)
 
     def forward_inplace(self, x: torch.Tensor) -> None:
-        self.rmsnorm(x, self.weight, self.eps, out=x)
+        flat = x.reshape(-1, x.shape[-1])
+        self.rmsnorm(flat, self.weight, self.eps, out=flat)
 
 
 class RMSNormFused(BaseOP):

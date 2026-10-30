@@ -42,6 +42,7 @@ dependencies = [
     # Distribution name differs from the Python import: sgl_kernel.
     "sglang-kernel==0.4.6.post1+cu130",
     "quack-kernels",
+    "math-verify>=0.9.0,<1",
 ]
 
 [project.optional-dependencies]

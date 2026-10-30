@@ -1,0 +1,164 @@
+[
+  {
+    "ids": [
+      "b61874c23f711686",
+      "8af807e1b00c0307"
+    ],
+    "datasets": [
+      "AI4Math/MathVista",
+      "lupantech/TabMWP"
+    ],
+    "questions": [
+      "a newspaper researched how many grocery stores there are in each town. what is the median of the numbers?'",
+      "a newspaper researched how many grocery stores there are in each town. what is the mode of the numbers?"
+    ],
+    "dhash_distance": 49,
+    "pixel_mae": 34.578104654947914,
+    "question_similarity": 0.9665071770334929,
+    "preview": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_duplicate_audit/b61874c23f711686_8af807e1b00c0307.png"
+  },
+  {
+    "ids": [
+      "0055d6580f9409e9",
+      "682351da7fd8b276"
+    ],
+    "datasets": [
+      "ahmed-masry/ChartQA",
+      "AI4Math/MathVista"
+    ],
+    "questions": [
+      "is the sum of smallest two value is greater then then largest value?",
+      "is the sum of smallest two value is greater then then largest value?\nchoices:\n(a) yes\n(b) no"
+    ],
+    "dhash_distance": 0,
+    "pixel_mae": 0.0,
+    "question_similarity": 0.85,
+    "preview": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_duplicate_audit/0055d6580f9409e9_682351da7fd8b276.png"
+  },
+  {
+    "ids": [
+      "1fbf149a2fd929a6",
+      "48bccc29040b1cf9"
+    ],
+    "datasets": [
+      "lupantech/TabMWP",
+      "AI4Math/MathVista"
+    ],
+    "questions": [
+      "look at the table. then answer the question. at a price of $600, is there a shortage or a surplus?\nchoices:\n(a) shortage\n(b) surplus",
+      "look at the table. then answer the question. at a price of $790, is there a shortage or a surplus?'\nchoices:\n(a) shortage\n(b) surplus"
+    ],
+    "dhash_distance": 9,
+    "pixel_mae": 19.372965494791668,
+    "question_similarity": 0.9811320754716981,
+    "preview": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_duplicate_audit/1fbf149a2fd929a6_48bccc29040b1cf9.png"
+  },
+  {
+    "ids": [
+      "41a6884068f6e933",
+      "48bccc29040b1cf9"
+    ],
+    "datasets": [
+      "lupantech/TabMWP",
+      "AI4Math/MathVista"
+    ],
+    "questions": [
+      "look at the table. then answer the question. at a price of $1,020, is there a shortage or a surplus?\nchoices:\n(a) shortage\n(b) surplus",
+      "look at the table. then answer the question. at a price of $790, is there a shortage or a surplus?'\nchoices:\n(a) shortage\n(b) surplus"
+    ],
+    "dhash_distance": 34,
+    "pixel_mae": 23.058146158854168,
+    "question_similarity": 0.9737827715355806,
+    "preview": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_duplicate_audit/41a6884068f6e933_48bccc29040b1cf9.png"
+  },
+  {
+    "ids": [
+      "48bccc29040b1cf9",
+      "9c4f43435f76a8fb"
+    ],
+    "datasets": [
+      "AI4Math/MathVista",
+      "lupantech/TabMWP"
+    ],
+    "questions": [
+      "look at the table. then answer the question. at a price of $790, is there a shortage or a surplus?'\nchoices:\n(a) shortage\n(b) surplus",
+      "look at the table. then answer the question. at a price of $850, is there a shortage or a surplus?\nchoices:\n(a) shortage\n(b) surplus"
+    ],
+    "dhash_distance": 4,
+    "pixel_mae": 17.456075032552082,
+    "question_similarity": 0.9811320754716981,
+    "preview": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_duplicate_audit/48bccc29040b1cf9_9c4f43435f76a8fb.png"
+  },
+  {
+    "ids": [
+      "48bccc29040b1cf9",
+      "bc9c6785d3cf0013"
+    ],
+    "datasets": [
+      "AI4Math/MathVista",
+      "lupantech/TabMWP"
+    ],
+    "questions": [
+      "look at the table. then answer the question. at a price of $790, is there a shortage or a surplus?'\nchoices:\n(a) shortage\n(b) surplus",
+      "look at the table. then answer the question. at a price of $405, is there a shortage or a surplus?\nchoices:\n(a) shortage\n(b) surplus"
+    ],
+    "dhash_distance": 9,
+    "pixel_mae": 20.808492024739582,
+    "question_similarity": 0.9811320754716981,
+    "preview": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_duplicate_audit/48bccc29040b1cf9_bc9c6785d3cf0013.png"
+  },
+  {
+    "ids": [
+      "48bccc29040b1cf9",
+      "c4b8bf7ee8339003"
+    ],
+    "datasets": [
+      "AI4Math/MathVista",
+      "lupantech/TabMWP"
+    ],
+    "questions": [
+      "look at the table. then answer the question. at a price of $790, is there a shortage or a surplus?'\nchoices:\n(a) shortage\n(b) surplus",
+      "look at the table. then answer the question. at a price of $525, is there a shortage or a surplus?\nchoices:\n(a) shortage\n(b) surplus"
+    ],
+    "dhash_distance": 9,
+    "pixel_mae": 10.8665771484375,
+    "question_similarity": 0.9735849056603774,
+    "preview": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_duplicate_audit/48bccc29040b1cf9_c4b8bf7ee8339003.png"
+  },
+  {
+    "ids": [
+      "48bccc29040b1cf9",
+      "ebdcc08c12dda4ac"
+    ],
+    "datasets": [
+      "AI4Math/MathVista",
+      "lupantech/TabMWP"
+    ],
+    "questions": [
+      "look at the table. then answer the question. at a price of $790, is there a shortage or a surplus?'\nchoices:\n(a) shortage\n(b) surplus",
+      "look at the table. then answer the question. at a price of $840, is there a shortage or a surplus?\nchoices:\n(a) shortage\n(b) surplus"
+    ],
+    "dhash_distance": 35,
+    "pixel_mae": 24.806660970052082,
+    "question_similarity": 0.9811320754716981,
+    "preview": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_duplicate_audit/48bccc29040b1cf9_ebdcc08c12dda4ac.png"
+  },
+  {
+    "ids": [
+      "4fb24135820f8b53",
+      "e8782c8a29547ca3"
+    ],
+    "datasets": [
+      "AI4Math/MathVista",
+      "lupantech/TabMWP"
+    ],
+    "questions": [
+      "some students compared how many blocks they live from school. what is the mean of the numbers?'",
+      "some students compared how many blocks they live from school. what is the median of the numbers?"
+    ],
+    "dhash_distance": 40,
+    "pixel_mae": 24.222371419270832,
+    "question_similarity": 0.9842931937172775,
+    "preview": "/home/yakushev-ga/Projects/Doom/scripts/image_async_inputs/dataset_construction/work/v3_duplicate_audit/4fb24135820f8b53_e8782c8a29547ca3.png"
+  }
+]

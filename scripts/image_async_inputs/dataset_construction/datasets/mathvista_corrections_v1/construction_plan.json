@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "budget_usd": 2,
+  "items": [
+    {
+      "source_id": "88",
+      "workspace": "work/mathvista_batch01",
+      "proposal": "work/mathvista_batch01_proposals/fed26522a1d0cd38.proposal.json",
+      "reuse_before": "work/flash_image_test_v1/88/before.jpg",
+      "difficulty_group": "reasoning",
+      "notes": "Angle constraints and algebra; reuse previously approved model edit."
+    },
+    {
+      "source_id": "926",
+      "workspace": "work/mathvista_batch01",
+      "proposal": "work/mathvista_batch01_proposals/5a1986cb45b3214a.proposal.json",
+      "reuse_before": "work/flash_image_test_v1/926/before.jpg",
+      "difficulty_group": "reasoning",
+      "notes": "Identify circle radius and shaded fraction; reuse previously approved edit."
+    },
+    {
+      "source_id": "45",
+      "workspace": "work/mathvista_batch01",
+      "proposal": "work/mathvista_batch01_proposals/0f6c4193c4c4860c.proposal.json",
+      "reuse_before": "work/flash_image_test_v1/45/before.jpg",
+      "difficulty_group": "calibration",
+      "notes": "Easy signed rate calculation; report separately from reasoning subset."
+    },
+    {
+      "source_id": "331",
+      "workspace": "work/mathvista_batch02",
+      "proposal": "work/mathvista_batch02_proposals/10be37e09bfc3ea2.proposal.json",
+      "difficulty_group": "reasoning",
+      "notes": "Aggregate eight visual values and divide to calculate mean."
+    },
+    {
+      "source_id": "234",
+      "workspace": "work/mathvista_batch02",
+      "proposal": "work/mathvista_batch02_proposals/3b29a39b18f62071.proposal.json",
+      "difficulty_group": "reasoning_reveal",
+      "notes": "Missing-angle reveal control: insufficient information becomes equilateral-triangle inference. Distinguish from wrong-value corrections."
+    },
+    {
+      "source_id": "206",
+      "workspace": "work/mathvista_batch02",
+      "proposal": "work/mathvista_batch02_proposals/594c8cee89f28b56.proposal.json",
+      "difficulty_group": "calibration",
+      "notes": "Easy scale-factor calculation; report separately from reasoning subset."
+    }
+  ]
+}
