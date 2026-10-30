@@ -484,7 +484,8 @@ def record_image_long(args):
 
 
 def replay(args):
-    from minisgl.training.replay import Replay, forward
+    from minisgl.training import replay
+    from minisgl.training.replay import Replay
     from minisgl.training.sft import restore_trace
     from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText
     from transformers.models.qwen3_5 import modeling_qwen3_5 as modeling
@@ -557,7 +558,7 @@ def replay(args):
         )
     started = time.perf_counter()
     with torch.no_grad():
-        logits = forward(model, plan, rows=saved["rows"].to("cuda")).cpu()
+        logits = replay.forward(model, plan, rows=saved["rows"].to("cuda")).cpu()
         assert logits.dtype == dtype and logits.shape == saved["logits"].shape
         assert torch.isfinite(logits).all()
     torch.cuda.synchronize()

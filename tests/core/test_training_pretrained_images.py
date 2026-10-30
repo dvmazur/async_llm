@@ -7,7 +7,8 @@ from dataclasses import asdict
 import pytest
 import torch
 import torch.nn.functional as F
-from minisgl.training.replay import Replay, forward
+from minisgl.training import replay
+from minisgl.training.replay import Replay
 from minisgl.training.sft import supervised_loss
 from minisgl.training.trace import ForwardBatch, ForwardRequest, TensorData, Trace
 from PIL import Image
@@ -212,7 +213,7 @@ def test_pretrained_image_training_checkpoint(pretrained_source, read_mode, tmp_
 
     progress("replay_forward")
     with torch.no_grad():
-        actual = forward(model, plan).cpu()
+        actual = replay.forward(model, plan).cpu()
     metrics = logit_errors(actual, expected_logits)
     progress("replay_logits", forward=metrics)
     check_logits("initial_logits", metrics)
@@ -281,7 +282,7 @@ def test_pretrained_image_training_checkpoint(pretrained_source, read_mode, tmp_
     with torch.no_grad():
         updated_logits = model(**cuda_inputs, use_cache=False).logits[0].cpu()
         updated_loss = F.cross_entropy(updated_logits, targets)
-        updated_replay = forward(model, plan).cpu()
+        updated_replay = replay.forward(model, plan).cpu()
     metrics = logit_errors(updated_replay, updated_logits)
     progress(
         "optimizer_step", updates=updates, updated_loss=updated_loss.item(), updated_forward=metrics
@@ -309,7 +310,7 @@ def test_pretrained_image_training_checkpoint(pretrained_source, read_mode, tmp_
     assert hashes == weight_hashes(reloaded)
     with torch.no_grad():
         reloaded_logits = reloaded(**cuda_inputs, use_cache=False).logits[0].cpu()
-        reloaded_replay = forward(reloaded, plan).cpu()
+        reloaded_replay = replay.forward(reloaded, plan).cpu()
         reloaded_loss = supervised_loss(reloaded, plan, targets, chunk_size=16) / count
     reload_metrics = logit_errors(reloaded_logits, updated_logits)
     replay_metrics = logit_errors(reloaded_replay, updated_logits)

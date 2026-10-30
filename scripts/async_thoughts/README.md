@@ -95,14 +95,14 @@ from pathlib import Path
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM
 
-from minisgl.training.replay import Replay, forward
+from minisgl.training import replay
 from minisgl.training.sft import supervised_loss
 from minisgl.training.trace import Trace
 
 data = json.loads(Path("training_runs/async_thoughts/trace.json").read_text())
 example = data["examples"][0]
 trace = Trace.from_dict(example["trace"])
-replay = Replay.from_trace(trace, device="cuda")
+plan = replay.Replay.from_trace(trace, device="cuda")
 targets = torch.tensor(example["targets"], device="cuda")
 config = AutoConfig.from_pretrained(data["model"]).get_text_config()
 model = AutoModelForCausalLM.from_pretrained(
@@ -111,13 +111,13 @@ model = AutoModelForCausalLM.from_pretrained(
 
 # Inspect only supervised rows; returned rows follow original trace order.
 with torch.no_grad():
-    logits = forward(model, replay, rows=(targets != -100).nonzero().flatten())
+    logits = replay.forward(model, plan, rows=(targets != -100).nonzero().flatten())
 print(logits.shape)
 del logits
 
 model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 model.zero_grad(set_to_none=True)
-loss = supervised_loss(model, replay, targets) / (targets != -100).sum()
+loss = supervised_loss(model, plan, targets) / (targets != -100).sum()
 loss.backward()
 print("loss:", loss.item())
 ```

@@ -589,3 +589,13 @@ def gdn_forward(module, hidden_states, replay: GDNReplay):
     z = module.in_proj_z(x).view_as(core)
     core = module.norm(core, z).reshape(len(x), module.value_dim)
     return module.out_proj(core)[None]
+
+
+def replay_gdn(
+    module, hidden_states, cache_params=None, attention_mask=None, *, gdn_replay=None, **kwargs
+):
+    if gdn_replay is None:
+        return module._replay_native_forward(
+            hidden_states, cache_params=cache_params, attention_mask=attention_mask, **kwargs
+        )
+    return gdn_forward(module, hidden_states, gdn_replay)
