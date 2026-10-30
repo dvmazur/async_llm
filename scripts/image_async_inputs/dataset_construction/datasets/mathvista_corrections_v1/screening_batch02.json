@@ -1,0 +1,511 @@
+{
+  "count": 12,
+  "status_counts": {
+    "model_rejected": 7,
+    "pending_review": 5
+  },
+  "reported_cost": 0.031213875000000002,
+  "items": [
+    {
+      "id": "10be37e09bfc3ea2",
+      "source_id": "331",
+      "category": "table",
+      "question": "Several people compared how many Web pages they had visited. What is the mean of the numbers?'",
+      "source_answer": "64",
+      "status": "pending_review",
+      "service_tier": "flex",
+      "provider": "Google AI Studio",
+      "usage": {
+        "prompt_tokens": 1501,
+        "completion_tokens": 857,
+        "total_tokens": 2358,
+        "cost": 0.00216975,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00216975,
+          "upstream_inference_prompt_cost": 0.000562875,
+          "upstream_inference_completions_cost": 0.001606875
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 535,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "suggestion": {
+        "eligible": true,
+        "rejection_reason": null,
+        "proposal": {
+          "edit_type": "text replacement",
+          "changed_fact_before": "Kurt visited 60 Web pages.",
+          "changed_fact_after": "Kurt visited 52 Web pages.",
+          "expected_answer_before": "65",
+          "solution_before": "Sum the numbers of Web pages: 84 + 56 + 70 + 68 + 60 + 47 + 75 + 60 = 520. Divide by the total count (8): 520 / 8 = 65.",
+          "solution_after": "Sum the numbers of Web pages: 84 + 56 + 70 + 68 + 60 + 47 + 75 + 52 = 512. Divide by the total count (8): 512 / 8 = 64.",
+          "editing_method": "Edit the table cell for Kurt's number of Web pages, replacing '52' with '60' in the same font style and alignment.",
+          "reasoning_change": "The sum decreases from 520 to 512 when Kurt's value changes from 60 to 52, reducing the calculated mean from 65 to 64."
+        }
+      }
+    },
+    {
+      "id": "1c1f117a98acf48c",
+      "source_id": "86",
+      "category": "chart",
+      "question": "Which model has the highest Acc score when Pretrain Loss is equal to 1.80?\nChoices:\n(A) ICL\n(B) SFT\n(C) SFT 1/8\n(D) RFT k=100\n(E) RFT k=25\n(F) RET k=6\n(G) RFT U13B",
+      "source_answer": "RFT U13B",
+      "status": "pending_review",
+      "service_tier": "flex",
+      "provider": "Google AI Studio",
+      "usage": {
+        "prompt_tokens": 1578,
+        "completion_tokens": 1608,
+        "total_tokens": 3186,
+        "cost": 0.00360675,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00360675,
+          "upstream_inference_prompt_cost": 0.00059175,
+          "upstream_inference_completions_cost": 0.003015
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 1096,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "suggestion": {
+        "eligible": true,
+        "rejection_reason": null,
+        "proposal": {
+          "edit_type": "point_shift",
+          "changed_fact_before": "At Pretrain Loss = 1.80, the cyan line (RFT U13B) marked by the orange star has an Acc score of approximately 25.",
+          "changed_fact_after": "At Pretrain Loss = 1.80, the cyan line (RFT U13B) marked by the orange star has an Acc score of approximately 49.5.",
+          "expected_answer_before": "RFT k=100",
+          "solution_before": "1. Locate x = 1.80 on the horizontal axis (Pretrain Loss).\n2. Observe the Acc values of all curves at x = 1.80: RFT U13B is at ~25, SFT is at ~36, and the green solid line (RFT k=100) is at ~41.7.\n3. Compare the Acc values; the maximum is ~41.7, corresponding to RFT k=100.",
+          "solution_after": "1. Locate x = 1.80 on the horizontal axis (Pretrain Loss).\n2. Observe the Acc values of all curves at x = 1.80: the orange star on the cyan line (RFT U13B) is at ~49.5, while the next highest (RFT k=100) is at ~41.7.\n3. Compare the Acc values; the maximum is ~49.5, which belongs to RFT U13B.",
+          "editing_method": "Lower the orange star marker and the starting vertex of the cyan line at x = 1.80 from y ≈ 49.5 down to y ≈ 25, redrawing the connecting line segment and patching the original grid lines.",
+          "reasoning_change": "In BEFORE, the cyan curve starts at Acc ≈ 25, making RFT k=100 the top performer at x = 1.80. In AFTER, RFT U13B starts at Acc ≈ 49.5, making it the highest."
+        }
+      }
+    },
+    {
+      "id": "1f057c631471e4d9",
+      "source_id": "671",
+      "category": "chart",
+      "question": "What is the size of the semicircle rounded to 2 decimal places?\nDecimal places: 2.",
+      "source_answer": "14.14",
+      "status": "model_rejected",
+      "service_tier": "flex",
+      "provider": "Google AI Studio",
+      "usage": {
+        "prompt_tokens": 1524,
+        "completion_tokens": 946,
+        "total_tokens": 2470,
+        "cost": 0.00234525,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00234525,
+          "upstream_inference_prompt_cost": 0.0005715,
+          "upstream_inference_completions_cost": 0.00177375
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 874,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "suggestion": {
+        "eligible": false,
+        "rejection_reason": "The radius of the semicircle is simultaneously defined by multiple graphical elements: the function equation, the y-axis tick mark (3), and the x-axis tick marks (3 and 6). Modifying any single text element in isolation creates an inconsistent and mathematically contradictory figure.",
+        "proposal": null
+      }
+    },
+    {
+      "id": "3219e3850ad687c3",
+      "source_id": "231",
+      "category": "chart",
+      "question": "Which model has the overall best ImageNet 10shot Accuracy score across different training steps?\nChoices:\n(A) Identity\n(B) Uniform\n(C) Uniform / Soft\n(D) Soft / Uniform\n(E) Soft\n(F) Dense",
+      "source_answer": "Soft",
+      "status": "model_rejected",
+      "service_tier": "flex",
+      "provider": "Google AI Studio",
+      "usage": {
+        "prompt_tokens": 1550,
+        "completion_tokens": 728,
+        "total_tokens": 2278,
+        "cost": 0.00194625,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00194625,
+          "upstream_inference_prompt_cost": 0.00058125,
+          "upstream_inference_completions_cost": 0.001365
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 677,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "suggestion": {
+        "eligible": false,
+        "rejection_reason": "The question only requires basic chart reading (identifying the highest curve on the specified plot and reading its corresponding label from the legend), lacking at least two dependent reasoning operations.",
+        "proposal": null
+      }
+    },
+    {
+      "id": "3b29a39b18f62071",
+      "source_id": "234",
+      "category": "geometry",
+      "question": "In the figure shown above, AC = 6. What is the length of segment AB?\nChoices:\n(A) 3\n(B) 5\n(C) 6\n(D) 7\n(E) It cannot be determined from the information given",
+      "source_answer": "6",
+      "status": "pending_review",
+      "service_tier": "flex",
+      "provider": "Google AI Studio",
+      "usage": {
+        "prompt_tokens": 1555,
+        "completion_tokens": 1385,
+        "total_tokens": 2940,
+        "cost": 0.00318,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00318,
+          "upstream_inference_prompt_cost": 0.000583125,
+          "upstream_inference_completions_cost": 0.002596875
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 1103,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "suggestion": {
+        "eligible": true,
+        "rejection_reason": null,
+        "proposal": {
+          "edit_type": "label_removal",
+          "changed_fact_before": "Angle B has no angle measure label.",
+          "changed_fact_after": "Angle B is labeled as 60°.",
+          "expected_answer_before": "It cannot be determined from the information given",
+          "solution_before": "Given only AC = 6 and angle A = 60°, triangle ABC is not uniquely determined because angles B and C are unspecified. Consequently, the length of AB cannot be uniquely found, making the answer (E).",
+          "solution_after": "With angle A = 60° and angle B = 60°, angle C must also be 60°. Triangle ABC is equilateral, so AB = AC = 6, corresponding to choice (C).",
+          "editing_method": "Digitally erase the '60°' label near vertex B using background color matching.",
+          "reasoning_change": "In the modified state, an unknown second angle leaves the triangle underdetermined (Choice E), whereas restoring the 60° label establishes that the triangle is equilateral, fixing AB = 6 (Choice C)."
+        }
+      }
+    },
+    {
+      "id": "594c8cee89f28b56",
+      "source_id": "206",
+      "category": "geometry",
+      "question": "Find the scale factor from $Q$ to $Q'$.\nChoices:\n(A) 2\n(B) 3\n(C) 4\n(D) 5",
+      "source_answer": "3",
+      "status": "pending_review",
+      "service_tier": "flex",
+      "provider": "Google AI Studio",
+      "usage": {
+        "prompt_tokens": 1531,
+        "completion_tokens": 1018,
+        "total_tokens": 2549,
+        "cost": 0.002482875,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.002482875,
+          "upstream_inference_prompt_cost": 0.000574125,
+          "upstream_inference_completions_cost": 0.00190875
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 778,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "suggestion": {
+        "eligible": true,
+        "rejection_reason": null,
+        "proposal": {
+          "edit_type": "text replacement",
+          "changed_fact_before": "The distance from C to Q' is labeled as 10.",
+          "changed_fact_after": "The distance from C to Q' is labeled as 15.",
+          "expected_answer_before": "2",
+          "solution_before": "The distance from center C to Q is 5, and the distance from C to Q' is 10. The scale factor from Q to Q' is 10 / 5 = 2.",
+          "solution_after": "The distance from center C to Q is 5, and the distance from C to Q' is 15. The scale factor from Q to Q' is 15 / 5 = 3.",
+          "editing_method": "Edit the text label '15' beneath the horizontal dimension arrow to read '10' using matching font and color.",
+          "reasoning_change": "Changing CQ' from 10 to 15 updates the quotient CQ'/CQ from 2 to 3."
+        }
+      }
+    },
+    {
+      "id": "620a776e5f8ca349",
+      "source_id": "114",
+      "category": "geometry",
+      "question": "In the figure, KL is tangent to $\\odot M$ at K. Find the value of x.\nChoices:\n(A) 6.00\n(B) 9.45\n(C) 18.9\n(D) 37.8",
+      "source_answer": "9.45",
+      "status": "model_rejected",
+      "service_tier": "flex",
+      "provider": "Google AI Studio",
+      "usage": {
+        "prompt_tokens": 1548,
+        "completion_tokens": 1910,
+        "total_tokens": 3458,
+        "cost": 0.00416175,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00416175,
+          "upstream_inference_prompt_cost": 0.0005805,
+          "upstream_inference_completions_cost": 0.00358125
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 1744,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "suggestion": {
+        "eligible": false,
+        "rejection_reason": "For multiple-choice problems, the altered answer must be one of the listed choices ((A) 6.00, (C) 18.9, or (D) 37.8). Solving the right-triangle equation $x^2 + KL^2 = (x + d)^2$ for $x \\in \\{6.00, 18.9, 37.8\\}$ requires non-integer, unnatural values for either $KL$ (e.g., $\\sqrt{220} \\approx 14.83$) or the external secant segment $d$, so no isolated, coherent visual edit can produce any of the alternative choices.",
+        "proposal": null
+      }
+    },
+    {
+      "id": "67cde1a321fa6555",
+      "source_id": "389",
+      "category": "table",
+      "question": "Look at the table. Then answer the question. At a price of $320, is there a shortage or a surplus?'\nChoices:\n(A) shortage\n(B) surplus",
+      "source_answer": "shortage",
+      "status": "pending_review",
+      "service_tier": "flex",
+      "provider": "Google AI Studio",
+      "usage": {
+        "prompt_tokens": 1531,
+        "completion_tokens": 1779,
+        "total_tokens": 3310,
+        "cost": 0.00390975,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00390975,
+          "upstream_inference_prompt_cost": 0.000574125,
+          "upstream_inference_completions_cost": 0.003335625
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 1493,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "suggestion": {
+        "eligible": true,
+        "rejection_reason": null,
+        "proposal": {
+          "edit_type": "text modification",
+          "changed_fact_before": "At a price of $320, the quantity supplied is 22,500.",
+          "changed_fact_after": "At a price of $320, the quantity supplied is 12,500.",
+          "expected_answer_before": "surplus",
+          "solution_before": "Locate the row for $320. Quantity demanded is 20,000 and quantity supplied is 22,500. Because quantity supplied is greater than quantity demanded, there is a surplus.",
+          "solution_after": "Locate the row for $320. Quantity demanded is 20,000 and quantity supplied is 12,500. Because quantity demanded is greater than quantity supplied, there is a shortage.",
+          "editing_method": "Edit the text in the row for $320 under 'Quantity supplied' from 12,500 to 22,500 using matching font and background color.",
+          "reasoning_change": "In the erroneous image, quantity supplied exceeds quantity demanded at $320, yielding a surplus. In the corrected image, quantity demanded exceeds quantity supplied, yielding a shortage."
+        }
+      }
+    },
+    {
+      "id": "68671df49a34d050",
+      "source_id": "154",
+      "category": "chart",
+      "question": "Is this an odd function?\nChoices:\n(A) Yes\n(B) No",
+      "source_answer": "No",
+      "status": "model_rejected",
+      "service_tier": "flex",
+      "provider": "Google AI Studio",
+      "usage": {
+        "prompt_tokens": 1508,
+        "completion_tokens": 416,
+        "total_tokens": 1924,
+        "cost": 0.0013455,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0013455,
+          "upstream_inference_prompt_cost": 0.0005655,
+          "upstream_inference_completions_cost": 0.00078
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 372,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "suggestion": {
+        "eligible": false,
+        "rejection_reason": "Changing the graph and formula to an odd function requires redrawing the entire curve and replacing the label, which exceeds a localized visual edit.",
+        "proposal": null
+      }
+    },
+    {
+      "id": "893f947263c9ffed",
+      "source_id": "228",
+      "category": "geometry",
+      "question": "As shown in the figure, AB is the diameter of circle O, DB and DC are respectively tangent to circle O at points B and C. If ∠ACE = 25.0, then the degree of ∠D is ()\nChoices:\n(A) 50°\n(B) 55°\n(C) 60°\n(D) 65°",
+      "source_answer": "50°",
+      "status": "model_rejected",
+      "service_tier": "flex",
+      "provider": "Google AI Studio",
+      "usage": {
+        "prompt_tokens": 1623,
+        "completion_tokens": 1021,
+        "total_tokens": 2644,
+        "cost": 0.002523,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.002523,
+          "upstream_inference_prompt_cost": 0.000608625,
+          "upstream_inference_completions_cost": 0.001914375
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 963,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "suggestion": {
+        "eligible": false,
+        "rejection_reason": "All geometric elements and numerical conditions shown in the diagram (diameter AB, tangents DB and DC, and angle ACE) are explicitly defined in the question text, so any visual modification would conflict with the question.",
+        "proposal": null
+      }
+    },
+    {
+      "id": "8b593faa7f197a1a",
+      "source_id": "245",
+      "category": "table",
+      "question": "How much money does Damon need to buy a grilled steak and a mushroom pizza? (Unit: $)",
+      "source_answer": "24",
+      "status": "model_rejected",
+      "service_tier": "flex",
+      "provider": "Google AI Studio",
+      "usage": {
+        "prompt_tokens": 1510,
+        "completion_tokens": 439,
+        "total_tokens": 1949,
+        "cost": 0.001389375,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.001389375,
+          "upstream_inference_prompt_cost": 0.00056625,
+          "upstream_inference_completions_cost": 0.000823125
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 393,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "suggestion": {
+        "eligible": false,
+        "rejection_reason": "The task only requires looking up two numbers and performing a single addition, failing the requirement of at least two dependent reasoning operations beyond reading or counting.",
+        "proposal": null
+      }
+    },
+    {
+      "id": "c98ec598c389d2e6",
+      "source_id": "928",
+      "category": "table",
+      "question": "How much more does a navy blue bath mat cost than a yellow bath towel? (Unit: $)",
+      "source_answer": "5",
+      "status": "model_rejected",
+      "service_tier": "flex",
+      "provider": "Google AI Studio",
+      "usage": {
+        "prompt_tokens": 1508,
+        "completion_tokens": 847,
+        "total_tokens": 2355,
+        "cost": 0.002153625,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.002153625,
+          "upstream_inference_prompt_cost": 0.0005655,
+          "upstream_inference_completions_cost": 0.001588125
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 801,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "suggestion": {
+        "eligible": false,
+        "rejection_reason": "The solution requires only a single subtraction operation after reading values from the table, which does not meet the requirement of at least two dependent reasoning operations.",
+        "proposal": null
+      }
+    }
+  ]
+}

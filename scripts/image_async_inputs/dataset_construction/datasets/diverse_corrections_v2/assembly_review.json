@@ -1,0 +1,283 @@
+{
+  "version": 2,
+  "samples": [
+    {
+      "workspace": "work/v2_builds/cx1106",
+      "id": "1f04767ddef7b285",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: MG4 dotted no-control peak lowered below 60; remaining panel maxima preserved. Count of exceeding panels changes 1 to 2."
+    },
+    {
+      "workspace": "work/v2_builds/cx1152",
+      "id": "1e4b2cb25315d3ed",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: right-column sphere shading states swapped; left panels/labels preserved. Brighter bottom corresponds to W2 versus W1. Calibration subset."
+    },
+    {
+      "workspace": "work/v2_builds/cx1188",
+      "id": "a1971b5e5d8b87dd",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: first two stepped descents exchanged; latter cycles retained. Finer steps identify second versus first cycle."
+    },
+    {
+      "workspace": "work/v2_builds/cx1212",
+      "id": "de402fdc6c89968e",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: red/purple legend names swapped; peak locations preserved. Source double-hyphen spelling is explicitly adjudicated as same red-curve name in answer_equivalence_review.json."
+    },
+    {
+      "workspace": "work/v2_builds/cx1294",
+      "id": "65bf61315731138d",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: a/b labels swapped, heatmaps and lower panel retained. Lighter/lower average upper-left heatmap now b versus a."
+    },
+    {
+      "workspace": "work/v2_builds/cx2000",
+      "id": "b65e2a18a1f93fb9",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: w1/w2 legend text swapped, curves preserved. Largest-average solid black curve now w1 versus w2."
+    },
+    {
+      "workspace": "work/v2_builds/cx2114",
+      "id": "aab014dfde11d15f",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: red-marker legend labels swapped only. At selected learning rate compare endpoint drops: GP before versus FWC after."
+    },
+    {
+      "workspace": "work/v2_builds/cx2157",
+      "id": "2e557ece46179103",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: train trace raised in sampling phase, non-target test trace retained. Train-test gap now larger than SGD rather than smaller. Explicit aspect allowance recorded."
+    },
+    {
+      "workspace": "work/v2_builds/cx2188",
+      "id": "d3caa5864c660841",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected and re-compared with source: FLLR-r/Real legend swap, three curve panels preserved. Selected dashed minimum maps to FLLR-r versus Real."
+    },
+    {
+      "workspace": "work/v2_builds/cx291",
+      "id": "9938bf6f5afb5cf1",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: only target POR(+repr.) bar moves right (observed center about .69 rather than proposed .72); its rendered width also increases. The target bar is the edited component; other rows unchanged. Nearest left-panel model is unambiguously HIQL versus HGCBC. Record actual rendering, not exact proposed coordinates."
+    },
+    {
+      "workspace": "work/v2_builds/cx53",
+      "id": "7672a9a692f63d3e",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: Training/Interruption legend swap; stacked bars preserved. Dominant aggregate gray component maps to Interruption versus Training."
+    },
+    {
+      "workspace": "work/v2_builds/cx84",
+      "id": "c317805cb1ed72a4",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: only rightmost T1/T4 legend text swapped, other panels preserved. Increasing magenta trace now T1 versus T4; explicit aspect allowance recorded."
+    },
+    {
+      "workspace": "work/v2_builds/mm1060",
+      "id": "24276e201dfd64db",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: bottom eyes removed; horizontal symmetry broken, vertical retained. All four heads remain. Global stroke rasterization differs but semantic structure is preserved."
+    },
+    {
+      "workspace": "work/v2_builds/mm129",
+      "id": "98ac3d08f1d828ec",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: D2 H becomes E; decoded word MATE versus MATH. PIZZA example unaffected."
+    },
+    {
+      "workspace": "work/v2_builds/mm149",
+      "id": "27d8131ccfea60c3",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: right-house roof 4 versus 3, shared circles and other values retained. Shared sum is 7; missing value 8 versus 9."
+    },
+    {
+      "workspace": "work/v2_builds/mm1625",
+      "id": "0d47e4c378e9c9d0",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: bottom area 6 versus 4 only. Equal-height area proportions give longest e versus d; source explicitly not to scale."
+    },
+    {
+      "workspace": "work/v2_builds/mm1821",
+      "id": "87eedc48e054f4b9",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: top-right 25 versus 21 only semantic change. Affine grid gives x=43 versus 42. Background paper texture changes globally; no text/grid content lost."
+    },
+    {
+      "workspace": "work/v2_builds/mm2551",
+      "id": "86a368de4df0d97e",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: left spinner 2 becomes 5. Odd-product complement yields 2/3 versus 7/9; equal sectors preserved."
+    },
+    {
+      "workspace": "work/v2_builds/mm2616",
+      "id": "28e661ff8679c832",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: target outline moved from units to tens cell, grid remains intact. Crossing powers force 256, target digit 5 versus 6."
+    },
+    {
+      "workspace": "work/v2_builds/mm2658",
+      "id": "f8ee03eeec0be1ef",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: Spinner A bottom-left 3 versus 4. Even-product probability is 1/2 versus 2/3 by odd-product complement; other sectors preserved."
+    },
+    {
+      "workspace": "work/v2_builds/mm3020",
+      "id": "61f10d38c9943fe0",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: A(4,8) versus A(4,9); other coordinate labels preserved. Base 12, height 8 versus 9 gives areas 48 versus 54. Diagram uses printed coordinates, not measurement from pixels."
+    },
+    {
+      "workspace": "work/v2_builds/mm415",
+      "id": "3e9d31ca156f29e9",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: 1400 versus 1300. 2005-205=1800 then missing addend 400 versus 500. Butterfly and other equation terms preserved."
+    },
+    {
+      "workspace": "work/v2_builds/mm601",
+      "id": "3d7ec1844824f43a",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: shirts 3/5 swapped; podium heights preserved. Third place maps to 3 versus 5. Marked easy calibration."
+    },
+    {
+      "workspace": "work/v2_builds/mm607",
+      "id": "472184f316b5b06b",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: top operand 2 versus 0. Linked arithmetic gives 8-5=3 versus 8-3=5; remaining grid unchanged."
+    },
+    {
+      "workspace": "work/v2_builds/mm653",
+      "id": "65d8996a943cbf18",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: image4 apple replaced by blue circle only; all referenced panels retained. Placement constraints give flower position 2 versus 4."
+    },
+    {
+      "workspace": "work/v2_builds/mm680",
+      "id": "e760893acc879d7a",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: equation total 61 versus 51, all coin values/unknowns retained. Known sum 41, two equal unknowns give 10 versus 5. Explicit raw aspect allowance recorded."
+    },
+    {
+      "workspace": "work/v2_builds/mv287",
+      "id": "3625463720959fd0",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: region labels swapped; curves and shaded regions retained. Larger region is right bounded region (R1 before, R2 after). Explicit aspect allowance recorded; proposal integral narrative is not the reference proof."
+    },
+    {
+      "workspace": "work/v2_builds/mv323",
+      "id": "65cec6a33482955b",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: -15 versus -40; comparing absolute values with 25 gives red versus green. Marked calibration."
+    },
+    {
+      "workspace": "work/v2_builds/mv44",
+      "id": "cca6215bb2b1ecf3",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: star-shaped beads $4 versus $2/kg. 4*2+5*4=28 versus 4*2+5*2=18. All other rows unchanged; explicit aspect allowance recorded."
+    },
+    {
+      "workspace": "work/v2_builds/mv573",
+      "id": "2cfc68128ac7b51d",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: Thursday 55 versus 53; frequency comparison gives modes 55 and 53. Other rows preserved."
+    },
+    {
+      "workspace": "work/v2_builds/mv719",
+      "id": "2a8bf498dcf14d92",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: Saturday 5 versus 7 only; range 20-5=15 versus 20-7=13. Source header encoding artifact retained. Raw aspect allowance explicitly reviewed."
+    },
+    {
+      "workspace": "work/v2_builds/mv799",
+      "id": "ab59a556e4adafc6",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: baking dish $5 versus $4; requested product totals 14 versus 13. Other prices preserved."
+    },
+    {
+      "workspace": "work/v2_builds/mv815",
+      "id": "d2a63ec0009f3bd1",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: 120 versus 60 degree label. Diameter forms a linear pair giving 60 versus 120; drawing treated as schematic, not measured angles."
+    },
+    {
+      "workspace": "work/v2_builds/mv841",
+      "id": "512ba2f4a8ada618",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: Mitch 7 versus 9; sorted middle values 8 versus 9. All five rows preserved."
+    },
+    {
+      "workspace": "work/v2_builds/mv886",
+      "id": "b61874c23f711686",
+      "visually_reviewed": true,
+      "notes": "Normalized pair inspected: Salem 3 versus 6; sorted middle values 5 versus 6. Other table cells preserved."
+    },
+    {
+      "workspace": "work/dataset_v1_build",
+      "id": "0f6c4193c4c4860c",
+      "reuse": "Previously accepted six-pair pilot; no new generation/validation charges."
+    },
+    {
+      "workspace": "work/dataset_v1_build",
+      "id": "10be37e09bfc3ea2",
+      "reuse": "Previously accepted six-pair pilot; no new generation/validation charges."
+    },
+    {
+      "workspace": "work/dataset_v1_build",
+      "id": "3b29a39b18f62071",
+      "reuse": "Previously accepted six-pair pilot; no new generation/validation charges."
+    },
+    {
+      "workspace": "work/dataset_v1_build",
+      "id": "594c8cee89f28b56",
+      "reuse": "Previously accepted six-pair pilot; no new generation/validation charges."
+    },
+    {
+      "workspace": "work/dataset_v1_build",
+      "id": "5a1986cb45b3214a",
+      "reuse": "Previously accepted six-pair pilot; no new generation/validation charges."
+    },
+    {
+      "workspace": "work/dataset_v1_build",
+      "id": "fed26522a1d0cd38",
+      "reuse": "Previously accepted six-pair pilot; no new generation/validation charges."
+    }
+  ],
+  "supporting_evidence": [
+    "work/v2_construction_report.json",
+    "work/v2_visual_reviews.json",
+    "work/mathvista_cache/source_lock.json",
+    "work/mathvision_cache/source_lock.json",
+    "work/charxiv_cache/source_lock.json",
+    "work/v2_charxiv_extra_plan.json",
+    "work/v2_charxiv_plan.json",
+    "work/v2_mathvision_b_plan.json",
+    "work/v2_mathvision_extra_plan.json",
+    "work/v2_mathvision_plan.json",
+    "work/v2_mathvista_plan.json",
+    "work/v2_mathvista_proposals",
+    "work/v2_mathvision_proposals",
+    "work/v2_charxiv_proposals",
+    "work/v2_mathvision_b_proposals",
+    "work/v2_builds/cx1038",
+    "work/v2_builds/cx13",
+    "work/v2_builds/cx1554",
+    "work/v2_builds/cx1630",
+    "work/v2_builds/cx1646",
+    "work/v2_builds/cx1789",
+    "work/v2_builds/cx1851",
+    "work/v2_builds/cx1940",
+    "work/v2_builds/cx2051",
+    "work/v2_builds/cx2053",
+    "work/v2_builds/cx2150",
+    "work/v2_builds/cx2243",
+    "work/v2_builds/mm1068",
+    "work/v2_builds/mm1772",
+    "work/v2_builds/mm1943",
+    "work/v2_builds/mm2374",
+    "work/v2_builds/mm462",
+    "work/v2_builds/mm491",
+    "work/v2_builds/mm818",
+    "work/v2_builds/mv151",
+    "work/v2_builds/mv37"
+  ]
+}
