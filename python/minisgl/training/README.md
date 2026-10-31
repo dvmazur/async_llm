@@ -7,7 +7,8 @@ engine is unchanged.
 
 ## Pipeline
 
-1. **Record.** Attach `record(llm)` to an idle, empty session before prefill.
+1. **Record.** Run agents inside `with RecordedAsyncLLM(llm) as recorded_llm`
+   and retrieve their history with `recorded_llm.get_trace()`.
    Each input token records its ID, scheduled step, prefill/decode kind, block
    position, and ordered view with visible lengths. Copy/merge operations store
    compact snapshot references; clearing starts a new live block version while
@@ -67,11 +68,12 @@ async def main():
         max_seq_len_override=512,
     )
     try:
-        trace = minisgl.training.record(llm)
         ids = llm.tokenizer.encode("The capital of France is Paris.", add_special_tokens=False)
-        block = await llm.create_block()
-        await llm.forward(ids[:-1], write_to=block, return_logits=False)
-        await llm.free_block(block)
+        with minisgl.training.RecordedAsyncLLM(llm) as recorded:
+            block = await recorded.create_block()
+            await recorded.forward(ids[:-1], write_to=block, return_logits=False)
+            await recorded.free_block(block)
+        trace = recorded.get_trace()
 
         # Default replay returns hidden states; request logits for this loss.
         logits = minisgl.training.replay_trace(llm, trace, hidden_only=False)
@@ -85,6 +87,38 @@ async def main():
 
 asyncio.run(main())
 ```
+
+Multiple recording scopes can share one engine and still batch their requests:
+
+```python
+from minisgl.training import RecordedAsyncLLM, Trace, replay_from_trace
+
+
+async def collect_trace(llm) -> Trace:
+    with RecordedAsyncLLM(llm) as recorded:
+        await run_agent(recorded)
+    return recorded.get_trace()
+
+
+async def train_agents(llm):
+    traces = await asyncio.gather(*(collect_trace(llm) for _ in range(5)))
+    for trace in traces:
+        logits = replay_from_trace(llm, trace, hidden_only=False)
+        compute_loss(logits).backward()
+```
+
+Here `run_agent` and `compute_loss` are your application functions.
+`replay_from_trace` is an alias of `replay_trace`. Each scope records only calls
+through its wrapper, including `prefill_block`, `forward`, `async_generate`, and
+cache mutations. Unused blocks that are only created and freed are omitted.
+Agents in one scope may share blocks; separate scopes must use independent
+blocks and record their history from the start. Reading a populated unrecorded
+block or using another active scope's block raises an error.
+Await all calls and close generation streams before leaving the scope. Exiting
+restores the engine after the last recorder and leaves the LLM open; exceptional
+exit cancels only that scope's queued requests. Sampled labels and file export
+remain application responsibilities. The older whole-session `record(llm)` API
+remains available but cannot be combined with these scopes.
 
 The AsyncLLM adapter supports unquantized dense models on one rank. It enables
 gradients on the current engine weights without reloading a checkpoint. Finish

@@ -299,23 +299,24 @@ async def _run_demo(
 ) -> tuple[List[int], List[int]]:
     tokenizer = llm.tokenizer
     try:
-        recorder = None
-        if config.trace_output is not None:
-            from .training import DemoRecorder
+        if config.trace_output is None:
+            return await _run_loop(config, llm, tokenizer, prompting)
 
-            if config.trace_output.exists():
-                raise FileExistsError(config.trace_output)
-            recorder = DemoRecorder(llm)
-        result = await _run_loop(config, recorder or llm, tokenizer, prompting)
-        if recorder is not None:
-            recorder.save(
-                config.trace_output,
-                model=config.model,
-                problem=config.problem,
-                thinker_tokens=result[0],
-                writer_tokens=result[1],
-            )
-            print(f"Saved training trace to {config.trace_output}", flush=True)
+        from .training import DemoRecorder, save_training_example
+
+        if config.trace_output.exists():
+            raise FileExistsError(config.trace_output)
+        with DemoRecorder(llm) as recorded:
+            result = await _run_loop(config, recorded, tokenizer, prompting)
+        save_training_example(
+            recorded,
+            config.trace_output,
+            model=config.model,
+            problem=config.problem,
+            thinker_tokens=result[0],
+            writer_tokens=result[1],
+        )
+        print(f"Saved training trace to {config.trace_output}", flush=True)
         return result
     finally:
         await llm.close()

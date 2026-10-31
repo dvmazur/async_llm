@@ -506,11 +506,14 @@ class RecordingSession:
 
     def _run(self, batch, call):
         result = self._call(call)
+        self._commit(batch)
+        return result
+
+    def _commit(self, batch):
         for request in batch.requests:
             self._contents[request.write_to] = request.write_start + len(request.input_ids)
         self.trace.append(batch)
         self.trace.steps += 1
-        return result
 
     def _replace(self, block, refs):
         self._contents[block.block_id] = sum(length for _, length in refs)
@@ -537,6 +540,10 @@ class RecordingSession:
 
     def prefill_batch(self, jobs):
         jobs = list(jobs)
+        batch = self._prefill_batch(jobs)
+        return self._run(batch, lambda: self.session.prefill_batch(jobs))
+
+    def _prefill_batch(self, jobs):
         requests = []
         for job in jobs:
             self._check([*job.context, job.block])
@@ -583,8 +590,7 @@ class RecordingSession:
                     ),
                 )
             )
-        batch = ForwardBatch(self.trace.steps, "prefill", tuple(requests))
-        return self._run(batch, lambda: self.session.prefill_batch(jobs))
+        return ForwardBatch(self.trace.steps, "prefill", tuple(requests))
 
     def prefill_block(
         self,
@@ -603,6 +609,10 @@ class RecordingSession:
         return self.prefill_batch([job])[0]
 
     def decode_step(self, group, input_ids):
+        batch = self._decode_batch(group, input_ids)
+        return self._run(batch, lambda: self.session.decode_step(group, input_ids))
+
+    def _decode_batch(self, group, input_ids):
         contexts = list(group)
         requests = []
         for ctx, token_id in zip(contexts, input_ids.flatten().tolist(), strict=True):
@@ -624,13 +634,14 @@ class RecordingSession:
                     ),
                 )
             )
-        batch = ForwardBatch(self.trace.steps, "decode", tuple(requests))
-        return self._run(batch, lambda: self.session.decode_step(group, input_ids))
+        return ForwardBatch(self.trace.steps, "decode", tuple(requests))
 
 
 def record(llm):
     """Wrap an idle, fresh AsyncLLM's session without changing its inference code."""
-    if isinstance(llm.async_engine.session, RecordingSession):
+    if isinstance(llm.async_engine.session, RecordingSession) or getattr(
+        llm.async_engine.session, "_recording_hub", False
+    ):
         raise ValueError("This AsyncLLM is already recording")
     recorder = RecordingSession(llm.async_engine.session)
     llm.async_engine.session = recorder
