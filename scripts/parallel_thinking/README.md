@@ -1,30 +1,20 @@
-# Full example → one-trajectory training
+# Parallel thinking
 
-Open `train_small_model.ipynb` with the **AsyncLLM (uv)** kernel and Run All.
-The notebook contains the Alice/Bob generation, trace loading, training loop and
-free-generation check. `hogwild_formatting.py` retains the original Hogwild prompts
-and step formatting (Apache-2.0, see `HOGWILD_LICENSE`).
+- `train_small_model.ipynb`: Qwen3-4B-Thinking-2507 generates one trajectory;
+  Qwen3-1.7B learns it with **BF16 master weights and AdamW moments on CPU**,
+  BF16 forward/backward on GPU, FP32 RoPE buffers. The actual training targets
+  and context examples are displayed. A temporary checkpoint is used only for
+  independent generation and deleted automatically.
+- `no_barrier.ipynb`: independent Alice/Bob loops, with synchronization only
+  during cache publication. A delayed Bob demonstrates independent progress.
+- `async_helpers.py`: small coroutine, publication-lock and process helpers.
+  The main generation and training logic stays in the notebooks.
 
-The default teacher is **Qwen3-4B-Thinking-2507**, the student **Qwen3-1.7B**.
-The initial prompt text and token IDs match the original QwQ-32B full example.
-The periodic `insert_s1_prompt_every_tokens` intervention is disabled.
-The teacher generates a new trace; training uses only that one trace.
+Both use the original Hogwild prompts without periodic collaboration reminders.
+The formatter and its Apache-2.0 license are retained from Hogwild.
 
-```bash
-bash scripts/parallel_thinking/setup_env.sh
-.venv/bin/hf download Qwen/Qwen3-4B-Thinking-2507 --local-dir models/Qwen3-4B-Thinking-2507
-.venv/bin/hf download Qwen/Qwen3-1.7B --local-dir models/Qwen3-1.7B
-.venv/bin/jupyter lab --no-browser --ip=127.0.0.1 --port=8890
-```
-
-On imladris, select a free RTX A4000 in the first cell (`GPU_INDEX`, default 2).
-The recipe uses a 16 GiB Ampere GPU. Allow tens of GiB of host RAM for the
-optimizer and FP32 master weights; BF16 forward/backward uses GPU. Use `.venv/bin/python` or `uv run --no-sync` with the prepared environment.
-For remote Jupyter, open `ssh -L 8890:127.0.0.1:8890 imladris` on your computer.
-
-Each run saves its trace, results, executable snapshots of the current notebook
-functions, logs and student checkpoint under `training_runs/parallel_thinking/`.
-The functions are executed in fresh processes to release GPU memory between stages;
-`inspect.getsource` captures the executed cells, including unsaved edits.
-Replay preserves recorded block visibility and RoPE positions. Teacher-forced
-accuracy and independent free generation are reported separately.
+Run `bash scripts/parallel_thinking/setup_env.sh`, then start Jupyter from the
+repository root and select **AsyncLLM (uv)**. Models are already under `models/`
+on imladris. The first cell selects an RTX A4000: GPU 2 for training, GPU 1 for
+the independent-loop experiment. Restart the kernel before running again.
+No permanent run directories, checkpoints or JSON reports are created.

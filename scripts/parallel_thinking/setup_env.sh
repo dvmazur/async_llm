@@ -30,5 +30,5 @@ path.write_text(text)
 PY
 "$UV" pip install --python .venv/bin/python --no-deps -r "$requirements"
 "$UV" pip install --python .venv/bin/python --no-deps -e .
-"$UV" pip install --python .venv/bin/python transformers==5.14.1 jupyterlab ipykernel nbclient ninja
+"$UV" pip install --python .venv/bin/python transformers==5.14.1 jupyterlab ipykernel nbclient ninja cloudpickle==3.1.2
 .venv/bin/python -m ipykernel install --user --name async-llm --display-name 'AsyncLLM (uv)'
