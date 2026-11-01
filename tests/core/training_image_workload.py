@@ -11,10 +11,10 @@ import torch
 def record_image_workload(engine, prefill_rows):
     from minisgl.shared_cache import PrefillJob, SharedCacheSession, WorkerGroup
     from minisgl.training import Trace
-    from minisgl.training.trace import RecordingSession
+    from minisgl.training.recording import _TraceRecorder
 
     raw = SharedCacheSession(engine)
-    recorder = RecordingSession(raw)
+    recorder = _TraceRecorder(raw)
     config = engine.config.model_config
     vision = config.vision_config
     patch_dim = vision.in_channels * vision.temporal_patch_size * vision.patch_size**2
@@ -99,7 +99,7 @@ def record_image_workload(engine, prefill_rows):
         if request.mrope_positions is not None:
             assert torch.equal(
                 torch.cat([positions for _, positions in calls], dim=1),
-                request.mrope_positions.tensor(),
+                request.mrope_positions.to_tensor(),
             )
         operations["prefill"] += 1
         save([recorder.trace.num_tokens - 1], result)
@@ -184,9 +184,9 @@ def record_image_workload(engine, prefill_rows):
         "batches": len(trace.batches),
         "updates": len(trace.updates),
         "image_requests": len(images),
-        "images_per_request": [len(request.image_grid_thw.tensor()) for request in images],
+        "images_per_request": [len(request.image_grid_thw.to_tensor()) for request in images],
         "image_grids": [
-            grid for request in images for grid in request.image_grid_thw.tensor().tolist()
+            grid for request in images for grid in request.image_grid_thw.to_tensor().tolist()
         ],
         "operations": dict(operations),
         "chunks": dict(chunks),

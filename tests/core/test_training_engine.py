@@ -58,8 +58,8 @@ def build_engine(args):
 def record(args):
     from minisgl.shared_cache import AsyncContext, PrefillJob, SharedCacheSession, WorkerGroup
     from minisgl.training import Trace
-    from minisgl.training.stress import workload
-    from minisgl.training.trace import RecordingSession
+    from minisgl.training.recording import _TraceRecorder
+    from minisgl.training.stress import generate_workload
 
     engine = build_engine(args)
     dtype = getattr(torch, args.dtype)
@@ -76,7 +76,7 @@ def record(args):
         raw.sc_gdn.prepare_decode = lambda *a, **kw: None
         raw.sc_gdn.state_dtype = getattr(torch, args.dtype)
 
-    class Capture(RecordingSession):
+    class Capture(_TraceRecorder):
         def __init__(self, session):
             super().__init__(session)
             self.rows, self.logits, self.phases = [], [], []
@@ -197,7 +197,7 @@ def record(args):
 
     started = time.perf_counter()
     try:
-        workload(capture, vocab, large_size=256)
+        generate_workload(capture, vocab, large_size=256)
         prompt = capture.create_block()
         prefill(prompt, 2048, phase="long_prefix")
         a, b, c = [capture.create_block() for _ in range(3)]
@@ -224,9 +224,7 @@ def record(args):
                     else (
                         [c, prompt, b]
                         if turn % 4 == 1
-                        else [prompt, b, prompt, a]
-                        if turn % 4 == 2
-                        else [b, a, c, prompt]
+                        else [prompt, b, prompt, a] if turn % 4 == 2 else [b, a, c, prompt]
                     )
                 ),
                 [prompt, c, *extra, a, b],
@@ -321,13 +319,13 @@ def record_image(args):
     from minisgl.shared_cache import SharedCacheSession, WorkerGroup
     from minisgl.training import Trace
     from minisgl.training.gdn import GDNReplay
-    from minisgl.training.trace import RecordingSession
+    from minisgl.training.recording import _TraceRecorder
 
     engine = build_engine(args)
     try:
         weights = fingerprints(engine.model.state_dict())
         raw = SharedCacheSession(engine)
-        recorder = RecordingSession(raw)
+        recorder = _TraceRecorder(raw)
         rows, logits, phases = [], [], []
 
         def save(value, phase):
@@ -381,12 +379,12 @@ def record_image(args):
         assert torch.equal(torch.cat([tokens for tokens, _ in calls]), ids)
         assert torch.equal(
             torch.cat([positions for _, positions in calls], dim=1),
-            request.mrope_positions.tensor(),
+            request.mrope_positions.to_tensor(),
         )
         for field, tensor in image.items():
-            assert torch.equal(getattr(request, field).tensor(), tensor), field
+            assert torch.equal(getattr(request, field).to_tensor(), tensor), field
         pixels.add_(1)
-        assert torch.equal(request.pixel_values.tensor(), original_pixels)
+        assert torch.equal(request.pixel_values.to_tensor(), original_pixels)
         span = block.mrope_span
         assert span < block.num_tokens == len(ids)
         text = torch.tensor([42, 43, 44], dtype=torch.int32)
@@ -397,7 +395,7 @@ def record_image(args):
         request = recorder.trace.batches[-1].requests[0]
         assert request.write_span == span and request.cache_spans == (span,)
         assert torch.equal(
-            request.mrope_positions.tensor(), torch.arange(span, span + 3).expand(3, -1)
+            request.mrope_positions.to_tensor(), torch.arange(span, span + 3).expand(3, -1)
         )
         assert block.mrope_span == baseline.mrope_span == span + 3
         token = torch.tensor([45], dtype=torch.int32)
@@ -486,8 +484,7 @@ def record_image_long(args):
 
 
 def replay(args):
-    from minisgl.training import replay_trace
-    from minisgl.training.sft import restore_trace
+    from minisgl.training import Trace, replay_trace
     from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText
     from transformers.models.qwen3_5 import modeling_qwen3_5 as modeling
 
@@ -503,7 +500,7 @@ def replay(args):
         setattr(modeling, name, inspect.unwrap(getattr(modeling, name)))
     data = json.loads((ROOT / f"{args.source}.json").read_text())
     saved = torch.load(ROOT / f"{args.source}.pt", weights_only=True)
-    trace = restore_trace(data["trace"])
+    trace = Trace.from_dict(data["trace"])
     dtype = getattr(torch, args.dtype)
     config = AutoConfig.from_pretrained(MODEL, local_files_only=True)
     model_class = AutoModelForImageTextToText if trace.multimodal else AutoModelForCausalLM

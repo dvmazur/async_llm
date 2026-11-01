@@ -10,9 +10,10 @@ import pytest
 import torch
 from minisgl.training import Trace, replay_trace, sft
 from minisgl.training.attention import attention
-from minisgl.training.sft import restore_trace, supervised_loss
-from minisgl.training.stress import workload
-from minisgl.training.trace import BlockUpdate, RecordingSession, Token
+from minisgl.training.recording import _TraceRecorder
+from minisgl.training.sft import compute_supervised_loss
+from minisgl.training.stress import generate_workload
+from minisgl.training.trace import BlockUpdate, Token
 from torch.overrides import TorchFunctionMode
 from transformers import Qwen3Config, Qwen3ForCausalLM
 
@@ -48,7 +49,7 @@ class Session:
 
 
 def example_trace():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     prompt, a, b = [NS(block_id=i, num_tokens=0) for i in range(3)]
 
     def prefill(block, ids, context):
@@ -71,7 +72,7 @@ def example_trace():
 
 
 def single_block_trace(mixed_steps):
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     block = session.create_block()
     groups = [[1, 2, 3], [4], [5, 6], [7], [8, 9]] if mixed_steps else [list(range(1, 10))]
     for ids in groups:
@@ -85,7 +86,7 @@ def single_block_trace(mixed_steps):
 
 
 def mutation_trace():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     prompt, a, b, empty = [NS(block_id=i, num_tokens=0) for i in range(4)]
 
     def prefill(block, ids, context):
@@ -123,7 +124,7 @@ def mutation_trace():
 
 
 def repeated_view_trace():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     a, b, c, empty = [session.create_block() for _ in range(4)]
 
     def prefill(block, ids, context):
@@ -160,7 +161,7 @@ def repeated_view_trace():
 
 def randomized_trace(seed):
     rng = random.Random(seed)
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     blocks = [session.create_block() for _ in range(5)]
 
     def prefill(block, count, context=()):
@@ -379,7 +380,7 @@ def test_parallel_logits_and_gradients(trace_factory, query_chunk_size):
 @pytest.mark.parametrize("seed", [0, 1, 2, 3])
 def test_randomized_mutations_match_sequential_logits_and_gradients(seed):
     model = tiny_model()
-    trace = restore_trace(json.loads(json.dumps(asdict(randomized_trace(seed)))))
+    trace = Trace.from_dict(json.loads(json.dumps(asdict(randomized_trace(seed)))))
     plan = trace.to(query_chunk_size=5)
     expected = sequential(model, trace)
     actual = replay_trace(model, plan, hidden_only=False)
@@ -393,9 +394,9 @@ def test_randomized_mutations_match_sequential_logits_and_gradients(seed):
 
 
 def test_synthetic_stress_workload_logits_and_gradients():
-    session = RecordingSession(Session())
-    data = workload(session, vocab_size=32, large_size=4)
-    trace = restore_trace(json.loads(json.dumps(data["trace"])))
+    session = _TraceRecorder(Session())
+    data = generate_workload(session, vocab_size=32, large_size=4)
+    trace = Trace.from_dict(json.loads(json.dumps(data["trace"])))
     assert trace == session.trace
     assert data["coverage"]["blocks"] >= 24
     assert data["coverage"]["max_view_depth"] == 12
@@ -453,8 +454,8 @@ def test_attention_fp64_algebra_and_fp32_rounding(
     trace_kind, kv_heads, rotary_width, query_chunk_size, record_property, fp64_attention
 ):
     if trace_kind == "stress":
-        session = RecordingSession(Session())
-        workload(session, vocab_size=32, large_size=4)
+        session = _TraceRecorder(Session())
+        generate_workload(session, vocab_size=32, large_size=4)
         trace = session.trace
     elif trace_kind == "repeated":
         trace = repeated_view_trace()
@@ -658,7 +659,7 @@ def test_chunked_supervised_loss_and_gradients(chunk_size):
     hook = model.lm_head.register_forward_pre_hook(
         lambda module, inputs: head_rows.append(inputs[0].shape[-2])
     )
-    actual = supervised_loss(model, plan, targets, chunk_size=chunk_size)
+    actual = compute_supervised_loss(model, plan, targets, chunk_size=chunk_size)
     hook.remove()
     assert max(head_rows) <= chunk_size
     assert sum(head_rows) == targets.ne(-100).sum()
@@ -834,7 +835,7 @@ def test_replay_checkpoint_reloads_as_native_huggingface(tmp_path):
 
 def test_mutation_trace_json_roundtrip():
     trace = mutation_trace()
-    restored = restore_trace(json.loads(json.dumps(asdict(trace))))
+    restored = Trace.from_dict(json.loads(json.dumps(asdict(trace))))
     assert restored == trace
     original, loaded = trace.to(), restored.to()
     assert loaded.spans == original.spans
@@ -873,7 +874,7 @@ def test_legacy_and_compact_json_replay_match():
     compact = asdict(trace)
     for update in compact["updates"]:
         del update["sources"]
-    legacy, compact = [restore_trace(json.loads(json.dumps(data))) for data in (legacy, compact)]
+    legacy, compact = [Trace.from_dict(json.loads(json.dumps(data))) for data in (legacy, compact)]
     assert all(update.refs is None for update in legacy.updates)
     assert compact == trace
     old_replay, new_replay = legacy.to(), compact.to()
@@ -892,7 +893,7 @@ def test_legacy_and_compact_json_replay_match():
 
 
 def test_serialized_self_append_history_stays_compact():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     block = session.create_block()
     session.prefill_batch(
         [NS(block=block, input_ids=torch.tensor([1]), context=[], pixel_values=None)]
@@ -908,14 +909,14 @@ def test_serialized_self_append_history_stays_compact():
     assert not any(update.sources for update in session.trace.updates)
     assert session._contents[block.block_id] == block.num_tokens
     session.decode_step([NS(cache_view=[], output_block=block)], torch.tensor([2]))
-    trace = restore_trace(json.loads(json.dumps(asdict(session.trace))))
+    trace = Trace.from_dict(json.loads(json.dumps(asdict(session.trace))))
     replay = trace.to()
     assert sum(map(len, replay.spans)) == 2
     assert visible_sources(replay) == [[0], [1]]
 
 
 def test_deep_copy_chain_resolves_without_flattening_or_recursion():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     block, empty = [session.create_block() for _ in range(2)]
     session.prefill_batch(
         [NS(block=block, input_ids=torch.tensor([1, 2]), context=[], pixel_values=None)]
@@ -1115,7 +1116,7 @@ def test_overfit():
 
 
 def test_reject_unrecorded_blocks():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     block = NS(block_id=0, num_tokens=1)
     with pytest.raises(ValueError, match="Unrecorded"):
         session.decode_step([NS(cache_view=[block], output_block=block)], torch.tensor([1]))
@@ -1124,7 +1125,7 @@ def test_reject_unrecorded_blocks():
 
 
 def test_recording_mutations():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     block, empty = [session.create_block() for _ in range(2)]
     job = NS(block=block, input_ids=torch.tensor([1, 2]), context=[], pixel_values=None)
     session.prefill_batch([job])
@@ -1155,7 +1156,7 @@ def test_recording_mutations():
 
 
 def test_clear_preserves_copied_gradients_and_isolates_reuse():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     source, empty = [session.create_block() for _ in range(2)]
 
     def prefill(block, ids):
@@ -1184,7 +1185,7 @@ def test_clear_preserves_copied_gradients_and_isolates_reuse():
 
 @pytest.mark.parametrize("operation", ["merge_blocks", "append_block", "free_block"])
 def test_failed_mutation_does_not_commit_trace(operation):
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     block = session.create_block()
 
     def fail(*args):
@@ -1204,7 +1205,7 @@ def test_failed_forward_does_not_commit_trace():
         def decode_step(self, group, input_ids):
             raise RuntimeError("failed")
 
-    session = RecordingSession(FailingSession())
+    session = _TraceRecorder(FailingSession())
     block = NS(block_id=0, num_tokens=0)
     group = [NS(cache_view=[block], output_block=block)]
     with pytest.raises(RuntimeError, match="failed"):

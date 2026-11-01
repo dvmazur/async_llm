@@ -96,7 +96,7 @@ import torch
 from transformers import AutoConfig, AutoModelForCausalLM
 
 from minisgl.training import Trace, replay_trace
-from minisgl.training.sft import supervised_loss
+from minisgl.training.sft import compute_supervised_loss
 
 data = json.loads(Path("training_runs/async_thoughts/trace.json").read_text())
 example = data["examples"][0]
@@ -117,7 +117,7 @@ del logits
 
 model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 model.zero_grad(set_to_none=True)
-loss = supervised_loss(model, trace, targets) / (targets != -100).sum()
+loss = compute_supervised_loss(model, trace, targets) / (targets != -100).sum()
 loss.backward()
 print("loss:", loss.item())
 ```

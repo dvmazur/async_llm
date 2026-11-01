@@ -59,7 +59,7 @@ class MropeLayout:
                     raise ValueError("Image requests require recorded mRoPE positions")
                 positions = torch.arange(span, span + size).expand(3, -1)
             else:
-                positions = request.mrope_positions.tensor()
+                positions = request.mrope_positions.to_tensor()
                 if (
                     positions.shape != (3, size)
                     or positions.dtype not in (torch.int32, torch.int64)

@@ -89,9 +89,9 @@ def _forward(model, trace, rows, hidden_only):
     if not hidden_only:
         kwargs["logits_to_keep"] = indices
     if trace.multimodal:
-        from .images import inputs_embeds
+        from .images import compute_input_embeddings
 
-        kwargs["inputs_embeds"] = inputs_embeds(model, trace)[None]
+        kwargs["inputs_embeds"] = compute_input_embeddings(model, trace)[None]
     else:
         kwargs["input_ids"] = trace.input_ids[None]
     output = (backbone if hidden_only else model)(

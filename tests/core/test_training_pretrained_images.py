@@ -8,7 +8,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 from minisgl.training import Trace, replay_trace
-from minisgl.training.sft import supervised_loss
+from minisgl.training.sft import compute_supervised_loss
 from minisgl.training.trace import ForwardBatch, ForwardRequest, TensorData
 from PIL import Image
 from test_training_logits import torch_reference_kernels as torch_reference_kernels
@@ -217,7 +217,7 @@ def test_pretrained_image_training_checkpoint(pretrained_source, read_mode, tmp_
     check_logits("initial_logits", metrics)
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     assert model.is_gradient_checkpointing
-    loss = supervised_loss(model, plan, targets, chunk_size=16, checkpointing=True) / count
+    loss = compute_supervised_loss(model, plan, targets, chunk_size=16, checkpointing=True) / count
     progress("replay_backward", replay_loss=loss.item())
     check_loss("initial_loss", loss.detach().cpu(), expected_loss_value)
     loss.backward()
@@ -309,7 +309,7 @@ def test_pretrained_image_training_checkpoint(pretrained_source, read_mode, tmp_
     with torch.no_grad():
         reloaded_logits = reloaded(**cuda_inputs, use_cache=False).logits[0].cpu()
         reloaded_replay = replay_trace(reloaded, plan, hidden_only=False).cpu()
-        reloaded_loss = supervised_loss(reloaded, plan, targets, chunk_size=16) / count
+        reloaded_loss = compute_supervised_loss(reloaded, plan, targets, chunk_size=16) / count
     reload_metrics = logit_errors(reloaded_logits, updated_logits)
     replay_metrics = logit_errors(reloaded_replay, updated_logits)
     progress(
@@ -327,6 +327,6 @@ def test_pretrained_image_training_checkpoint(pretrained_source, read_mode, tmp_
         status="failed" if parity_failures else "passed",
         peak_cuda_bytes=torch.cuda.max_memory_allocated(),
     )
-    assert not parity_failures, (
-        f"Numerical parity failures: {parity_failures}; see {tmp_path / 'report.json'}"
-    )
+    assert (
+        not parity_failures
+    ), f"Numerical parity failures: {parity_failures}; see {tmp_path / 'report.json'}"

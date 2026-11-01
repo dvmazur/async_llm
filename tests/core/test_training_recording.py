@@ -7,7 +7,7 @@ from dataclasses import asdict
 import pytest
 import torch
 from minisgl.shared_cache import AsyncContext
-from minisgl.training import RecordedAsyncLLM, Trace, record
+from minisgl.training import RecordedAsyncLLM, Trace
 from test_async_llm import _make_llm
 
 
@@ -278,20 +278,16 @@ def test_modified_block_is_rejected_before_more_inference():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("whole_engine_first", [False, True])
-def test_whole_engine_recorder_cannot_mix_with_independent_recorders(whole_engine_first):
+def test_independent_recorder_rejects_already_recorded_session():
+    from minisgl.training.recording import _TraceRecorder
+
     async def run():
-        llm, _ = _make_llm()
+        llm, session = _make_llm()
+        llm.async_engine.session = _TraceRecorder(session)
         try:
-            if whole_engine_first:
-                record(llm)
-                with pytest.raises(ValueError):
-                    with RecordedAsyncLLM(llm):
-                        pass
-            else:
+            with pytest.raises(ValueError, match="already recording"):
                 with RecordedAsyncLLM(llm):
-                    with pytest.raises(ValueError):
-                        record(llm)
+                    pass
         finally:
             await llm.close()
 
@@ -367,13 +363,15 @@ def test_image_payloads_are_copied_into_their_own_traces(monkeypatch):
             assert trace.multimodal and trace.num_tokens == 4
             assert len(trace.batches) == len(trace.batches[0].requests) == 1
             request = trace.batches[0].requests[0]
-            torch.testing.assert_close(request.pixel_values.tensor(), torch.full((4, 6), value))
-            torch.testing.assert_close(request.image_grid_thw.tensor(), torch.tensor([[1, 2, 2]]))
+            torch.testing.assert_close(request.pixel_values.to_tensor(), torch.full((4, 6), value))
             torch.testing.assert_close(
-                request.mm_token_type_ids.tensor(), torch.ones(4, dtype=torch.int64)
+                request.image_grid_thw.to_tensor(), torch.tensor([[1, 2, 2]])
             )
             torch.testing.assert_close(
-                request.mrope_positions.tensor(), torch.arange(4).expand(3, -1)
+                request.mm_token_type_ids.to_tensor(), torch.ones(4, dtype=torch.int64)
+            )
+            torch.testing.assert_close(
+                request.mrope_positions.to_tensor(), torch.arange(4).expand(3, -1)
             )
             assert referenced_blocks(trace) == {block.block_id}
             return trace

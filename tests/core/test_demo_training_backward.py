@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 import torch
 from minisgl.training import Trace, gdn
-from minisgl.training.sft import supervised_loss
+from minisgl.training.sft import compute_supervised_loss
 from test_training import apply_updates, example_trace, mutation_trace
 from test_training_gdn import Float64DeltaMath, sequential_delta, tiny_hybrid
 from test_training_logits import torch_reference_kernels as torch_reference_kernels
@@ -318,7 +318,7 @@ def test_reference_backward_matches_full_hybrid_parameter_gradients(checkpoint_l
     targets = torch.full((trace.num_tokens,), -100)
     targets[-4:] = torch.tensor([7, 9, 11, 13])
     parameters = tuple(model.parameters())
-    baseline = supervised_loss(model, replay, targets, chunk_size=2)
+    baseline = compute_supervised_loss(model, replay, targets, chunk_size=2)
     baseline_grads = torch.autograd.grad(baseline, parameters)
     replacement = reference_delta(trace, replay.order, query_chunk_size=3, checkpoint_steps=4)
     with (
@@ -327,7 +327,7 @@ def test_reference_backward_matches_full_hybrid_parameter_gradients(checkpoint_l
             gdn._Delta, "backward", side_effect=AssertionError("Production backward was invoked")
         ),
     ):
-        actual = supervised_loss(model, replay, targets, chunk_size=2)
+        actual = compute_supervised_loss(model, replay, targets, chunk_size=2)
         actual_grads = torch.autograd.grad(actual, parameters)
     torch.testing.assert_close(actual, baseline, atol=0, rtol=0)
     assert replacement.metrics and all(report["max_abs"] < 2e-6 for report in replacement.metrics)
@@ -439,7 +439,7 @@ def test_pretrained_demo_parameter_gradients_against_recurrence(record_property)
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.train()
     replay = trace.to()
-    baseline_loss = supervised_loss(model, replay, targets) / count
+    baseline_loss = compute_supervised_loss(model, replay, targets) / count
     baseline_loss.backward()
     expected = {
         name: parameter.grad.detach().clone()
@@ -459,7 +459,7 @@ def test_pretrained_demo_parameter_gradients_against_recurrence(record_property)
             gdn._Delta, "backward", side_effect=AssertionError("Production backward was invoked")
         ),
     ):
-        actual_loss = supervised_loss(model, replay, targets) / count
+        actual_loss = compute_supervised_loss(model, replay, targets) / count
         actual_loss.backward()
     torch.testing.assert_close(actual_loss, baseline_loss, atol=0, rtol=0)
     assert len(replacement.metrics) == expected_layers

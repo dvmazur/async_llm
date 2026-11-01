@@ -1,3 +1,4 @@
+import warnings
 from copy import copy
 from dataclasses import dataclass, field, replace
 from itertools import groupby
@@ -31,7 +32,7 @@ class TensorData:
             str(tensor.dtype).removeprefix("torch."),
         )
 
-    def tensor(self):
+    def to_tensor(self):
         import torch
 
         dtype = getattr(torch, self.dtype, None)
@@ -134,6 +135,13 @@ class Trace:
     def __init__(self, tokens=(), steps=0, updates=(), *, batches=None):
         if batches is not None and tokens:
             raise ValueError("Pass either legacy tokens or request batches")
+        if tokens:
+            warnings.warn(
+                "Token-based Trace construction is scheduled for future deprecation; "
+                "use RecordedAsyncLLM or Trace(batches=...) instead.",
+                FutureWarning,
+                stacklevel=2,
+            )
         self.batches = _pack_tokens(tokens) if batches is None else list(batches)
         self.steps = steps
         self.updates = list(updates)
@@ -400,11 +408,17 @@ class Trace:
         if version == 1:
             if "batches" in data:
                 raise ValueError("Request batches require trace format_version 2")
+            warnings.warn(
+                "Trace format version 1 is scheduled for future deprecation; "
+                "load and save the trace as format version 2.",
+                FutureWarning,
+                stacklevel=2,
+            )
             tokens = [
                 Token(**{**item, "view": tuple(tuple(ref) for ref in item["view"])})
                 for item in data["tokens"]
             ]
-            return cls(tokens, data.get("steps", 0), updates)
+            return cls(steps=data.get("steps", 0), updates=updates, batches=_pack_tokens(tokens))
         if "tokens" in data:
             raise ValueError("Trace format_version 2 stores requests, not tokens")
         tensor_fields = (
@@ -477,172 +491,11 @@ class BlockUpdate:
     sources: tuple[int, ...] = ()
     refs: tuple[tuple[int, int], ...] | None = None
 
-
-class RecordingSession:
-    """Session proxy: install before submitting any work to AsyncLLM."""
-
-    def __init__(self, session):
-        self.session = session
-        self.trace = Trace()
-        self._contents = {}
-        self._failed = False
-
-    def __getattr__(self, name):
-        return getattr(self.session, name)
-
-    def _check(self, blocks):
-        if self._failed:
-            raise RuntimeError("Discard recorder after a failed inference call")
-        for block in blocks:
-            if block.num_tokens != self._contents.get(block.block_id, 0):
-                raise ValueError("Unrecorded or modified block; attach recorder before prefill")
-
-    def _call(self, call):
-        try:
-            return call()
-        except Exception:
-            self._failed = True
-            raise
-
-    def _run(self, batch, call):
-        result = self._call(call)
-        self._commit(batch)
-        return result
-
-    def _commit(self, batch):
-        for request in batch.requests:
-            self._contents[request.write_to] = request.write_start + len(request.input_ids)
-        self.trace.append(batch)
-        self.trace.steps += 1
-
-    def _replace(self, block, refs):
-        self._contents[block.block_id] = sum(length for _, length in refs)
-        self.trace.updates.append(BlockUpdate(self.trace.steps, block.block_id, refs=refs))
-
-    def merge_blocks(self, left, right):
-        self._check([left, right])
-        refs = ((left.block_id, left.num_tokens), (right.block_id, right.num_tokens))
-        merged = self._call(lambda: self.session.merge_blocks(left, right))
-        self._replace(merged, refs)
-        return merged
-
-    def append_block(self, left, right):
-        self._check([left, right])
-        refs = ((left.block_id, left.num_tokens), (right.block_id, right.num_tokens))
-        result = self._call(lambda: self.session.append_block(left, right))
-        self._replace(left, refs)
-        return result
-
-    def free_block(self, block):
-        self._check([block])
-        self._call(lambda: self.session.free_block(block))
-        self._replace(block, ())
-
-    def prefill_batch(self, jobs):
-        jobs = list(jobs)
-        batch = self._prefill_batch(jobs)
-        return self._run(batch, lambda: self.session.prefill_batch(jobs))
-
-    def _prefill_batch(self, jobs):
-        requests = []
-        for job in jobs:
-            self._check([*job.context, job.block])
-            if getattr(job, "image_embeds", None) is not None:
-                raise ValueError(
-                    "Record image requests with pixels before internal prefill chunking"
-                )
-            view = [*job.context, job.block]
-            tensors = {
-                name: TensorData.capture(getattr(job, name, None))
-                for name in ("pixel_values", "image_grid_thw", "mm_token_type_ids")
-            }
-            positions = getattr(job, "mrope_rel", None)
-            if positions is None and tensors["pixel_values"] is not None:
-                derive = getattr(self.session, "_mrope_rel", None)
-                if derive is not None:
-                    positions = derive(
-                        job.input_ids.flatten(), job.mm_token_type_ids, job.image_grid_thw
-                    )
-            span = getattr(job.block, "mrope_span", job.block.num_tokens)
-            spans = tuple(getattr(block, "mrope_span", block.num_tokens) for block in view)
-            multimodal = positions is not None or any(
-                value is not None for value in tensors.values()
+    def __post_init__(self):
+        if self.refs is None:
+            warnings.warn(
+                "Source-row BlockUpdate construction is scheduled for future deprecation; "
+                "use block refs instead, including refs=() to clear a block.",
+                FutureWarning,
+                stacklevel=3,
             )
-            if positions is None and span != job.block.num_tokens:
-                import torch
-
-                positions = torch.arange(job.input_ids.numel()).expand(3, -1)
-            requests.append(
-                ForwardRequest(
-                    tuple(int(token) for token in job.input_ids.flatten().tolist()),
-                    job.block.block_id,
-                    job.block.num_tokens,
-                    tuple((block.block_id, block.num_tokens) for block in view),
-                    **tensors,
-                    mrope_positions=TensorData.capture(
-                        None if positions is None else positions + span
-                    ),
-                    write_span=span if multimodal or span != job.block.num_tokens else None,
-                    cache_spans=(
-                        spans
-                        if multimodal or any(n != block.num_tokens for n, block in zip(spans, view))
-                        else None
-                    ),
-                )
-            )
-        return ForwardBatch(self.trace.steps, "prefill", tuple(requests))
-
-    def prefill_block(
-        self,
-        block,
-        input_ids,
-        context=None,
-        pixel_values=None,
-        image_grid_thw=None,
-        mm_token_type_ids=None,
-    ):
-        from minisgl.shared_cache.session import PrefillJob
-
-        job = PrefillJob(
-            block, input_ids, list(context or ()), pixel_values, image_grid_thw, mm_token_type_ids
-        )
-        return self.prefill_batch([job])[0]
-
-    def decode_step(self, group, input_ids):
-        batch = self._decode_batch(group, input_ids)
-        return self._run(batch, lambda: self.session.decode_step(group, input_ids))
-
-    def _decode_batch(self, group, input_ids):
-        contexts = list(group)
-        requests = []
-        for ctx, token_id in zip(contexts, input_ids.flatten().tolist(), strict=True):
-            self._check([*ctx.cache_view, ctx.output_block])
-            block = ctx.output_block
-            span = getattr(block, "mrope_span", block.num_tokens)
-            spans = tuple(getattr(b, "mrope_span", b.num_tokens) for b in ctx.cache_view)
-            requests.append(
-                ForwardRequest(
-                    (int(token_id),),
-                    block.block_id,
-                    block.num_tokens,
-                    tuple((b.block_id, b.num_tokens) for b in ctx.cache_view),
-                    write_span=span if span != block.num_tokens else None,
-                    cache_spans=(
-                        spans
-                        if any(n != b.num_tokens for n, b in zip(spans, ctx.cache_view))
-                        else None
-                    ),
-                )
-            )
-        return ForwardBatch(self.trace.steps, "decode", tuple(requests))
-
-
-def record(llm):
-    """Wrap an idle, fresh AsyncLLM's session without changing its inference code."""
-    if isinstance(llm.async_engine.session, RecordingSession) or getattr(
-        llm.async_engine.session, "_recording_hub", False
-    ):
-        raise ValueError("This AsyncLLM is already recording")
-    recorder = RecordingSession(llm.async_engine.session)
-    llm.async_engine.session = recorder
-    return recorder.trace

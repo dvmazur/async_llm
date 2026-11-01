@@ -3,22 +3,23 @@
 import argparse
 import json
 import random
+import warnings
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
 import torch
 
-from .trace import RecordingSession
+from .recording import _TraceRecorder
 
 
-def workload(session, vocab_size, seed=7, large_size=128):
+def generate_workload(session, vocab_size, seed=7, large_size=128):
     from minisgl.shared_cache import AsyncContext, PrefillJob, WorkerGroup
 
     if not 1 <= large_size <= 256 or vocab_size < 2:
         raise ValueError("Require 1 <= large_size <= 256 and vocab_size >= 2")
     if session.trace.num_tokens or session.trace.updates:
-        raise ValueError("The workload requires a fresh RecordingSession")
+        raise ValueError("The workload requires a fresh recording session")
     rng = random.Random(seed)
     blocks = [session.create_block() for _ in range(24)]
     empty = blocks[0]
@@ -144,6 +145,12 @@ def workload(session, vocab_size, seed=7, large_size=128):
 
 
 def main():
+    warnings.warn(
+        "The minisgl.training.stress CLI is scheduled for future deprecation; "
+        "its current commands remain supported.",
+        FutureWarning,
+        stacklevel=2,
+    )
     from minisgl.distributed import DistributedInfo
     from minisgl.engine import Engine, EngineConfig
     from minisgl.shared_cache import SharedCacheSession
@@ -174,8 +181,8 @@ def main():
         )
     )
     try:
-        example = workload(
-            RecordingSession(SharedCacheSession(engine)),
+        example = generate_workload(
+            _TraceRecorder(SharedCacheSession(engine)),
             engine.config.model_config.vocab_size,
             args.seed,
             args.large_size,

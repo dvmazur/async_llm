@@ -1,7 +1,7 @@
 import torch
 
 
-def inputs_embeds(model, trace):
+def compute_input_embeddings(model, trace):
     """Re-encode recorded images and scatter them into packed token embeddings."""
     states = model.get_input_embeddings()(trace.input_ids)
     image_id = getattr(model.config, "image_token_id", None)
@@ -13,7 +13,7 @@ def inputs_embeds(model, trace):
             ids = torch.tensor(request.input_ids)
             types = request.mm_token_type_ids
             if types is not None:
-                types = types.tensor().flatten()
+                types = types.to_tensor().flatten()
                 if len(types) != len(ids) or not torch.all((types == 0) | (types == 1)):
                     raise ValueError(
                         "Image token types must align with inputs and contain only 0/1"
@@ -37,8 +37,8 @@ def inputs_embeds(model, trace):
                 raise ValueError("Raw image replay requires a conditional-generation model")
             if request.image_grid_thw is None:
                 raise ValueError("Recorded pixels require image_grid_thw")
-            grid = request.image_grid_thw.tensor()
-            values = request.pixel_values.tensor()
+            grid = request.image_grid_thw.to_tensor()
+            values = request.pixel_values.to_tensor()
             merge = config.spatial_merge_size
             if (
                 grid.ndim != 2

@@ -12,8 +12,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 from minisgl.shared_cache import AsyncContext
-from minisgl.training import replay_trace
-from minisgl.training.sft import restore_trace, supervised_loss
+from minisgl.training import Trace, replay_trace
+from minisgl.training.sft import compute_supervised_loss
 from test_async_llm import _make_llm
 from test_training_gdn import tiny_hybrid
 from test_training_logits import torch_reference_kernels as torch_reference_kernels
@@ -96,7 +96,7 @@ def test_demo_export_aligns_batched_samples_and_masks_nongeneration_rows(exporte
     state = exported_example
     data = state["data"]
     (example,) = data["examples"]
-    trace = restore_trace(example["trace"])
+    trace = Trace.from_dict(example["trace"])
     assert data["model"] == "stub-model"
     assert example["prompt"] == "test"
     assert example["thinker_tokens"] == [6, 8] and example["writer_tokens"] == [13]
@@ -134,7 +134,7 @@ def test_demo_export_aligns_batched_samples_and_masks_nongeneration_rows(exporte
 @pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
 def test_export_reloads_for_hybrid_forward_and_backward(exported_example, read_mode):
     (example,) = exported_example["data"]["examples"]
-    trace = restore_trace(example["trace"])
+    trace = Trace.from_dict(example["trace"])
     plan = trace.to(gdn_segment_size=2, gdn_read_mode=read_mode)
     targets = torch.tensor(example["targets"])
     rows = (targets != -100).nonzero().flatten()
@@ -143,7 +143,7 @@ def test_export_reloads_for_hybrid_forward_and_backward(exported_example, read_m
     with torch.no_grad():
         logits = replay_trace(model, plan, hidden_only=False)
         expected = F.cross_entropy(logits[rows], targets[rows], reduction="sum")
-    loss = supervised_loss(model, plan, targets, chunk_size=2)
+    loss = compute_supervised_loss(model, plan, targets, chunk_size=2)
     torch.testing.assert_close(loss, expected)
     loss.backward()
     for parameter in (

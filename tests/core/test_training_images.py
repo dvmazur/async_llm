@@ -8,8 +8,9 @@ import torch.nn.functional as F
 from minisgl.models.qwen3_5_mrope import get_rope_index
 from minisgl.training import replay_trace
 from minisgl.training.attention import attention
-from minisgl.training.sft import supervised_loss
-from minisgl.training.trace import RecordingSession, TensorData
+from minisgl.training.recording import _TraceRecorder
+from minisgl.training.sft import compute_supervised_loss
+from minisgl.training.trace import TensorData
 from test_training import Session
 from test_training_gdn import sequential_gdn
 from test_training_logits import torch_reference_kernels as torch_reference_kernels
@@ -86,7 +87,7 @@ def image_prefill(session, block, context=(), inputs=None):
 
 
 def single_image_trace(inputs=None):
-    session = RecordingSession(ImageSession())
+    session = _TraceRecorder(ImageSession())
     image_prefill(session, session.create_block(), inputs=inputs)
     return session.trace
 
@@ -177,7 +178,9 @@ def test_native_image_logits_and_all_parameter_gradients(loss_path, image_count)
     expected_loss = F.cross_entropy(expected, targets, reduction="sum")
     if loss_path == "checkpointed_sft":
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-        actual_loss = supervised_loss(model, plan, targets, chunk_size=2, checkpointing=True)
+        actual_loss = compute_supervised_loss(
+            model, plan, targets, chunk_size=2, checkpointing=True
+        )
     else:
         actual_loss = F.cross_entropy(actual, targets, reduction="sum")
     torch.testing.assert_close(actual_loss, expected_loss, atol=3e-6, rtol=3e-5)
@@ -190,7 +193,7 @@ def test_native_image_logits_and_all_parameter_gradients(loss_path, image_count)
 def test_multiple_images_follow_packed_token_order():
     reference = tiny_image_model().eval()
     model = deepcopy(reference)
-    session = RecordingSession(ImageSession())
+    session = _TraceRecorder(ImageSession())
     a, b, c, text = [session.create_block() for _ in range(4)]
     first = image_inputs()
     second = {
@@ -226,7 +229,7 @@ def test_image_prefill_preserves_nonmonotonic_grid_positions():
     model = deepcopy(reference)
     inputs = image_inputs()
 
-    session = RecordingSession(ImageSession())
+    session = _TraceRecorder(ImageSession())
     block = session.create_block()
     session.prefill_block(block, torch.tensor([2, 3]))
     ids, types = inputs["input_ids"][0], inputs["mm_token_type_ids"][0]
@@ -236,9 +239,9 @@ def test_image_prefill_preserves_nonmonotonic_grid_positions():
     assert len(session.trace.batches) == 2
     request = session.trace.batches[1].requests[0]
     torch.testing.assert_close(
-        request.pixel_values.tensor(), inputs["pixel_values"], atol=0, rtol=0
+        request.pixel_values.to_tensor(), inputs["pixel_values"], atol=0, rtol=0
     )
-    torch.testing.assert_close(request.mrope_positions.tensor(), positions, atol=0, rtol=0)
+    torch.testing.assert_close(request.mrope_positions.to_tensor(), positions, atol=0, rtol=0)
     full = {
         **inputs,
         "input_ids": torch.cat((torch.tensor([[2, 3]]), inputs["input_ids"]), 1),
@@ -288,7 +291,7 @@ def test_image_token_ids_require_payload_without_token_types():
 
 
 def cache_image_trace():
-    session = RecordingSession(ImageSession())
+    session = _TraceRecorder(ImageSession())
     image, a, b = [session.create_block() for _ in range(3)]
     image_prefill(session, image)
     session.prefill_block(a, torch.tensor([2, 3]), context=[image, image])
@@ -368,7 +371,7 @@ def sequential_image_attention(q, k, v, trace, order, inv_freq, section):
         pending = []
         for request in batch.requests:
             positions = (
-                request.mrope_positions.tensor().T.tolist()
+                request.mrope_positions.to_tensor().T.tolist()
                 if request.mrope_positions is not None
                 else [
                     [before_spans.get(request.write_to, 0) + i] * 3
@@ -445,8 +448,8 @@ def test_async_image_model_and_every_parameter_gradient_match_direct_recurrence(
             if request.pixel_values is not None:
                 features.extend(
                     reference.get_image_features(
-                        request.pixel_values.tensor(),
-                        request.image_grid_thw.tensor(),
+                        request.pixel_values.to_tensor(),
+                        request.image_grid_thw.to_tensor(),
                         return_dict=True,
                     ).pooler_output
                 )

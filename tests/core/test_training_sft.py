@@ -72,7 +72,9 @@ def test_sft_loads_and_saves_image_model_and_processor(monkeypatch, tmp_path, ki
         "examples": [{"nll": [1.0], "loss": 1.0, "accuracy": 0.0}] * len(traces),
     }
     monkeypatch.setattr(sft, "evaluate", Mock(return_value=evaluation))
-    monkeypatch.setattr(sft, "supervised_loss", lambda *args, **kwargs: model.weight.square().sum())
+    monkeypatch.setattr(
+        sft, "compute_supervised_loss", lambda *args, **kwargs: model.weight.square().sum()
+    )
     output = tmp_path / "checkpoint"
     sft.train(
         SimpleNamespace(
@@ -113,7 +115,7 @@ def test_sft_reuses_compiled_plans_from_cpu_replay(device, cache_plans):
     with patch.object(GDNReplay, "from_trace", wraps=GDNReplay.from_trace) as compile:
         for i in range(2):
             model.zero_grad(set_to_none=True)
-            sft.supervised_loss(model, replay, targets, chunk_size=4).backward()
+            sft.compute_supervised_loss(model, replay, targets, chunk_size=4).backward()
             assert compile.call_count == (1 if cache_plans else i + 1)
             assert bool(replay._gdn) == bool(replay._attention) == cache_plans
         attention = next(iter(replay._attention.values())) if cache_plans else None
@@ -143,7 +145,10 @@ def test_transient_plans_preserve_logits_and_checkpointed_gradients(device, use_
     targets[::3] = -100
     logits = replay_trace(reference, persistent, hidden_only=False)
     expected = F.cross_entropy(logits, targets.to(device), reduction="sum")
-    actual = sum(sft.supervised_loss(model, transient, targets, chunk_size=4) for _ in range(2)) / 2
+    actual = (
+        sum(sft.compute_supervised_loss(model, transient, targets, chunk_size=4) for _ in range(2))
+        / 2
+    )
     expected.backward()
     actual.backward()
     torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
@@ -177,7 +182,9 @@ def test_sft_checkpointing_switches_are_independent(attention_checkpointing, los
     targets = torch.arange(len(trace.tokens)) % 32
     targets[::3] = -100
     native = trace.to(query_chunk_size=3, attention_checkpointing=False)
-    expected = sft.supervised_loss(reference, native, targets, chunk_size=4, checkpointing=False)
+    expected = sft.compute_supervised_loss(
+        reference, native, targets, chunk_size=4, checkpointing=False
+    )
     expected.backward()
     replay = trace.to(query_chunk_size=3, attention_checkpointing=attention_checkpointing)
     with (
@@ -186,7 +193,7 @@ def test_sft_checkpointing_switches_are_independent(attention_checkpointing, los
         ) as attention,
         patch.object(sft, "checkpoint", wraps=sft.checkpoint) as loss,
     ):
-        actual = sft.supervised_loss(
+        actual = sft.compute_supervised_loss(
             model, replay, targets, chunk_size=4, checkpointing=loss_checkpointing
         )
         assert not model.is_gradient_checkpointing

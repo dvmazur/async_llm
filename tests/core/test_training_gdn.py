@@ -10,9 +10,10 @@ import torch
 import torch.nn.functional as F
 from minisgl.training import Trace, replay_trace
 from minisgl.training.gdn import GDNReplay, delta, gdn_forward
-from minisgl.training.sft import supervised_loss
-from minisgl.training.stress import workload
-from minisgl.training.trace import BlockUpdate, RecordingSession, Token
+from minisgl.training.recording import _TraceRecorder
+from minisgl.training.sft import compute_supervised_loss
+from minisgl.training.stress import generate_workload
+from minisgl.training.trace import BlockUpdate, Token
 from test_training import (
     Session,
     apply_updates,
@@ -199,7 +200,7 @@ class Float64DeltaMath(TorchFunctionMode):
 
 
 def uneven_history_trace():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     tip, large, small = [session.create_block() for _ in range(3)]
 
     def prefill(block, ids, context=()):
@@ -394,8 +395,8 @@ def test_triton_delta_outputs_and_gradients(
     cuda_delta_math, trace_kind, segment_size, read_mode, dk, dv, boundaries
 ):
     if trace_kind == "stress":
-        session = RecordingSession(Session())
-        workload(session, vocab_size=32, large_size=2)
+        session = _TraceRecorder(Session())
+        generate_workload(session, vocab_size=32, large_size=2)
         trace = session.trace
     else:
         trace = uneven_history_trace() if trace_kind == "uneven" else mutation_trace()
@@ -520,8 +521,8 @@ def test_triton_hybrid_parameter_gradients(cuda_delta_math, read_mode, use_reent
 @pytest.mark.parametrize("trace_kind", ["single", "mutation", "uneven", "stress", "repeated"])
 def test_delta_fp64_outputs_and_gradients(trace_kind, segment_size, read_mode, record_property):
     if trace_kind == "stress":
-        session = RecordingSession(Session())
-        workload(session, vocab_size=32, large_size=2)
+        session = _TraceRecorder(Session())
+        generate_workload(session, vocab_size=32, large_size=2)
         trace = session.trace
     elif trace_kind == "uneven":
         trace = uneven_history_trace()
@@ -861,7 +862,7 @@ def test_delta_leaf_saved_storage_is_linear_in_head_width(record_property):
 
 @pytest.mark.parametrize("segment_size", [1, 2, 8])
 def test_delta_reused_leaf_merges_survive_clear_and_reuse(segment_size):
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     source, target, empty = [session.create_block() for _ in range(3)]
 
     def prefill(block, token):
@@ -905,7 +906,7 @@ def test_delta_reused_leaf_merges_survive_clear_and_reuse(segment_size):
 
 
 def test_odd_history_self_copies_stay_compact_and_preserve_gradient_counts():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     block = session.create_block()
     session.prefill_batch(
         [NS(block=block, input_ids=torch.tensor([1, 2, 3]), context=[], pixel_values=None)]
@@ -1257,8 +1258,8 @@ def test_gdn_parallel_outputs_and_gradients(trace_factory, read_mode):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_gdn_synthetic_stress_workload_outputs_and_gradients():
-    session = RecordingSession(Session())
-    workload(session, vocab_size=32, large_size=2)
+    session = _TraceRecorder(Session())
+    generate_workload(session, vocab_size=32, large_size=2)
     trace = session.trace
     module = tiny_hybrid().cuda().model.layers[0].linear_attn
     order = trace.to().order
@@ -1303,7 +1304,7 @@ def test_gdn_decode_reads_peer_before_batch():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_gdn_copied_history_survives_clear_and_isolates_reuse():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     source, child, empty = [session.create_block() for _ in range(3)]
 
     def prefill(block, ids, context=()):
@@ -1556,7 +1557,7 @@ def test_hybrid_checkpointed_chunked_supervised_loss():
     expected = F.cross_entropy(
         replay_trace(reference, plan, hidden_only=False), targets, reduction="sum"
     )
-    actual = supervised_loss(checkpointed, plan, targets, chunk_size=3)
+    actual = compute_supervised_loss(checkpointed, plan, targets, chunk_size=3)
     torch.testing.assert_close(actual, expected)
     expected_grads = torch.autograd.grad(expected, tuple(reference.parameters()))
     actual_grads = torch.autograd.grad(actual, tuple(checkpointed.parameters()))

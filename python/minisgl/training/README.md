@@ -45,6 +45,13 @@ duplicates, while retaining the context needed to compute those rows. Pass the
 recorded `Trace` directly, or use `trace.to(device, **options)` to choose the
 device and replay tuning options.
 
+Token-based `Trace(...)` construction, loading format-v1 JSON, and source-row
+`BlockUpdate` mutations are scheduled for future deprecation and emit
+`FutureWarning`. They remain supported. New code should record request batches
+through `RecordedAsyncLLM`; explicit mutations should use block `refs`, including
+`refs=()` for a clear. Current recordings and format-v2 block-reference traces
+do not emit these warnings.
+
 ## Record and backpropagate
 
 This text example records a single causal prefill, then backpropagates a
@@ -91,7 +98,7 @@ asyncio.run(main())
 Multiple recording scopes can share one engine and still batch their requests:
 
 ```python
-from minisgl.training import RecordedAsyncLLM, Trace, replay_from_trace
+from minisgl.training import RecordedAsyncLLM, Trace, replay_trace
 
 
 async def collect_trace(llm) -> Trace:
@@ -103,13 +110,14 @@ async def collect_trace(llm) -> Trace:
 async def train_agents(llm):
     traces = await asyncio.gather(*(collect_trace(llm) for _ in range(5)))
     for trace in traces:
-        logits = replay_from_trace(llm, trace, hidden_only=False)
+        logits = replay_trace(llm, trace, hidden_only=False)
         compute_loss(logits).backward()
 ```
 
 Here `run_agent` and `compute_loss` are your application functions.
-`replay_from_trace` is an alias of `replay_trace`. Each scope records only calls
-through its wrapper, including `prefill_block`, `forward`, `async_generate`, and
+`replay_from_trace` remains a deprecated alias of `replay_trace` and emits a
+`DeprecationWarning`. Each scope records only calls through its wrapper, including
+`prefill_block`, `forward`, `async_generate`, and
 cache mutations. Unused blocks that are only created and freed are omitted.
 Agents in one scope may share blocks; separate scopes must use independent
 blocks and record their history from the start. Reading a populated unrecorded
@@ -117,8 +125,8 @@ block or using another active scope's block raises an error.
 Await all calls and close generation streams before leaving the scope. Exiting
 restores the engine after the last recorder and leaves the LLM open; exceptional
 exit cancels only that scope's queued requests. Sampled labels and file export
-remain application responsibilities. The older whole-session `record(llm)` API
-remains available but cannot be combined with these scopes.
+remain application responsibilities. Use `RecordedAsyncLLM` for recording; the
+older whole-session `record(llm)` API has been removed.
 
 The AsyncLLM adapter supports unquantized dense models on one rank. It enables
 gradients on the current engine weights without reloading a checkpoint. Finish
@@ -132,6 +140,10 @@ has 100% target accuracy and loss below `0.01`. It saves a standard HF checkpoin
 and tokenizer to `--output`, with `metrics.json` in its parent directory.
 
 ## Run
+
+The `minisgl.training.sft` and `minisgl.training.stress` CLI entry points are
+scheduled for future deprecation. They remain functional and emit a
+`FutureWarning` when invoked. No replacement command or removal date is set.
 
 Run from the repository root. `uv` manages the environment:
 
