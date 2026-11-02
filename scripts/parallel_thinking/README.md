@@ -8,7 +8,9 @@
   BF16 forward/backward on GPU, FP32 RoPE buffers. The actual training targets
   and context examples are displayed. A temporary checkpoint is used only for
   independent generation and deleted automatically.
-- `no_barrier.ipynb`: independent Alice/Bob loops, with synchronization only
+- `no_barrier.ipynb`: Qwen3-4B, 1024 tokens per worker; the main thinking
+  setup, delayed Bob, and a separate `enable_thinking=False` comparison.
+  Independent Alice/Bob loops, with synchronization only
   during cache publication. A delayed Bob demonstrates independent progress.
 - `async_helpers.py`: small coroutine, publication-lock and process helpers.
   The main generation and training logic stays in the notebooks.
