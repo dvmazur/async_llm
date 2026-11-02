@@ -45,12 +45,11 @@ duplicates, while retaining the context needed to compute those rows. Pass the
 recorded `Trace` directly, or use `trace.to(device, **options)` to choose the
 device and replay tuning options.
 
-Token-based `Trace(...)` construction, loading format-v1 JSON, and source-row
-`BlockUpdate` mutations are scheduled for future deprecation and emit
-`FutureWarning`. They remain supported. New code should record request batches
-through `RecordedAsyncLLM`; explicit mutations should use block `refs`, including
-`refs=()` for a clear. Current recordings and format-v2 block-reference traces
-do not emit these warnings.
+Traces store request batches in format-v2 JSON. Token-based construction,
+format-v1 JSON, and `BlockUpdate.sources` are no longer supported. Record through
+`RecordedAsyncLLM` or construct `Trace(batches=...)`; cache mutations use block
+`refs`, including `refs=()` for a clear. `trace.tokens` is a derived view for
+replay and inspection, not a serialized field.
 
 ## Record and backpropagate
 
@@ -115,8 +114,7 @@ async def train_agents(llm):
 ```
 
 Here `run_agent` and `compute_loss` are your application functions.
-`replay_from_trace` remains a deprecated alias of `replay_trace` and emits a
-`DeprecationWarning`. Each scope records only calls through its wrapper, including
+Each scope records only calls through its wrapper, including
 `prefill_block`, `forward`, `async_generate`, and
 cache mutations. Unused blocks that are only created and freed are omitted.
 Agents in one scope may share blocks; separate scopes must use independent

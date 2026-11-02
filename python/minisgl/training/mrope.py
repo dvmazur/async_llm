@@ -29,13 +29,9 @@ class MropeLayout:
         self.queries = []
         self.copy_offsets = []
 
-    def replace(self, block, sources=(), refs=None):
-        if sources:
-            raise ValueError(
-                "Multimodal cache mutations require block refs, not legacy source rows"
-            )
+    def replace(self, block, refs=()):
         offsets, span = [], 0
-        for source, length in refs or ():
+        for source, length in refs:
             if length:
                 offsets.append(span)
             span += self.spans.get(source, 0)

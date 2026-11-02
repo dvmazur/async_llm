@@ -21,7 +21,7 @@ from transformers import (
 
 from .forward import replay_trace
 from .recording import RecordedAsyncLLM
-from .trace import Trace
+from .trace import Trace, _validate_replay_options
 
 
 async def mine(args):
@@ -312,21 +312,18 @@ def evaluate(model, examples, chunk_size=128):
 
 
 def train(args):
-    query_chunk_size = getattr(args, "query_chunk_size", 128)
+    query_chunk_size = getattr(args, "query_chunk_size", Trace.query_chunk_size)
     loss_chunk_size = getattr(args, "loss_chunk_size", 128)
-    attention_checkpointing = getattr(args, "attention_checkpointing", True)
+    attention_checkpointing = getattr(
+        args, "attention_checkpointing", Trace.attention_checkpointing
+    )
     loss_checkpointing = getattr(args, "loss_checkpointing", True)
-    cache_replay_plans = getattr(args, "cache_replay_plans", True)
-    gdn_segment_size = getattr(args, "gdn_segment_size", 8)
-    gdn_read_mode = getattr(args, "gdn_read_mode", "expanded")
-    gdn_cache_reused = getattr(args, "gdn_cache_reused", True)
-    gdn_read_backend = getattr(args, "gdn_read_backend", "torch")
-    if gdn_segment_size < 1:
-        raise ValueError("gdn_segment_size must be positive")
-    if gdn_read_mode not in {"expanded", "factorized"}:
-        raise ValueError("gdn_read_mode must be expanded or factorized")
-    if gdn_read_backend not in {"torch", "triton"}:
-        raise ValueError("gdn_read_backend must be torch or triton")
+    cache_replay_plans = getattr(args, "cache_replay_plans", Trace.cache_plans)
+    gdn_segment_size = getattr(args, "gdn_segment_size", Trace.gdn_segment_size)
+    gdn_read_mode = getattr(args, "gdn_read_mode", Trace.gdn_read_mode)
+    gdn_cache_reused = getattr(args, "gdn_cache_reused", Trace.gdn_cache_reused)
+    gdn_read_backend = getattr(args, "gdn_read_backend", Trace.gdn_read_backend)
+    _validate_replay_options(query_chunk_size, gdn_segment_size, gdn_read_mode, gdn_read_backend)
     data = json.loads(args.data.read_text())
     examples = []
     for example in data["examples"]:
@@ -462,7 +459,7 @@ def main():
     training.add_argument(
         "--attention-checkpointing",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=Trace.attention_checkpointing,
         help="Recompute attention chunks during backward to reduce saved activations",
     )
     training.add_argument(
@@ -474,33 +471,33 @@ def main():
     training.add_argument(
         "--cache-replay-plans",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=Trace.cache_plans,
         help="Keep replay plans between forwards; disable to save device memory and recompile each time",
     )
-    training.add_argument("--query-chunk-size", type=int, default=128)
+    training.add_argument("--query-chunk-size", type=int, default=Trace.query_chunk_size)
     training.add_argument("--loss-chunk-size", type=int, default=128)
     training.add_argument(
         "--gdn-segment-size",
         type=int,
-        default=8,
+        default=Trace.gdn_segment_size,
         help="Maximum compact GDN segment length; 1 disables short-segment compaction",
     )
     training.add_argument(
         "--gdn-read-mode",
         choices=("expanded", "factorized"),
-        default="expanded",
+        default=Trace.gdn_read_mode,
         help="Apply compact GDN reads token by token or through segment factors",
     )
     training.add_argument(
         "--gdn-cache-reused",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=Trace.gdn_cache_reused,
         help="Cache dense transforms for heavily reused GDN summaries",
     )
     training.add_argument(
         "--gdn-read-backend",
         choices=("torch", "triton"),
-        default="torch",
+        default=Trace.gdn_read_backend,
         help="Use Torch or fused Triton kernels for GDN reads",
     )
     args = parser.parse_args()

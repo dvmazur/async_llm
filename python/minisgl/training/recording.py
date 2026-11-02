@@ -6,7 +6,7 @@ from functools import wraps
 from inspect import iscoroutinefunction
 from typing import TYPE_CHECKING
 
-from .trace import BlockUpdate, ForwardBatch, ForwardRequest, TensorData, Trace
+from .trace import _IMAGE_INPUT_FIELDS, BlockUpdate, ForwardBatch, ForwardRequest, TensorData, Trace
 
 if TYPE_CHECKING:
     from minisgl.llm import AsyncLLM
@@ -89,8 +89,7 @@ class _TraceRecorder:
                 )
             view = [*job.context, job.block]
             tensors = {
-                name: TensorData.capture(getattr(job, name, None))
-                for name in ("pixel_values", "image_grid_thw", "mm_token_type_ids")
+                name: TensorData.capture(getattr(job, name, None)) for name in _IMAGE_INPUT_FIELDS
             }
             positions = getattr(job, "mrope_rel", None)
             if positions is None and tensors["pixel_values"] is not None:
@@ -173,25 +172,38 @@ class _TraceRecorder:
         return ForwardBatch(self.trace.steps, "decode", tuple(requests))
 
 
-class _RecordingHub:
-    _recording_hub = True
+class _RecordingEngine:
+    """Route submissions and executed batches to independent recording scopes."""
 
     def __init__(self, engine):
         self.engine = engine
-        self.session = engine.session
+        self._session = engine.session
         self.owners = {}
+        self.recorders = set()
+        self.session = engine.session = self
 
     def __getattr__(self, name):
-        return getattr(self.session, name)
+        try:
+            return getattr(self.engine, name)
+        except AttributeError:
+            return getattr(self._session, name)
+
+    @property
+    def future_factory(self):
+        return self.engine.future_factory
+
+    @future_factory.setter
+    def future_factory(self, value):
+        self.engine.future_factory = value
 
     def claim(self, blocks):
         owner = _current.get()
-        if owner is not None and owner._hub is not self:
+        if owner is not None and owner._adapter is not self:
             raise ValueError("Recording scope belongs to a different AsyncLLM")
         blocks = list(blocks)
         for block in blocks:
             previous = self.owners.get(block.block_id)
-            if previous is not None and previous[0] is not owner:
+            if previous is not None and previous is not owner:
                 raise ValueError("Cache blocks cannot be shared across recording scopes")
             if owner is not None and previous is None:
                 if block.num_tokens or self.engine._block_in_use(block):
@@ -201,31 +213,33 @@ class _RecordingHub:
         if owner is not None:
             owner._recorder._check(blocks)
             for block in blocks:
-                self.owners[block.block_id] = (owner, block)
+                self.owners[block.block_id] = owner
         return owner
 
     def create_block(self):
-        block = self.session.create_block()
+        block = self._session.create_block()
         self.claim([block])
         return block
 
     def merge_blocks(self, left, right):
         owner = self.claim([left, right])
         if owner is None:
-            return self.session.merge_blocks(left, right)
+            return self._session.merge_blocks(left, right)
         block = owner._recorder.merge_blocks(left, right)
-        self.owners[block.block_id] = (owner, block)
+        self.owners[block.block_id] = owner
         return block
 
     def append_block(self, left, right):
         owner = self.claim([left, right])
-        session = self.session if owner is None else owner._recorder
+        session = self._session if owner is None else owner._recorder
         return session.append_block(left, right)
 
     def free_block(self, block):
+        if self.engine._block_in_use(block):
+            raise RuntimeError(f"cannot free {block!r}: referenced by a queued request")
         owner = self.claim([block])
         if owner is None or block.block_id not in owner._recorder._contents:
-            return self.session.free_block(block)
+            return self._session.free_block(block)
         return owner._recorder.free_block(block)
 
     def _groups(self, items, block):
@@ -233,7 +247,7 @@ class _RecordingHub:
         for index, item in enumerate(items):
             owner = self.owners.get(block(item).block_id)
             if owner is not None:
-                groups.setdefault(owner[0], []).append(index)
+                groups.setdefault(owner, []).append(index)
         return groups
 
     def _run(self, batches, call):
@@ -253,7 +267,7 @@ class _RecordingHub:
             (owner, owner._recorder._prefill_batch([jobs[i] for i in indices]))
             for owner, indices in self._groups(jobs, lambda job: job.block).items()
         ]
-        return self._run(batches, lambda: self.session.prefill_batch(jobs))
+        return self._run(batches, lambda: self._session.prefill_batch(jobs))
 
     def decode_step(self, group, input_ids):
         contexts = list(group)
@@ -264,36 +278,16 @@ class _RecordingHub:
             )
             for owner, indices in self._groups(contexts, lambda ctx: ctx.output_block).items()
         ]
-        return self._run(batches, lambda: self.session.decode_step(group, input_ids))
-
-
-class _RecordingEngine:
-    def __init__(self, llm):
-        self.llm = llm
-        self.engine = llm.async_engine
-        self.hub = _RecordingHub(self.engine)
-        self.recorders = set()
-        self.engine.session = self.hub
-
-    def __getattr__(self, name):
-        return getattr(self.engine, name)
-
-    @property
-    def future_factory(self):
-        return self.engine.future_factory
-
-    @future_factory.setter
-    def future_factory(self, value):
-        self.engine.future_factory = value
+        return self._run(batches, lambda: self._session.decode_step(group, input_ids))
 
     def submit_prefill(self, token_ids, *, write_to, cache_view=None, **kwargs):
-        self.hub.claim([*(cache_view or ()), write_to])
+        self.claim([*(cache_view or ()), write_to])
         return self.engine.submit_prefill(
             token_ids, write_to=write_to, cache_view=cache_view, **kwargs
         )
 
     def submit_decode(self, context, input_id, **kwargs):
-        self.hub.claim([*context.cache_view, context.output_block])
+        self.claim([*context.cache_view, context.output_block])
         return self.engine.submit_decode(context, input_id, **kwargs)
 
     def cancel_pending(self, owner):
@@ -304,8 +298,7 @@ class _RecordingEngine:
         ):
             kept = deque()
             for request in getattr(self.engine, name):
-                entry = self.hub.owners.get(output(request).block_id)
-                if entry is not None and entry[0] is owner:
+                if self.owners.get(output(request).block_id) is owner:
                     cancelled = True
                     request.future.cancel()
                 else:
@@ -323,38 +316,36 @@ class RecordedAsyncLLM:
     one scope may freely share blocks. Exiting does not close the underlying LLM.
     """
 
-    def __init__(self, llm: "AsyncLLM"):
+    def __init__(self, llm: "AsyncLLM") -> None:
         self.llm = llm
         self._recorder = None
-        self._hub = None
-        self._active = False
+        self._adapter = None
         self._pending = 0
 
-    def __enter__(self):
+    def __enter__(self) -> "RecordedAsyncLLM":
         if self._recorder is not None:
             raise RuntimeError("A RecordedAsyncLLM scope can only be entered once")
         engine = self.llm.async_engine
         if not isinstance(engine, _RecordingEngine):
             if isinstance(engine.session, _TraceRecorder):
                 raise ValueError("Cannot wrap a session that is already recording")
-            engine = _RecordingEngine(self.llm)
+            engine = _RecordingEngine(engine)
             self.llm.async_engine = engine
-        self._hub = engine.hub
-        self._recorder = _TraceRecorder(self._hub.session)
-        self._active = True
+        self._adapter = engine
+        self._recorder = _TraceRecorder(engine._session)
         engine.recorders.add(self)
         return self
 
     def __exit__(self, exc_type, exc, traceback):
-        engine = self.llm.async_engine
-        blocks = [block for owner, block in self._hub.owners.values() if owner is self]
+        engine = self._adapter
         cancelled = engine.cancel_pending(self)
-        self._active = False
-        for block in blocks:
-            del self._hub.owners[block.block_id]
+        self._adapter = None
+        engine.owners = {
+            block: owner for block, owner in engine.owners.items() if owner is not self
+        }
         engine.recorders.remove(self)
         if not engine.recorders:
-            engine.engine.session = self._hub.session
+            engine.engine.session = engine._session
             self.llm.async_engine = engine.engine
         if exc_type is None and (self._pending or cancelled):
             raise RuntimeError("Await all recording calls before leaving RecordedAsyncLLM")
@@ -366,7 +357,7 @@ class RecordedAsyncLLM:
         return self._recorder.trace
 
     async def _invoke(self, method, *args, **kwargs):
-        if not self._active:
+        if self._adapter is None:
             raise RuntimeError("Use RecordedAsyncLLM inside its context manager")
         token = _current.set(self)
         self._pending += 1

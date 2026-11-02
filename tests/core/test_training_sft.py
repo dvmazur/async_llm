@@ -17,6 +17,22 @@ from test_training_gdn import tiny_hybrid
 from transformers import Qwen3_5ForCausalLM
 
 
+@pytest.mark.parametrize(
+    "options,message",
+    [
+        ({"query_chunk_size": 0}, "query_chunk_size must be positive"),
+        ({"gdn_segment_size": 0}, "gdn_segment_size must be positive"),
+        ({"gdn_read_mode": "invalid"}, "gdn_read_mode must be expanded or factorized"),
+        ({"gdn_read_backend": "invalid"}, "gdn_read_backend must be torch or triton"),
+    ],
+)
+def test_sft_rejects_invalid_replay_options_before_loading_data(options, message):
+    data = Mock()
+    with pytest.raises(ValueError, match=message):
+        sft.train(SimpleNamespace(data=data, **options))
+    data.read_text.assert_not_called()
+
+
 @pytest.mark.parametrize("kind", ["text", "pixels", "mixed_pixels"])
 def test_sft_loads_and_saves_image_model_and_processor(monkeypatch, tmp_path, kind):
     request = ForwardRequest((1, 2, 3), 0, 0, ((0, 0),))

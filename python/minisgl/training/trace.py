@@ -1,9 +1,24 @@
-import warnings
+from collections.abc import Iterable
 from copy import copy
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from itertools import groupby
 
 import torch
+
+_IMAGE_INPUT_FIELDS = ("pixel_values", "image_grid_thw", "mm_token_type_ids")
+
+
+def _validate_replay_options(
+    query_chunk_size: int, gdn_segment_size: int, gdn_read_mode: str, gdn_read_backend: str
+) -> None:
+    if query_chunk_size <= 0:
+        raise ValueError("query_chunk_size must be positive")
+    if gdn_segment_size < 1:
+        raise ValueError("gdn_segment_size must be positive")
+    if gdn_read_mode not in {"expanded", "factorized"}:
+        raise ValueError("gdn_read_mode must be expanded or factorized")
+    if gdn_read_backend not in {"torch", "triton"}:
+        raise ValueError("gdn_read_backend must be torch or triton")
 
 
 @dataclass(frozen=True)
@@ -69,41 +84,6 @@ def _causal_view(view, block, advance):
     return tuple((b, n + advance if i == own else n) for i, (b, n) in enumerate(view))
 
 
-def _pack_tokens(tokens):
-    batches = []
-    for (step, kind), group in groupby(tokens, key=lambda t: (t.step, t.kind)):
-        rows = list(group)
-        written = {t.block for t in rows}
-        requests = []
-        for token in rows:
-            view = (
-                _causal_view(token.view, token.block, -1)
-                if kind == "prefill"
-                else tuple((b, n - int(b in written)) for b, n in token.view)
-            )
-            if kind == "prefill" and requests:
-                previous, input_ids = requests[-1]
-                size = len(input_ids)
-                if (
-                    token.block == previous.write_to
-                    and token.position == previous.write_start + size
-                    and token.view == _causal_view(previous.cache_view, token.block, size + 1)
-                ):
-                    input_ids.append(token.token_id)
-                    continue
-            requests.append(
-                (ForwardRequest((), token.block, token.position, view), [token.token_id])
-            )
-        batches.append(
-            ForwardBatch(
-                step,
-                kind,
-                tuple(replace(request, input_ids=tuple(ids)) for request, ids in requests),
-            )
-        )
-    return batches
-
-
 @dataclass(init=False)
 class Trace:
     """Executed request batches; internal prefill chunks share their request's step."""
@@ -132,17 +112,14 @@ class Trace:
         "cache_plans",
     )
 
-    def __init__(self, tokens=(), steps=0, updates=(), *, batches=None):
-        if batches is not None and tokens:
-            raise ValueError("Pass either legacy tokens or request batches")
-        if tokens:
-            warnings.warn(
-                "Token-based Trace construction is scheduled for future deprecation; "
-                "use RecordedAsyncLLM or Trace(batches=...) instead.",
-                FutureWarning,
-                stacklevel=2,
-            )
-        self.batches = _pack_tokens(tokens) if batches is None else list(batches)
+    def __init__(
+        self,
+        *,
+        batches: Iterable[ForwardBatch] = (),
+        steps: int = 0,
+        updates: Iterable["BlockUpdate"] = (),
+    ) -> None:
+        self.batches = list(batches)
         self.steps = steps
         self.updates = list(updates)
         self._num_tokens = sum(len(r.input_ids) for b in self.batches for r in b.requests)
@@ -190,14 +167,9 @@ class Trace:
         """Compile visibility lazily; recording changes invalidate derived metadata."""
         if getattr(self, "_replay_snapshot", False):
             return self
-        if self.query_chunk_size <= 0:
-            raise ValueError("query_chunk_size must be positive")
-        if self.gdn_segment_size < 1:
-            raise ValueError("gdn_segment_size must be positive")
-        if self.gdn_read_mode not in {"expanded", "factorized"}:
-            raise ValueError("gdn_read_mode must be expanded or factorized")
-        if self.gdn_read_backend not in {"torch", "triton"}:
-            raise ValueError("gdn_read_backend must be torch or triton")
+        _validate_replay_options(
+            self.query_chunk_size, self.gdn_segment_size, self.gdn_read_mode, self.gdn_read_backend
+        )
         history = (tuple(self.batches), tuple(self.updates))
         if history == self._prepared_history:
             return self
@@ -227,11 +199,9 @@ class Trace:
                 parts.append((source, source + 1, lengths[version]))
             lengths[version] += 1
 
-        def replace(block, sources=(), refs=None):
-            if refs is not None and sources:
-                raise ValueError("Mutation cannot combine refs and legacy source rows")
+        def replace(block, refs=()):
             parents, position = [], 0
-            for source, length in refs or ():
+            for source, length in refs:
                 parent = current.get(source)
                 if source < 0 or length < 0 or length != (0 if parent is None else lengths[parent]):
                     raise ValueError("Mutation must reference a live block with its exact length")
@@ -239,25 +209,18 @@ class Trace:
                     parents.append((parent, length, position))
                     position += length
             if layout is not None:
-                layout.replace(block, sources, refs)
+                layout.replace(block, refs)
             current[block] = len(spans)
             spans.append([])
             copies.append(parents)
             lengths.append(position)
-            for row in sources:
-                append(current[block], row)
-
-        def apply_update(update, before):
-            if any(i < 0 or i >= before or tokens[i].step >= update.step for i in update.sources):
-                raise ValueError("Block update refers to future or unrecorded tokens")
-            replace(update.block, update.sources, update.refs)
 
         update_index = 0
         for step, group in groupby(enumerate(tokens), key=lambda item: item[1].step):
             group = list(group)
             while update_index < len(self.updates) and self.updates[update_index].step <= step:
                 update = self.updates[update_index]
-                apply_update(update, group[0][0])
+                replace(update.block, update.refs)
                 update_index += 1
             for row, token in group:
                 if token.block not in current:
@@ -302,7 +265,7 @@ class Trace:
                 rows.append(entries)
 
         for update in self.updates[update_index:]:
-            apply_update(update, len(tokens))
+            replace(update.block, update.refs)
         self.input_ids = torch.tensor([tokens[i].token_id for i in order], device=self._device)
         self.order = torch.tensor(order, device=self._device)
         self.spans, self.copies = spans, copies
@@ -393,40 +356,21 @@ class Trace:
 
     @classmethod
     def from_dict(cls, data):
-        version = data.get("format_version", 1)
-        if type(version) is not int or version not in (1, 2):
+        version = data.get("format_version")
+        if type(version) is not int or version != 2:
             raise ValueError(f"Unsupported trace format_version: {version}")
+        if "tokens" in data:
+            raise ValueError("Trace format_version 2 stores requests, not tokens")
+        if any("sources" in item for item in data.get("updates", ())):
+            raise ValueError("BlockUpdate.sources is unsupported; use block refs")
         updates = [
             BlockUpdate(
                 item["step"],
                 item["block"],
-                tuple(item.get("sources", ())),
-                None if item.get("refs") is None else tuple(tuple(ref) for ref in item["refs"]),
+                refs=tuple(tuple(ref) for ref in item["refs"]),
             )
             for item in data.get("updates", ())
         ]
-        if version == 1:
-            if "batches" in data:
-                raise ValueError("Request batches require trace format_version 2")
-            warnings.warn(
-                "Trace format version 1 is scheduled for future deprecation; "
-                "load and save the trace as format version 2.",
-                FutureWarning,
-                stacklevel=2,
-            )
-            tokens = [
-                Token(**{**item, "view": tuple(tuple(ref) for ref in item["view"])})
-                for item in data["tokens"]
-            ]
-            return cls(steps=data.get("steps", 0), updates=updates, batches=_pack_tokens(tokens))
-        if "tokens" in data:
-            raise ValueError("Trace format_version 2 stores requests, not tokens")
-        tensor_fields = (
-            "pixel_values",
-            "image_grid_thw",
-            "mm_token_type_ids",
-            "mrope_positions",
-        )
         batches = []
         for batch in data["batches"]:
             step, kind = batch["step"], batch["kind"]
@@ -442,7 +386,7 @@ class Trace:
                     "input_ids": tuple(item["input_ids"]),
                     "cache_view": tuple(tuple(ref) for ref in item["cache_view"]),
                 }
-                if request.pop("image_embeds", None) is not None:
+                if "image_embeds" in request:
                     raise ValueError("Trace image embeddings are unsupported; record pixel_values")
                 if (
                     not request["input_ids"]
@@ -471,7 +415,7 @@ class Trace:
                         )
                 if item.get("write_span") is not None and item["write_span"] < 0:
                     raise ValueError("Write span must be nonnegative")
-                for name in tensor_fields:
+                for name in (*_IMAGE_INPUT_FIELDS, "mrope_positions"):
                     tensor = item.get(name)
                     if tensor is not None:
                         request[name] = TensorData(
@@ -484,18 +428,8 @@ class Trace:
 
 @dataclass(frozen=True)
 class BlockUpdate:
-    """Replace from pre-update live (block, length) refs, or legacy source rows."""
+    """Replace from pre-update live (block, length) refs; empty refs clear a block."""
 
     step: int
     block: int
-    sources: tuple[int, ...] = ()
-    refs: tuple[tuple[int, int], ...] | None = None
-
-    def __post_init__(self):
-        if self.refs is None:
-            warnings.warn(
-                "Source-row BlockUpdate construction is scheduled for future deprecation; "
-                "use block refs instead, including refs=() to clear a block.",
-                FutureWarning,
-                stacklevel=3,
-            )
+    refs: tuple[tuple[int, int], ...] = ()

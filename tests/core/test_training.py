@@ -13,7 +13,7 @@ from minisgl.training.attention import attention
 from minisgl.training.recording import _TraceRecorder
 from minisgl.training.sft import compute_supervised_loss
 from minisgl.training.stress import generate_workload
-from minisgl.training.trace import BlockUpdate, Token
+from minisgl.training.trace import BlockUpdate, ForwardBatch, ForwardRequest
 from torch.overrides import TorchFunctionMode
 from transformers import Qwen3Config, Qwen3ForCausalLM
 
@@ -83,6 +83,18 @@ def single_block_trace(mixed_steps):
                 [NS(block=block, input_ids=torch.tensor(ids), context=[], pixel_values=None)]
             )
     return session.trace
+
+
+def causal_trace(length):
+    return Trace(
+        batches=[
+            ForwardBatch(
+                0,
+                "prefill",
+                (ForwardRequest(tuple(i % 32 for i in range(length)), 0, 0, ((0, 0),)),),
+            )
+        ]
+    )
 
 
 def mutation_trace():
@@ -228,22 +240,15 @@ def visible_sources(replay):
     return rows
 
 
-def apply_updates(trace, step, blocks, origins=None):
+def apply_updates(trace, step, blocks):
     for update in trace.updates:
         if update.step != step:
             continue
-        if update.refs is None:
-            contents = (
-                list(update.sources)
-                if origins is None
-                else [origins[source] for source in update.sources]
-            )
-        else:
-            contents = []
-            for block, length in update.refs:
-                members = blocks.get(block, [])
-                assert len(members) == length
-                contents.extend(members)
+        contents = []
+        for block, length in update.refs:
+            members = blocks.get(block, [])
+            assert len(members) == length
+            contents.extend(members)
         blocks[update.block] = contents
 
 
@@ -313,13 +318,12 @@ def sequential(model, trace):
     from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb, repeat_kv
 
     cache = [{} for _ in model.model.layers]
-    origins = [{} for _ in model.model.layers]
     outputs = {}
     for step in sorted({t.step for t in trace.tokens}):
         rows = [i for i, t in enumerate(trace.tokens) if t.step == step]
         x = model.model.embed_tokens(torch.tensor([trace.tokens[i].token_id for i in rows]))
         for layer_id, layer in enumerate(model.model.layers):
-            apply_updates(trace, step, cache[layer_id], origins[layer_id])
+            apply_updates(trace, step, cache[layer_id])
             h = layer.input_layernorm(x)
             attn = layer.self_attn
             q = attn.q_norm(attn.q_proj(h).view(len(rows), -1, attn.head_dim))
@@ -329,8 +333,7 @@ def sequential(model, trace):
                 t = trace.tokens[row]
                 block = cache[layer_id].setdefault(t.block, [])
                 assert len(block) == t.position
-                origins[layer_id][row] = (k[j], v[j])
-                block.append(origins[layer_id][row])
+                block.append((k[j], v[j]))
             out = []
             for j, row in enumerate(rows):
                 t = trace.tokens[row]
@@ -412,7 +415,7 @@ def test_synthetic_stress_workload_logits_and_gradients():
             "prefill_extension",
         )
     )
-    assert all(update.refs is not None and not update.sources for update in trace.updates)
+    assert all(isinstance(update.refs, tuple) for update in trace.updates)
     assert len(data["targets"]) == len(data["logprobs"]) == len(trace.tokens)
     model = tiny_model()
     plan = trace.to(query_chunk_size=7)
@@ -499,11 +502,16 @@ def test_attention_fp64_algebra_and_fp32_rounding(
 
 def test_attention_copied_cleared_history_gradcheck(fp64_attention):
     trace = Trace(
-        [
-            Token(1, 0, 0, 0, ((0, 1),), "prefill"),
-            Token(2, 0, 0, 1, ((0, 2),), "prefill"),
-            Token(3, 1, 0, 0, ((1, 5), (0, 1)), "decode"),
-            Token(4, 1, 1, 4, ((0, 1), (1, 5)), "decode"),
+        batches=[
+            ForwardBatch(0, "prefill", (ForwardRequest((1, 2), 0, 0, ((0, 0),)),)),
+            ForwardBatch(
+                1,
+                "decode",
+                (
+                    ForwardRequest((3,), 0, 0, ((1, 4), (0, 0))),
+                    ForwardRequest((4,), 1, 4, ((0, 0), (1, 4))),
+                ),
+            ),
         ],
         updates=[
             BlockUpdate(1, 1, refs=((0, 2),)),
@@ -528,16 +536,26 @@ def test_attention_copied_cleared_history_gradcheck(fp64_attention):
 
 
 def test_attention_sparse_self_and_partial_copied_reads():
-    tokens = [
-        Token(i % 32, 0, block, i, ((block, i + 1),), "prefill")
-        for block in (0, 1)
-        for i in range(32)
-    ]
-    copied = tuple(range(64)) + tuple(range(32))
+    copied = ((0, 32), (1, 32), (0, 32))
     trace = Trace(
-        tokens
-        + [Token(1, 1, 2, 96, ((0, 11),), "decode"), Token(2, 1, 4, 0, ((2, 75),), "decode")],
-        updates=[BlockUpdate(1, 2, copied), BlockUpdate(1, 3, copied), BlockUpdate(1, 3, ())],
+        batches=[
+            ForwardBatch(
+                0,
+                "prefill",
+                tuple(
+                    ForwardRequest(tuple(range(32)), block, 0, ((block, 0),)) for block in (0, 1)
+                ),
+            ),
+            ForwardBatch(
+                1,
+                "decode",
+                (
+                    ForwardRequest((1,), 2, 96, ((0, 11),)),
+                    ForwardRequest((2,), 4, 0, ((2, 74),)),
+                ),
+            ),
+        ],
+        updates=[BlockUpdate(1, 2, refs=copied), BlockUpdate(1, 3, refs=copied), BlockUpdate(1, 3)],
     )
     replay = trace.to(query_chunk_size=128)
     torch.manual_seed(7)
@@ -673,7 +691,7 @@ def test_chunked_supervised_loss_and_gradients(chunk_size):
 
 def test_attention_checkpoint_does_not_save_dense_scores():
     length = 128
-    trace = Trace([Token(i % 32, 0, 0, i, ((0, i + 1),), "prefill") for i in range(length)])
+    trace = causal_trace(length)
     replay = trace.to(query_chunk_size=7)
     q = torch.randn(length, 4, 8, requires_grad=True)
     k = torch.randn(length, 2, 8, requires_grad=True)
@@ -853,45 +871,6 @@ def test_mutation_trace_json_roundtrip():
         )
 
 
-def test_legacy_and_compact_json_replay_match():
-    trace = mutation_trace()
-    blocks, updates = {}, []
-    for step in sorted({t.step for t in trace.tokens} | {u.step for u in trace.updates}):
-        for update in trace.updates:
-            if update.step == step:
-                apply_updates(Trace(updates=[update]), step, blocks)
-                updates.append(BlockUpdate(step, update.block, tuple(blocks[update.block])))
-        for row, token in enumerate(trace.tokens):
-            if token.step == step:
-                blocks.setdefault(token.block, []).append(row)
-    legacy = {
-        "tokens": [asdict(token) for token in trace.tokens],
-        "steps": trace.steps,
-        "updates": [asdict(update) for update in updates],
-    }
-    for update in legacy["updates"]:
-        del update["refs"]
-    compact = asdict(trace)
-    for update in compact["updates"]:
-        del update["sources"]
-    legacy, compact = [Trace.from_dict(json.loads(json.dumps(data))) for data in (legacy, compact)]
-    assert all(update.refs is None for update in legacy.updates)
-    assert compact == trace
-    old_replay, new_replay = legacy.to(), compact.to()
-    assert visible_sources(old_replay) == visible_sources(new_replay)
-    model = tiny_model()
-    expected, actual = (
-        replay_trace(model, old_replay, hidden_only=False),
-        replay_trace(model, new_replay, hidden_only=False),
-    )
-    torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
-    parameters = tuple(model.parameters())
-    expected_grads = torch.autograd.grad(expected.square().sum(), parameters)
-    actual_grads = torch.autograd.grad(actual.square().sum(), parameters)
-    for actual_grad, expected_grad in zip(actual_grads, expected_grads):
-        torch.testing.assert_close(actual_grad, expected_grad, atol=1e-5, rtol=2e-4)
-
-
 def test_serialized_self_append_history_stays_compact():
     session = _TraceRecorder(Session())
     block = session.create_block()
@@ -906,7 +885,6 @@ def test_serialized_self_append_history_stays_compact():
     assert block.num_tokens == 2**40
     assert len(json.dumps(asdict(session.trace))) < 3 * first_size
     assert sum(len(update.refs) for update in session.trace.updates) == 80
-    assert not any(update.sources for update in session.trace.updates)
     assert session._contents[block.block_id] == block.num_tokens
     session.decode_step([NS(cache_view=[], output_block=block)], torch.tensor([2]))
     trace = Trace.from_dict(json.loads(json.dumps(asdict(session.trace))))
@@ -931,9 +909,17 @@ def test_deep_copy_chain_resolves_without_flattening_or_recursion():
 
 def test_nested_copy_ranges_keep_destination_offsets():
     trace = Trace(
-        [Token(i + 1, 0, 0, i, ((0, i + 1),), "prefill") for i in range(3)]
-        + [Token(i + 4, 0, 1, i, ((1, i + 1),), "prefill") for i in range(2)]
-        + [Token(6, 1, 3, 10, ((3, 11),), "decode")],
+        batches=[
+            ForwardBatch(
+                0,
+                "prefill",
+                (
+                    ForwardRequest((1, 2, 3), 0, 0, ((0, 0),)),
+                    ForwardRequest((4, 5), 1, 0, ((1, 0),)),
+                ),
+            ),
+            ForwardBatch(1, "decode", (ForwardRequest((6,), 3, 10, ((3, 10),)),)),
+        ],
         updates=[
             BlockUpdate(1, 2, refs=((0, 3), (1, 2), (0, 3))),
             BlockUpdate(1, 3, refs=((2, 8), (1, 2))),
@@ -957,17 +943,15 @@ def test_nested_copy_ranges_keep_destination_offsets():
         BlockUpdate(1, 1, refs=((0, 3),)),
         BlockUpdate(1, 1, refs=((999, 1),)),
         BlockUpdate(1, 1, refs=((-1, 0),)),
-        BlockUpdate(1, 1, (0,), refs=((0, 2),)),
         BlockUpdate(0, 1, refs=((0, 2),)),
         BlockUpdate(2, 1, refs=((999, 1),)),
     ],
 )
 def test_reject_invalid_copy_references(update):
     trace = Trace(
-        [
-            Token(1, 0, 0, 0, ((0, 1),), "prefill"),
-            Token(2, 0, 0, 1, ((0, 2),), "prefill"),
-            Token(3, 1, 2, 0, ((2, 1),), "prefill"),
+        batches=[
+            ForwardBatch(0, "prefill", (ForwardRequest((1, 2), 0, 0, ((0, 0),)),)),
+            ForwardBatch(1, "prefill", (ForwardRequest((3,), 2, 0, ((2, 0),)),)),
         ],
         updates=[update],
     )
@@ -989,7 +973,7 @@ def test_recording_and_masks():
 
 def test_causal_metadata_is_compact():
     length = 1024
-    trace = Trace([Token(i % 32, 0, 0, i, ((0, i + 1),), "prefill") for i in range(length)])
+    trace = causal_trace(length)
     replay = trace.to()
     assert replay.spans == [[(0, length, 0)]]
     assert len(replay.reads) == length
@@ -1074,7 +1058,7 @@ def test_sft_cli_rejects_invalid_gdn_options(monkeypatch, tmp_path, flags):
 
 def test_attention_reuses_only_compact_metadata():
     length = 128
-    trace = Trace([Token(i % 32, 0, 0, i, ((0, i + 1),), "prefill") for i in range(length)])
+    trace = causal_trace(length)
     replay = trace.to(query_chunk_size=4)
     q, k, v = torch.randn(length, 4, 8), torch.randn(length, 2, 8), torch.randn(length, 2, 8)
     inv_freq = tiny_model().model.rotary_emb.inv_freq
@@ -1135,7 +1119,6 @@ def test_recording_mutations():
         ((empty.block_id, 0), (block.block_id, 2)),
         ((block.block_id, 2), (block.block_id, 2)),
     ]
-    assert not any(u.sources for u in session.trace.updates)
     assert all(u.step == 1 for u in session.trace.updates)
     session.free_block(block)
     assert session.trace.updates[-1].refs == ()
@@ -1217,9 +1200,9 @@ def test_failed_forward_does_not_commit_trace():
 
 def test_reject_future_visibility():
     trace = Trace(
-        [
-            Token(1, 0, 0, 0, ((1, 1), (0, 1)), "decode"),
-            Token(2, 1, 1, 0, ((1, 1),), "decode"),
+        batches=[
+            ForwardBatch(0, "decode", (ForwardRequest((1,), 0, 0, ((1, 1), (0, 0))),)),
+            ForwardBatch(1, "decode", (ForwardRequest((2,), 1, 0, ((1, 0),)),)),
         ]
     )
     with pytest.raises(ValueError, match="future"):

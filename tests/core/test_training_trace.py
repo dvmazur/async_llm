@@ -44,14 +44,6 @@ def job(block, ids, context=(), **kwargs):
     )
 
 
-def legacy_dict(trace):
-    return {
-        "tokens": [asdict(token) for token in trace.tokens],
-        "steps": trace.steps,
-        "updates": [asdict(update) for update in trace.updates],
-    }
-
-
 def equal_tree(actual, expected):
     if isinstance(expected, torch.Tensor):
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
@@ -63,56 +55,40 @@ def equal_tree(actual, expected):
         assert actual == expected
 
 
-@pytest.mark.parametrize("hidden_only", [None, False])
-def test_deprecated_replay_alias_preserves_rows_outputs_and_gradients(hidden_only):
-    from minisgl.training import replay_from_trace
-
-    model, trace = tiny_model(), mutation_trace()
-    options = {} if hidden_only is None else {"hidden_only": hidden_only}
-    expected = replay_trace(model, trace, [2, 0, 2], **options)
-    with pytest.warns(DeprecationWarning, match="use replay_trace") as warnings:
-        actual = replay_from_trace(model, trace, [2, 0, 2], **options)
-    assert warnings[0].filename == __file__
-    torch.testing.assert_close(actual, expected)
-    parameters = tuple(model.parameters())
-    expected_grads = torch.autograd.grad(expected.square().sum(), parameters, allow_unused=True)
-    actual_grads = torch.autograd.grad(actual.square().sum(), parameters, allow_unused=True)
-    for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
-        if expected_grad is None:
-            assert actual_grad is None
-        else:
-            torch.testing.assert_close(actual_grad, expected_grad)
+@pytest.mark.parametrize("positional", [False, True])
+@pytest.mark.parametrize("tokens", [(), (Token(1, 0, 0, 0, ((0, 1),), "prefill"),)])
+def test_trace_rejects_token_constructor(tokens, positional):
+    with pytest.raises(TypeError):
+        Trace(tokens) if positional else Trace(tokens=tokens)
 
 
-def test_legacy_token_constructor_warns_and_preserves_trace():
-    expected = mutation_trace()
-    with pytest.warns(FutureWarning, match="Token-based Trace") as warnings:
-        actual = Trace(expected.tokens, expected.steps, expected.updates)
-    assert warnings[0].filename == __file__
-    assert actual == expected
-
-
-@pytest.mark.parametrize("empty", [False, True])
-def test_legacy_format_load_warns_and_remains_supported(empty):
-    expected = Trace() if empty else mutation_trace()
-    with pytest.warns(FutureWarning, match="format version 1") as warnings:
-        actual = Trace.from_dict(legacy_dict(expected))
-    assert len(warnings) == 1
-    assert warnings[0].filename == __file__
-    assert actual == expected
-    assert actual.format_version == 2
+@pytest.mark.parametrize("version", [None, 1])
+def test_trace_requires_explicit_current_format_version(version):
+    data = asdict(Trace())
+    if version is None:
+        del data["format_version"]
+    else:
+        data["format_version"] = version
+    with pytest.raises(ValueError, match="Unsupported trace format_version"):
+        Trace.from_dict(data)
 
 
 @pytest.mark.parametrize("sources", [(), (0, 1)])
-def test_legacy_source_row_updates_warn_including_clear(sources):
-    with pytest.warns(FutureWarning, match="Source-row BlockUpdate") as warnings:
-        update = BlockUpdate(1, 2, sources=sources)
-    assert warnings[0].filename == __file__
-    assert update.sources == sources and update.refs is None
+def test_block_updates_reject_source_rows_including_clear(sources):
+    with pytest.raises(TypeError, match="sources"):
+        BlockUpdate(1, 2, sources=sources)
+    data = asdict(Trace(updates=[BlockUpdate(1, 2)]))
+    data["updates"][0]["sources"] = sources
+    with pytest.raises(ValueError, match="BlockUpdate.sources is unsupported"):
+        Trace.from_dict(data)
 
 
-@pytest.mark.filterwarnings("error::FutureWarning")
-def test_current_recording_and_roundtrip_do_not_warn():
+def test_empty_current_trace_roundtrip():
+    trace = Trace()
+    assert Trace.from_dict(json.loads(json.dumps(asdict(trace)))) == trace
+
+
+def test_current_recording_and_roundtrip():
     session = _TraceRecorder(RequestSession())
     block = session.create_block()
     session.prefill_block(block, torch.tensor([1, 2]))
@@ -122,7 +98,7 @@ def test_current_recording_and_roundtrip_do_not_warn():
     session.free_block(copied)
     restored = Trace.from_dict(json.loads(json.dumps(asdict(session.trace))))
     assert restored == session.trace
-    assert all(update.refs is not None for update in restored.updates)
+    assert all(set(asdict(update)) == {"step", "block", "refs"} for update in restored.updates)
     assert restored.to().num_tokens == 3
 
 
@@ -140,16 +116,15 @@ def test_cli_future_deprecation_warning_keeps_help_available(monkeypatch, capsys
 @pytest.mark.parametrize(
     "factory", [mutation_trace, repeated_view_trace, lambda: randomized_trace(7)]
 )
-def test_request_and_legacy_trace_compile_identically(factory):
+def test_request_trace_roundtrip_preserves_compiled_metadata(factory):
     trace = factory()
     encoded = json.loads(json.dumps(asdict(trace)))
     assert encoded["format_version"] == 2 and "tokens" not in encoded
     restored = Trace.from_dict(encoded)
-    legacy = Trace.from_dict(json.loads(json.dumps(legacy_dict(trace))))
     assert restored == trace
-    assert restored.tokens == legacy.tokens == trace.tokens
+    assert restored.tokens == trace.tokens
     assert restored.num_tokens == len(trace.tokens)
-    a, b = restored.to(), legacy.to()
+    a, b = restored.to(), trace.to()
     equal_tree(
         (a.input_ids, a.order, a.spans, a.reads, a.copies),
         (b.input_ids, b.order, b.spans, b.reads, b.copies),
@@ -157,7 +132,7 @@ def test_request_and_legacy_trace_compile_identically(factory):
     order = a.order
     for mode in ("expanded", "factorized"):
         a = GDNReplay.from_trace(restored, order, read_mode=mode)
-        b = GDNReplay.from_trace(legacy, order, read_mode=mode)
+        b = GDNReplay.from_trace(trace, order, read_mode=mode)
         equal_tree(
             (a.conv_sources, a.levels, a.reads, a.partitions),
             (b.conv_sources, b.levels, b.reads, b.partitions),
@@ -230,7 +205,7 @@ def test_replacing_recorded_batch_invalidates_cached_inputs_and_visibility():
 
 
 def test_row_selection_uses_token_count_after_recorded_batch_changes():
-    trace = Trace([Token(i, 0, 0, i - 1, ((0, i),), "prefill") for i in (1, 2)])
+    trace = Trace(batches=[ForwardBatch(0, "prefill", (ForwardRequest((1, 2), 0, 0, ((0, 0),)),))])
     model = tiny_model()
     replay_trace(model, trace)
     batch = trace.batches[0]
@@ -243,17 +218,23 @@ def test_row_selection_uses_token_count_after_recorded_batch_changes():
 
 def test_replacing_block_update_invalidates_cached_provenance():
     trace = Trace(
-        [
-            Token(1, 0, 0, 0, ((0, 1),), "prefill"),
-            Token(2, 0, 1, 0, ((1, 1),), "prefill"),
-            Token(3, 1, 2, 1, ((2, 2),), "decode"),
+        batches=[
+            ForwardBatch(
+                0,
+                "prefill",
+                (
+                    ForwardRequest((1,), 0, 0, ((0, 0),)),
+                    ForwardRequest((2,), 1, 0, ((1, 0),)),
+                ),
+            ),
+            ForwardBatch(1, "decode", (ForwardRequest((3,), 2, 1, ((2, 1),)),)),
         ],
-        updates=[BlockUpdate(1, 2, sources=(0,))],
+        updates=[BlockUpdate(1, 2, refs=((0, 1),))],
     )
     model = tiny_model()
     before = replay_trace(model, trace, hidden_only=False)
     chunks = next(iter(trace._attention.values()))
-    trace.updates[0] = BlockUpdate(1, 2, sources=(1,))
+    trace.updates[0] = BlockUpdate(1, 2, refs=((1, 1),))
     actual = replay_trace(model, trace, hidden_only=False)
     torch.testing.assert_close(actual, sequential(model, trace), atol=2e-6, rtol=2e-5)
     torch.testing.assert_close(actual[:2], before[:2], atol=0, rtol=0)
@@ -332,10 +313,11 @@ def test_long_prefill_stores_one_request_without_repeated_metadata(record_proper
     data = asdict(trace)
     assert len(data["batches"]) == len(data["batches"][0]["requests"]) == 1
     assert data["batches"][0]["requests"][0]["input_ids"] == tuple(range(2048))
-    new_bytes, legacy_bytes = len(json.dumps(data)), len(json.dumps(legacy_dict(trace)))
-    assert new_bytes < legacy_bytes / 8
+    new_bytes = len(json.dumps(data))
+    token_bytes = len(json.dumps([asdict(token) for token in trace.tokens]))
+    assert new_bytes < token_bytes / 8
     record_property("request_trace_bytes", new_bytes)
-    record_property("legacy_trace_bytes", legacy_bytes)
+    record_property("token_metadata_bytes", token_bytes)
     assert [token.token_id for token in trace.tokens] == list(range(2048))
     assert [token.position for token in trace.tokens] == list(range(2048))
 
@@ -406,7 +388,8 @@ def test_image_inputs_and_positions_roundtrip_without_aliasing():
 
 
 @pytest.mark.parametrize("has_pixels", [False, True])
-def test_trace_discards_legacy_null_embeddings_and_rejects_saved_features(has_pixels):
+@pytest.mark.parametrize("rows", [None, 0, 1])
+def test_trace_rejects_image_embeddings_including_null(rows, has_pixels):
     request = ForwardRequest(
         (1,),
         0,
@@ -427,14 +410,11 @@ def test_trace_discards_legacy_null_embeddings_and_rejects_saved_features(has_pi
     data = json.loads(json.dumps(asdict(trace)))
     saved = data["batches"][0]["requests"][0]
     assert "image_embeds" not in saved
-    saved["image_embeds"] = None
-    restored = Trace.from_dict(data)
-    assert restored == trace
-    assert "image_embeds" not in asdict(restored.batches[0].requests[0])
-    for rows in (0, 1):
-        saved["image_embeds"] = asdict(TensorData.capture(torch.zeros(rows, 32)))
-        with pytest.raises(ValueError, match="record pixel_values"):
-            Trace.from_dict(data)
+    saved["image_embeds"] = (
+        None if rows is None else asdict(TensorData.capture(torch.zeros(rows, 32)))
+    )
+    with pytest.raises(ValueError, match="record pixel_values"):
+        Trace.from_dict(data)
 
 
 @pytest.mark.parametrize("rows", [0, 1])

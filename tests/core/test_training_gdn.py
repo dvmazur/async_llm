@@ -13,7 +13,7 @@ from minisgl.training.gdn import GDNReplay, delta, gdn_forward
 from minisgl.training.recording import _TraceRecorder
 from minisgl.training.sft import compute_supervised_loss
 from minisgl.training.stress import generate_workload
-from minisgl.training.trace import BlockUpdate, Token
+from minisgl.training.trace import BlockUpdate, ForwardBatch, ForwardRequest
 from test_training import (
     Session,
     apply_updates,
@@ -297,7 +297,9 @@ def test_delta_autocast_preserves_fp32_core(request, device, backend, read_mode,
         request.getfixturevalue("cuda_delta_math")
     torch.manual_seed(7)
     n = 17
-    trace = Trace([Token(i, 0, 0, i, ((0, i + 1),), "prefill") for i in range(n)])
+    trace = Trace(
+        batches=[ForwardBatch(0, "prefill", (ForwardRequest(tuple(range(n)), 0, 0, ((0, 0),)),))]
+    )
     replay = GDNReplay.from_trace(
         trace, torch.arange(n), device=device, read_mode=read_mode, read_backend=backend
     )
@@ -566,7 +568,9 @@ def test_delta_fp64_outputs_and_gradients(trace_kind, segment_size, read_mode, r
 def test_delta_long_causal_fp64_outputs_and_gradients(segment_size, read_mode, record_property):
     torch.manual_seed(7)
     n, heads, dk, dv = 512, 2, 16, 12
-    trace = Trace([Token(i, 0, 0, i, ((0, i + 1),), "prefill") for i in range(n)])
+    trace = Trace(
+        batches=[ForwardBatch(0, "prefill", (ForwardRequest(tuple(range(n)), 0, 0, ((0, 0),)),))]
+    )
     order = torch.randperm(n)
     replay = GDNReplay.from_trace(trace, order, segment_size=segment_size, read_mode=read_mode)
     inputs = tuple(
@@ -641,11 +645,16 @@ def test_delta_gate_boundaries(alpha, beta, segment_size, read_mode):
 @pytest.mark.parametrize("segment_size", [1, 2, 8])
 def test_delta_copy_clear_gradcheck(segment_size, read_mode):
     trace = Trace(
-        [
-            Token(1, 0, 0, 0, ((0, 1),), "prefill"),
-            Token(2, 0, 0, 1, ((0, 2),), "prefill"),
-            Token(3, 1, 0, 0, ((1, 5), (0, 1)), "decode"),
-            Token(4, 1, 1, 4, ((0, 1), (1, 5)), "decode"),
+        batches=[
+            ForwardBatch(0, "prefill", (ForwardRequest((1, 2), 0, 0, ((0, 0),)),)),
+            ForwardBatch(
+                1,
+                "decode",
+                (
+                    ForwardRequest((3,), 0, 0, ((1, 4), (0, 0))),
+                    ForwardRequest((4,), 1, 4, ((0, 0), (1, 4))),
+                ),
+            ),
         ],
         updates=[
             BlockUpdate(1, 1, refs=((0, 2),)),
@@ -1144,7 +1153,9 @@ def test_delta_summary_copy_and_storage_do_not_grow_with_tree_depth(segment_size
 def test_delta_compact_segments_reduce_causal_saved_storage(record_property):
     torch.manual_seed(7)
     n, heads, dk, dv = 64, 2, 32, 24
-    trace = Trace([Token(i, 0, 0, i, ((0, i + 1),), "prefill") for i in range(n)])
+    trace = Trace(
+        batches=[ForwardBatch(0, "prefill", (ForwardRequest(tuple(range(n)), 0, 0, ((0, 0),)),))]
+    )
     inputs = tuple(
         x.requires_grad_()
         for x in (
@@ -1281,11 +1292,17 @@ def test_gdn_synthetic_stress_workload_outputs_and_gradients():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_gdn_decode_reads_peer_before_batch():
     trace = Trace(
-        [
-            Token(1, 0, 0, 0, ((0, 1),), "prefill"),
-            Token(2, 1, 1, 0, ((1, 1),), "prefill"),
-            Token(3, 2, 0, 1, ((1, 2), (0, 2)), "decode"),
-            Token(4, 2, 1, 1, ((0, 2), (1, 2)), "decode"),
+        batches=[
+            ForwardBatch(0, "prefill", (ForwardRequest((1,), 0, 0, ((0, 0),)),)),
+            ForwardBatch(1, "prefill", (ForwardRequest((2,), 1, 0, ((1, 0),)),)),
+            ForwardBatch(
+                2,
+                "decode",
+                (
+                    ForwardRequest((3,), 0, 1, ((1, 1), (0, 1))),
+                    ForwardRequest((4,), 1, 1, ((0, 1), (1, 1))),
+                ),
+            ),
         ]
     )
     module = tiny_hybrid().cuda().model.layers[0].linear_attn
@@ -1412,7 +1429,9 @@ def test_hybrid_autocast_parameter_gradients(cuda_delta_math, backend, use_reent
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
         )
-    trace = Trace([Token(i, 0, 0, i, ((0, i + 1),), "prefill") for i in range(17)])
+    trace = Trace(
+        batches=[ForwardBatch(0, "prefill", (ForwardRequest(tuple(range(17)), 0, 0, ((0, 0),)),))]
+    )
     plan = trace.to(device="cuda", gdn_read_mode="factorized", gdn_read_backend=backend)
     with torch.autocast("cuda", dtype=torch.bfloat16):
         logits = replay_trace(model, plan, hidden_only=False)
