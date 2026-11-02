@@ -23,13 +23,13 @@ async def together(*coroutines):
         raise
 
 
-async def one_token(llm, context, forbidden):
+async def one_token(llm, context, forbidden, sampling=None):
     async with aclosing(
         llm.async_generate(
             context,
             max_steps=1,
             forbid_ids=forbidden,
-            sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
+            sampling_params=sampling or SamplingParams(temperature=0.0, max_tokens=1),
         )
     ) as stream:
         return await anext(stream)
