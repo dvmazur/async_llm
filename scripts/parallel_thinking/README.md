@@ -1,6 +1,9 @@
 # Parallel thinking
 
-- `train_small_model.ipynb`: Qwen3-4B-Thinking-2507 generates one trajectory;
+- `train_small_model.ipynb`: Qwen3-4B generates one trajectory with the original
+  `<think>` prompt prefix. A 450-round budget retains the initial cooperation and
+  answers while excluding the later repetitive tail; this is task-specific.
+  The teacher transcript and generated role headers are shown before training;
   Qwen3-1.7B learns it with **BF16 master weights and AdamW moments on CPU**,
   BF16 forward/backward on GPU, FP32 RoPE buffers. The actual training targets
   and context examples are displayed. A temporary checkpoint is used only for
