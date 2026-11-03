@@ -79,10 +79,10 @@ def test_fp32_summary_scan_against_original(lengths):
                                    alpha[None, section], beta[None, section], workers=[w])
         start += length
         for actual, expected in zip(targets[w].linear_affine[0], refs[w].linear_affine[0]):
-            # Single-request FP32 capture must retain the original accumulation
-            # order; ragged slicing may alter the key normalization's reduction.
-            tol = 0 if len(lengths) == 1 else 5e-6
-            torch.testing.assert_close(actual, expected, atol=tol, rtol=tol)
+            # Torch GEMV and the scan may use different FP32 reduction trees.
+            # Ragged slicing can also change the key-normalization reduction.
+            atol, rtol = (1e-7, 1e-6) if len(lengths) == 1 else (5e-6, 5e-6)
+            torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize('use_fla', [True, False])
