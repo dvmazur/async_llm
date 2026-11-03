@@ -122,7 +122,7 @@ def _stream_token(text: str, role: str) -> None:
 
 async def _run_loop(
     config: DemoConfig,
-    llm: AsyncLLM | RecordedAsyncLLM,
+    llm: AsyncLLM,
     tokenizer: AutoTokenizer,
     prompting: Prompting,
     samples: Samples | None = None,
