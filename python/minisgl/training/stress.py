@@ -1,4 +1,4 @@
-"""Mine a deterministic synthetic workload through the real shared-cache session."""
+"""Generate traces for stress tests; scheduled to move out of the library directory."""
 
 import argparse
 import json

@@ -48,8 +48,6 @@ class TensorData:
         )
 
     def to_tensor(self):
-        import torch
-
         dtype = getattr(torch, self.dtype, None)
         if not isinstance(dtype, torch.dtype):
             raise ValueError(f"Unknown tensor dtype: {self.dtype}")

@@ -275,7 +275,7 @@ def record(args):
             "peak_gpu_bytes": torch.cuda.max_memory_allocated(),
         }
 
-        metadata["provenance"] = history.assert_replay(capture.trace.to())
+        metadata["provenance"] = history.assert_replay(capture.trace.to(device="cpu"))
         assert metadata["tokens"] == 4099 and metadata["updates"] == 39
         assert metadata["output_rows"] == 213 and metadata["max_depth"] == 12
         features = {}
@@ -431,9 +431,9 @@ def record_image(args):
         assert data["format_version"] == 2 and "tokens" not in data
         assert len(restored.batches) == 5 and len(restored.updates) == 2
         assert sum(r.pixel_values is not None for b in restored.batches for r in b.requests) == 2
-        replay = restored.to()
-        assert replay.input_ids.numel() == restored.num_tokens
-        gdn = GDNReplay.from_trace(restored, replay.order)
+        prepared_trace = restored.to(device="cpu")
+        assert prepared_trace.input_ids.numel() == restored.num_tokens
+        gdn = GDNReplay.from_trace(restored, prepared_trace.order)
         assert gdn.conv_sources.shape[0] == restored.num_tokens
         metadata = {
             "image_tokens": len(ids),

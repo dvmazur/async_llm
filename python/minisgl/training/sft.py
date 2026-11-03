@@ -1,4 +1,4 @@
-"""Mine short AsyncLLM trajectories and overfit their sampled-token targets."""
+"""Training script example scheduled to move to scripts."""
 
 import argparse
 import asyncio

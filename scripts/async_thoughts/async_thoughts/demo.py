@@ -29,6 +29,7 @@ from .engine import (
     single_token_id,
     vocab_id_or_none,
 )
+from .training import DemoRecorder, save_training_example
 
 # Default math problem from the original AsyncReasoning notebook.
 DEFAULT_PROBLEM = "Calculate x - x^2 + x^3 for x = 5, 6, 7, 8. Return all 4 answers in \\boxed{ }."
@@ -301,8 +302,6 @@ async def _run_demo(
     try:
         if config.trace_output is None:
             return await _run_loop(config, llm, tokenizer, prompting)
-
-        from .training import DemoRecorder, save_training_example
 
         if config.trace_output.exists():
             raise FileExistsError(config.trace_output)
