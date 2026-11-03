@@ -3,15 +3,99 @@
 import asyncio
 import json
 from contextlib import aclosing
+from dataclasses import asdict
 
 import pytest
 import torch
 from minisgl.shared_cache import AsyncContext
 from minisgl.training import RecordedAsyncLLM
 from minisgl_examples.demos.async_thoughts import demo
-from minisgl_examples.training.recording import generate_with_targets
+from minisgl_examples.training.parallel_thinking import demo as parallel_demo
+from minisgl_examples.training.recording import build_training_example, generate_with_targets
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from transformers import PreTrainedTokenizerFast
 
 from tests.core.test_async_llm import _make_llm
+from tests.training.helpers import copy_operations
+from tests.training.models import tiny_model
+from tests.training.workloads import causal_trace
+
+
+@pytest.fixture
+def source(tmp_path):
+    model_path, trace_path = tmp_path / "source", tmp_path / "trace.json"
+    with torch.device("cpu"):
+        tiny_model().save_pretrained(model_path)
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=Tokenizer(WordLevel({str(i): i for i in range(32)}, unk_token="0"))
+    )
+    tokenizer.save_pretrained(model_path)
+    trace_path.write_text(
+        json.dumps(
+            {
+                "model": str(model_path),
+                "examples": [{"trace": asdict(causal_trace(6)), "targets": [1, 2, 3, 4, 5, 6]}],
+            }
+        )
+    )
+    return model_path, trace_path
+
+
+class StubFormatting:
+    history_header = "history"
+    sep = "\n\n"
+    current_step_header = "others"
+    current_worker_header = "own"
+    incomplete_step = "..."
+    s1_finisher_suffix = "answer"
+    vocab = {}
+    eos_token_id = 31
+
+    def encode(self, text, **kwargs):
+        return [1, 2]
+
+    def decode(self, ids):
+        return " ".join(map(str, ids))
+
+    def apply_chat_template(self, problem):
+        return problem
+
+    def get_step_prefix(self, worker, step):
+        return f"{worker} {step}"
+
+    def is_end_of_step(self, ids):
+        return len(ids) == 4
+
+    def get_final_answer(self, text):
+        return None
+
+
+def collect_example(synchronized):
+    async def collect():
+        llm, session = _make_llm()
+        llm.tokenizer = StubFormatting()
+        copy_operations(session)
+        try:
+            with RecordedAsyncLLM(llm) as recorder:
+                samples = {}
+                result = await parallel_demo.run_agents(
+                    recorder,
+                    llm.tokenizer,
+                    problem="test",
+                    synchronized=synchronized,
+                    max_steps=4,
+                    answer_steps=2,
+                    bob_delay=0.005,
+                    delay_every=1,
+                    samples=samples,
+                )
+                return result, build_training_example(recorder, samples)
+        finally:
+            await llm.close()
+
+    with torch.device("cpu"):
+        return asyncio.run(collect())
 
 
 @pytest.fixture
