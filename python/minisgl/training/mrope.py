@@ -1,6 +1,24 @@
 import torch
 
 
+def rotate(x, positions, inv_freq, mrope_section=None):
+    if positions.ndim == 2:
+        if mrope_section is None:
+            raise ValueError("Three-axis positions require an mRoPE model")
+        frequencies = positions.float()[..., None] * inv_freq.float()
+        angles = frequencies[:, 0].clone()
+        for axis in (1, 2):
+            section = slice(axis, mrope_section[axis] * 3, 3)
+            angles[:, section] = frequencies[:, axis, section]
+    else:
+        angles = positions.float()[:, None] * inv_freq.float()[None, :]
+    cos, sin = angles.cos()[:, None, :], angles.sin()[:, None, :]
+    width = 2 * inv_freq.numel()
+    left, right = x[..., :width].float().chunk(2, dim=-1)
+    rotated = torch.cat((left * cos - right * sin, right * cos + left * sin), -1)
+    return torch.cat((rotated.to(x.dtype), x[..., width:]), -1)
+
+
 class MropeLayout:
     """Block coordinate frames, independent of token-count visibility."""
 
@@ -11,13 +29,9 @@ class MropeLayout:
         self.queries = []
         self.copy_offsets = []
 
-    def replace(self, block, sources=(), refs=None):
-        if sources:
-            raise ValueError(
-                "Multimodal cache mutations require block refs, not legacy source rows"
-            )
+    def replace(self, block, refs=()):
         offsets, span = [], 0
-        for source, length in refs or ():
+        for source, length in refs:
             if length:
                 offsets.append(span)
             span += self.spans.get(source, 0)
@@ -41,7 +55,7 @@ class MropeLayout:
                     raise ValueError("Image requests require recorded mRoPE positions")
                 positions = torch.arange(span, span + size).expand(3, -1)
             else:
-                positions = request.mrope_positions.tensor()
+                positions = request.mrope_positions.to_tensor()
                 if (
                     positions.shape != (3, size)
                     or positions.dtype not in (torch.int32, torch.int64)

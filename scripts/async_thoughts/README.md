@@ -95,14 +95,12 @@ from pathlib import Path
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM
 
-from minisgl.training.replay import Replay, forward
-from minisgl.training.sft import supervised_loss
-from minisgl.training.trace import Trace
+from minisgl.training import Trace, replay_trace
+from minisgl.training.sft import compute_supervised_loss
 
 data = json.loads(Path("training_runs/async_thoughts/trace.json").read_text())
 example = data["examples"][0]
-trace = Trace.from_dict(example["trace"])
-replay = Replay.from_trace(trace, device="cuda")
+trace = Trace.from_dict(example["trace"]).to("cuda")
 targets = torch.tensor(example["targets"], device="cuda")
 config = AutoConfig.from_pretrained(data["model"]).get_text_config()
 model = AutoModelForCausalLM.from_pretrained(
@@ -111,17 +109,21 @@ model = AutoModelForCausalLM.from_pretrained(
 
 # Inspect only supervised rows; returned rows follow original trace order.
 with torch.no_grad():
-    logits = forward(model, replay, rows=(targets != -100).nonzero().flatten())
+    logits = replay_trace(
+        model, trace, rows=(targets != -100).nonzero().flatten(), hidden_only=False
+    )
 print(logits.shape)
 del logits
 
 model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 model.zero_grad(set_to_none=True)
-loss = supervised_loss(model, replay, targets) / (targets != -100).sum()
+loss = compute_supervised_loss(model, trace, targets) / (targets != -100).sum()
 loss.backward()
 print("loss:", loss.item())
 ```
 
-The supervised loss projects vocabulary logits in checkpointed chunks; it still
-replays the context tokens needed by the supervised rows. It does not apply a
-global next-token shift, which would misalign interleaved workers.
+`replay_trace` accepts an `AsyncLLM` or an HF model. Its default result is decoder
+hidden states; `hidden_only=False` returns logits. Use `logits.softmax(-1)` for
+probabilities. The supervised loss projects vocabulary logits in checkpointed
+chunks; it still replays the context tokens needed by the supervised rows. It
+does not apply a global next-token shift, which would misalign interleaved workers.

@@ -188,26 +188,16 @@ class GDNReplay:
             while update_index < len(trace.updates) and trace.updates[update_index].step <= step:
                 update = trace.updates[update_index]
                 count, forest, tail = empty
-                if update.refs is not None:
-                    if update.sources:
-                        raise ValueError("Mutation cannot contain both sources and refs")
-                    root = 0
-                    for block, length in update.refs:
-                        state = blocks.get(block, empty)
-                        if block < 0 or length < 0 or length != state[0]:
-                            raise ValueError("Mutation must reference a live block snapshot")
-                        count += length
-                        root = join(root, summarize(state[1]))
-                        if length:
-                            tail = state[2]
-                    forest = (root,) if root else ()
-                else:
-                    for source in update.sources:
-                        if source < 0 or source >= rows[0][0] or windows[source] is None:
-                            raise ValueError("Mutation refers to an unavailable token")
-                        forest = append(forest, inverse[source] + 1)
-                    count = len(update.sources)
-                    tail = windows[update.sources[-1]] if count else empty[2]
+                root = 0
+                for block, length in update.refs:
+                    state = blocks.get(block, empty)
+                    if block < 0 or length < 0 or length != state[0]:
+                        raise ValueError("Mutation must reference a live block snapshot")
+                    count += length
+                    root = join(root, summarize(state[1]))
+                    if length:
+                        tail = state[2]
+                forest = (root,) if root else ()
                 blocks[update.block] = (count, forest, tail)
                 update_index += 1
             kinds = {token.kind for _, token in rows}
@@ -589,3 +579,13 @@ def gdn_forward(module, hidden_states, replay: GDNReplay):
     z = module.in_proj_z(x).view_as(core)
     core = module.norm(core, z).reshape(len(x), module.value_dim)
     return module.out_proj(core)[None]
+
+
+def replay_gdn(
+    module, hidden_states, cache_params=None, attention_mask=None, *, gdn_replay=None, **kwargs
+):
+    if gdn_replay is None:
+        return module._replay_native_forward(
+            hidden_states, cache_params=cache_params, attention_mask=attention_mask, **kwargs
+        )
+    return gdn_forward(module, hidden_states, gdn_replay)
