@@ -3,9 +3,11 @@
 import asyncio
 from contextlib import aclosing, nullcontext
 from dataclasses import asdict
+from inspect import isasyncgenfunction, iscoroutinefunction
 
 import pytest
 import torch
+from minisgl.llm import AsyncLLM
 from minisgl.shared_cache import AsyncContext
 from minisgl.training import RecordedAsyncLLM, Trace, replay_trace
 from test_async_llm import _make_llm
@@ -59,6 +61,93 @@ def pause_ticks(llm, monkeypatch):
 
     monkeypatch.setattr(llm, "_engine_loop", delayed_loop)
     return released
+
+
+def test_recorder_overrides_async_llm_public_operations():
+    for name, method in vars(AsyncLLM).items():
+        if (not name.startswith("_") or name == "__call__") and (
+            iscoroutinefunction(method) or isasyncgenfunction(method)
+        ):
+            assert name in vars(RecordedAsyncLLM), f"{name} needs a recording delegate"
+
+
+def test_recorder_is_async_llm_and_shares_scheduler_and_shutdown(monkeypatch):
+    async def run_agent(llm: AsyncLLM):
+        block = await llm.create_block()
+        return await llm([1, 2], write_to=block)
+
+    async def run():
+        llm, session = _make_llm()
+        engine = llm.async_engine
+
+        def unexpected_init(*args, **kwargs):
+            pytest.fail("Recording must reuse the existing AsyncLLM")
+
+        monkeypatch.setattr(AsyncLLM, "__init__", unexpected_init)
+        recorded = RecordedAsyncLLM(llm)
+        assert isinstance(recorded, AsyncLLM)
+        assert recorded._loop_task is llm._loop_task is None
+        try:
+            with recorded:
+                result = await run_agent(recorded)
+                task = llm._loop_task
+                assert task is not None and not task.done()
+                assert recorded._loop_task is task
+                assert recorded._work_event is llm._work_event
+                assert recorded.async_engine is llm.async_engine
+                assert result.block.token_ids == [1, 2]
+                await asyncio.wait_for(recorded.close(), timeout=1)
+                assert task.done()
+                assert recorded._closed is llm._closed is True
+                assert recorded._loop_task is llm._loop_task is None
+                assert not {"_loop_task", "_closed", "_work_event"} & vars(recorded).keys()
+            assert llm.async_engine is engine and engine.session is session
+            assert [token.token_id for token in recorded.get_trace().tokens] == [1, 2]
+        finally:
+            await llm.close()
+
+    asyncio.run(asyncio.wait_for(run(), timeout=10))
+
+
+@pytest.mark.parametrize(
+    "name,args",
+    [
+        ("create_block", ()),
+        ("free_block", (None,)),
+        ("merge_blocks", (None, None)),
+        ("append_block", (None, None)),
+        ("prefill_block", ([1],)),
+        ("forward", ([1],)),
+        ("__call__", ([1],)),
+        ("sample", (None,)),
+        ("close", ()),
+        ("async_generate", (None,)),
+    ],
+)
+def test_recorder_operations_require_active_scope(name, args):
+    async def run():
+        llm, _ = _make_llm()
+        recorded = RecordedAsyncLLM(llm)
+
+        async def rejected():
+            with pytest.raises(RuntimeError, match="inside its context manager"):
+                result = getattr(recorded, name)(*args)
+                if name == "async_generate":
+                    await anext(result)
+                else:
+                    await result
+
+        try:
+            await rejected()
+            with recorded:
+                pass
+            await rejected()
+            assert not llm._closed and llm._loop_task is None
+            assert recorded.get_trace().num_tokens == 0
+        finally:
+            await llm.close()
+
+    asyncio.run(run())
 
 
 def test_concurrent_recordings_split_batches_preserve_views_and_skip_unused_blocks():

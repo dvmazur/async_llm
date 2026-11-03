@@ -1,17 +1,30 @@
 """Independent recording scopes over a shared AsyncLLM scheduler."""
 
+from __future__ import annotations
+
 from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextvars import ContextVar
 from functools import wraps
 from inspect import iscoroutinefunction
-from typing import TYPE_CHECKING
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
+
+import torch
+
+from minisgl.llm import AsyncLLM
 
 from .trace import _IMAGE_INPUT_FIELDS, BlockUpdate, ForwardBatch, ForwardRequest, TensorData, Trace
 
 if TYPE_CHECKING:
-    from minisgl.llm import AsyncLLM
+    from minisgl.core import SamplingParams
+    from minisgl.llm import CausalLMOutput
+    from minisgl.llm.async_llm import TokenIds
+    from minisgl.shared_cache import AsyncContext, CacheBlock, CacheView
 
-_current = ContextVar("minisgl_recording", default=None)
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+_current: ContextVar[RecordedAsyncLLM | None] = ContextVar("minisgl_recording", default=None)
 
 
 class _TraceRecorder:
@@ -307,7 +320,7 @@ class _RecordingEngine:
         return cancelled
 
 
-class RecordedAsyncLLM:
+class RecordedAsyncLLM(AsyncLLM):
     """Record only this wrapper's actions, while sharing the underlying engine.
 
     Use as a synchronous context manager and await all calls before leaving it.
@@ -318,8 +331,8 @@ class RecordedAsyncLLM:
 
     def __init__(self, llm: "AsyncLLM") -> None:
         self.llm = llm
-        self._recorder = None
-        self._adapter = None
+        self._recorder: _TraceRecorder | None = None
+        self._adapter: _RecordingEngine | None = None
         self._pending = 0
 
     def __enter__(self) -> "RecordedAsyncLLM":
@@ -336,7 +349,12 @@ class RecordedAsyncLLM:
         engine.recorders.add(self)
         return self
 
-    def __exit__(self, exc_type, exc, traceback):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         engine = self._adapter
         cancelled = engine.cancel_pending(self)
         self._adapter = None
@@ -356,7 +374,9 @@ class RecordedAsyncLLM:
             raise RuntimeError("Enter RecordedAsyncLLM before requesting its trace")
         return self._recorder.trace
 
-    async def _invoke(self, method, *args, **kwargs):
+    async def _invoke(
+        self, method: Callable[_P, Awaitable[_T]], *args: _P.args, **kwargs: _P.kwargs
+    ) -> _T:
         if self._adapter is None:
             raise RuntimeError("Use RecordedAsyncLLM inside its context manager")
         token = _current.set(self)
@@ -367,22 +387,125 @@ class RecordedAsyncLLM:
             self._pending -= 1
             _current.reset(token)
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         value = getattr(self.llm, name)
         if not iscoroutinefunction(value):
             return value
 
         @wraps(value)
-        async def invoke(*args, **kwargs):
+        async def invoke(*args: Any, **kwargs: Any) -> Any:
             return await self._invoke(value, *args, **kwargs)
 
         return invoke
 
-    async def __call__(self, *args, **kwargs):
-        return await self.forward(*args, **kwargs)
+    async def create_block(self) -> CacheBlock:
+        return await self._invoke(self.llm.create_block)
 
-    async def async_generate(self, *args, **kwargs):
-        stream = self.llm.async_generate(*args, **kwargs)
+    async def free_block(self, block: CacheBlock) -> None:
+        await self._invoke(self.llm.free_block, block)
+
+    async def merge_blocks(self, left: CacheBlock, right: CacheBlock) -> CacheBlock:
+        return await self._invoke(self.llm.merge_blocks, left, right)
+
+    async def append_block(self, left: CacheBlock, right: CacheBlock) -> CacheBlock:
+        return await self._invoke(self.llm.append_block, left, right)
+
+    async def prefill_block(
+        self,
+        input_ids: TokenIds,
+        *,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.Tensor | None = None,
+        mm_token_type_ids: torch.Tensor | None = None,
+        cache_view: CacheView | None = None,
+        write_to: CacheBlock | None = None,
+        return_logits: bool = False,
+    ) -> CausalLMOutput:
+        return await self._invoke(
+            self.llm.prefill_block,
+            input_ids,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
+            cache_view=cache_view,
+            write_to=write_to,
+            return_logits=return_logits,
+        )
+
+    async def forward(
+        self,
+        input_ids: TokenIds | None = None,
+        cache_view: AsyncContext | CacheView | None = None,
+        *,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.Tensor | None = None,
+        mm_token_type_ids: torch.Tensor | None = None,
+        write_to: CacheBlock | None = None,
+        attention_mask: torch.Tensor | None = None,
+        return_logits: bool = True,
+    ) -> CausalLMOutput:
+        return await self._invoke(
+            self.llm.forward,
+            input_ids,
+            cache_view,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
+            write_to=write_to,
+            attention_mask=attention_mask,
+            return_logits=return_logits,
+        )
+
+    async def __call__(
+        self,
+        input_ids: TokenIds | None = None,
+        cache_view: AsyncContext | CacheView | None = None,
+        *,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.Tensor | None = None,
+        mm_token_type_ids: torch.Tensor | None = None,
+        write_to: CacheBlock | None = None,
+        attention_mask: torch.Tensor | None = None,
+        return_logits: bool = True,
+    ) -> CausalLMOutput:
+        return await self.forward(
+            input_ids,
+            cache_view,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
+            write_to=write_to,
+            attention_mask=attention_mask,
+            return_logits=return_logits,
+        )
+
+    async def sample(
+        self, logits: torch.Tensor | CausalLMOutput, **param_overrides: float | int | bool
+    ) -> torch.Tensor:
+        return await self._invoke(self.llm.sample, logits, **param_overrides)
+
+    async def close(self) -> None:
+        """Close the shared LLM; leaving a recording context only detaches it."""
+        await self._invoke(self.llm.close)
+
+    async def async_generate(
+        self,
+        context: AsyncContext,
+        *,
+        forbid_ids: Sequence[int] = (),
+        sampling_params: SamplingParams | None = None,
+        max_steps: int | None = None,
+        first_token_id: int | None = None,
+        return_logits: bool = False,
+    ) -> AsyncIterator[int | tuple[int, torch.Tensor]]:
+        stream = self.llm.async_generate(
+            context,
+            forbid_ids=forbid_ids,
+            sampling_params=sampling_params,
+            max_steps=max_steps,
+            first_token_id=first_token_id,
+            return_logits=return_logits,
+        )
         try:
             while True:
                 try:
