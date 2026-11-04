@@ -427,7 +427,7 @@ def image_inputs():
     only — loading the HF reference model would initialize CUDA before the engine."""
     from transformers import AutoProcessor
 
-    from test_qwen3_5_vision_encoder import _make_hf_inputs
+    from tests.core.test_qwen3_5_vision_encoder import _make_hf_inputs
 
     inputs = _make_hf_inputs(AutoProcessor.from_pretrained(VL_MODEL_ID), 1)
     return dict(

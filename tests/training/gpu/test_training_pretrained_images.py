@@ -8,11 +8,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 from minisgl.training import Trace, replay_trace
-from minisgl.training.sft import compute_supervised_loss
 from minisgl.training.trace import ForwardBatch, ForwardRequest, TensorData
+from minisgl_examples.training.loss import compute_supervised_loss
 from PIL import Image
-from test_training_logits import torch_reference_kernels as torch_reference_kernels
 from transformers import AutoModelForImageTextToText, AutoProcessor
+
+from tests.training.fixtures import torch_reference_kernels as torch_reference_kernels
 
 
 @pytest.fixture

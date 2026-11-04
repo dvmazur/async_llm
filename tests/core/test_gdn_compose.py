@@ -8,7 +8,7 @@ from minisgl.kernel.gdn_io import collect_states, gather_rows
 from minisgl.shared_cache.gdn import SharedCacheGDN
 from minisgl.shared_cache.gdn_decode import GDNDecodeBuffers, prefix_links
 from minisgl.shared_cache.shared_block import CacheBlock
-from test_gdn_decode_prepared import legacy_compose
+from tests.core.test_gdn_decode_prepared import legacy_compose
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA pointer compose')
 

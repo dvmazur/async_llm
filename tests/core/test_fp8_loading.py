@@ -9,7 +9,7 @@ from minisgl.models.weight import load_weight, _shard_tensor, _get_expert_stack_
 
 
 def config_for_checkpoint(path):
-    from test_qwen3_5_moe import _tiny_hf_config
+    from tests.core.test_qwen3_5_moe import _tiny_hf_config
     config=_tiny_hf_config()
     config.quantization_config=dict(quant_method='fp8',fmt='e4m3',activation_scheme='dynamic',
                                     weight_block_size=[128,128])

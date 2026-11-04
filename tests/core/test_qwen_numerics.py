@@ -54,7 +54,7 @@ def test_qwen_residual_norm_and_default_norm():
 
 
 def test_loader_does_not_fold_qwen_norm_weights(tmp_path, monkeypatch):
-    from test_fp8_loading import config_for_checkpoint
+    from tests.core.test_fp8_loading import config_for_checkpoint
     from minisgl.distributed import DistributedInfo
     import minisgl.distributed.info as dist
     from minisgl.models.weight import load_weight

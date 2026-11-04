@@ -7,7 +7,7 @@ from minisgl.shared_cache.gdn import SharedCacheGDN
 from minisgl.shared_cache.gdn_affine import init_gdn_affine
 from minisgl.shared_cache.gdn_prefill import GDNPrefillBuffers
 from minisgl.shared_cache.shared_block import CacheBlock
-from _gdn_reference import SharedCacheGDN as ReferenceGDN
+from tests.training._gdn_reference import SharedCacheGDN as ReferenceGDN
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA GDN prefill')
 

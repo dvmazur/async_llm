@@ -19,8 +19,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, List, Optional, Sequence
 
 import torch
-
-from minisgl.shared_cache.gdn_affine import compose_gdn_affines, init_gdn_affine, update_affine_summary
+from minisgl.shared_cache.gdn_affine import (
+    compose_gdn_affines,
+    init_gdn_affine,
+    update_affine_summary,
+)
 
 if TYPE_CHECKING:
     from .shared_block import CacheBlock

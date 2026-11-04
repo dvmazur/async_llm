@@ -45,7 +45,7 @@ def test_bf16_merge_rounds_after_fp32_add(device):
 @pytest.mark.parametrize('captured',[False,True])
 @torch.inference_mode()
 def test_bf16_compose_capture_reordered_chains_and_owned_storage(dk,dv,captured):
-    from test_gdn_compose import capture
+    from tests.core.test_gdn_compose import capture
     torch.manual_seed(948)
     ar=SharedCacheGDN(num_heads=2,head_k_dim=dk,head_v_dim=dv,conv_dim=7,
                       conv_kernel=4,device=torch.device('cuda'),state_dtype=torch.bfloat16)
