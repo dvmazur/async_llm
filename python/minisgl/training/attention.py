@@ -1,13 +1,27 @@
+from collections.abc import Sequence
 from copy import copy
+from typing import Any
 
 import torch
 from torch.utils.checkpoint import checkpoint
 from transformers import AttentionInterface
 
 from .mrope import rotate
+from .trace import Trace
 
 
-def attention_chunk(q, k, v, inv_freq, *, replay, blocks, entries, scaling, mrope_section=None):
+def attention_chunk(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    inv_freq: torch.Tensor,
+    *,
+    replay: Trace,
+    blocks: Sequence[tuple[int, int, int, int]],
+    entries: torch.Tensor,
+    scaling: float,
+    mrope_section: Sequence[int] | None = None,
+) -> torch.Tensor:
     groups = q.shape[1] // k.shape[1]
     sources, positions, rope_positions = [], [], []
     for version, lo, hi, _ in blocks:
@@ -16,7 +30,9 @@ def attention_chunk(q, k, v, inv_freq, *, replay, blocks, entries, scaling, mrop
             for start, end, _ in replay.compute_source_spans(version, lo, hi):
                 sources.append(torch.arange(start, end, device=q.device))
         else:
-            for start, end, _, shift in replay.compute_source_spans(version, lo, hi, with_rope=True):
+            for start, end, _, shift in replay.compute_source_spans(
+                version, lo, hi, with_rope=True
+            ):
                 sources.append(torch.arange(start, end, device=q.device))
                 rope_positions.append(replay.rope_positions[start:end] + shift)
     sources, positions = torch.cat(sources), torch.cat(positions)
@@ -47,7 +63,15 @@ def attention_chunk(q, k, v, inv_freq, *, replay, blocks, entries, scaling, mrop
     return output.permute(2, 0, 1, 3).flatten(1)
 
 
-def attention(q, k, v, replay, inv_freq, scaling, mrope_section=None):
+def attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    replay: Trace,
+    inv_freq: torch.Tensor,
+    scaling: float,
+    mrope_section: Sequence[int] | None = None,
+) -> torch.Tensor:
     cache_key = (q.device, replay.query_chunk_size)
     if cache_key not in replay._attention:
         chunks = []
@@ -97,17 +121,17 @@ def attention(q, k, v, replay, inv_freq, scaling, mrope_section=None):
 
 
 def replay_attention(
-    module,
-    query,
-    key,
-    value,
-    attention_mask,
-    scaling,
-    replay=None,
-    inv_freq=None,
-    mrope_section=None,
-    **kwargs,
-):
+    module: torch.nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    scaling: float,
+    replay: Trace | None = None,
+    inv_freq: torch.Tensor | None = None,
+    mrope_section: Sequence[int] | None = None,
+    **kwargs: Any,
+) -> tuple[torch.Tensor, None]:
     if query.shape[0] != 1:
         raise ValueError("Replay packs all tokens into one sequence")
     output = attention(
@@ -125,7 +149,9 @@ def replay_attention(
 AttentionInterface.register("minisgl_replay", replay_attention)
 
 
-def replay_self_attention(module, *args, replay=None, **kwargs):
+def replay_self_attention(
+    module: torch.nn.Module, *args: Any, replay: Trace | None = None, **kwargs: Any
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     if replay is None:
         return module._replay_native_forward(*args, **kwargs)
     local = copy(module)
