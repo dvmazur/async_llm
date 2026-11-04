@@ -18,6 +18,75 @@ class GDNReplay:
     read_mode: str = "expanded"
     cache_reused: bool = True
     read_backend: str = "torch"
+    views: tuple = ()
+    homes: tuple = ()
+    versions: tuple = ()
+
+    @cached_property
+    @torch.inference_mode(False)
+    def chunk_plan(self):
+        from .gdn_kernel import CHUNK, QUERIES
+
+        n, device = len(self.views), self.reads.device
+
+        def tensor(values, dtype=torch.long):
+            return torch.tensor(values, dtype=dtype, device=device)
+
+        versions, levels = list(self.versions), []
+        for row, (entries, merged) in enumerate(self.views):
+            if merged:
+                version, index = self.homes[row]
+            else:
+                version, index = len(versions), 0
+                versions.append((row,))
+            for level, read in enumerate(((version, index + 1), *reversed(entries))):
+                if level == len(levels):
+                    levels.append([])
+                levels[level].append((*read, row))
+        lengths = Counter()
+        for version, length, _ in (read for level in levels for read in level):
+            lengths[version] = max(lengths[version], length)
+        starts, sources, bounds = {}, [], [0]
+        for version, length in sorted(lengths.items()):
+            starts[version] = len(sources) // CHUNK
+            sources += versions[version][:length]
+            sources += [n] * (-len(sources) % CHUNK)
+            bounds.append(len(sources) // CHUNK)
+        slots = [[] for _ in range(n)]
+        for slot, source in enumerate(sources):
+            if source < n:
+                slots[source].append(slot)
+        width = max(map(len, slots))
+        plans = []
+        for level in levels:
+            reads = sorted(
+                (starts[version] + (length - 1) // CHUNK, (length - 1) % CHUNK + 1, row)
+                for version, length, row in level
+            )
+            chunks, positions, rows = zip(*reads)
+            targets, offsets, tiles = [], [0], []
+            for chunk, group in groupby(chunks):
+                targets.append(chunk)
+                offsets.append(offsets[-1] + len(list(group)))
+                tiles += [
+                    (chunk, start, min(start + QUERIES, offsets[-1]))
+                    for start in range(offsets[-2], offsets[-1], QUERIES)
+                ]
+            plans.append(
+                (
+                    tensor(rows),
+                    tensor(positions, torch.int32),
+                    tensor(targets, torch.int32),
+                    tensor(offsets, torch.int32),
+                    tensor(tiles, torch.int32),
+                )
+            )
+        return (
+            tensor(sources),
+            tensor([group + [len(sources)] * (width - len(group)) for group in slots]),
+            tensor(bounds, torch.int32),
+            plans,
+        )
 
     @cached_property
     @torch.inference_mode(False)
@@ -147,8 +216,8 @@ class GDNReplay:
         read_backend="torch",
     ):
         """Compile shared snapshot summaries and original convolution windows."""
-        if read_backend not in {"torch", "triton"}:
-            raise ValueError("Read backend must be torch or triton")
+        if read_backend not in {"torch", "triton", "chunk"}:
+            raise ValueError("Read backend must be torch, triton or chunk")
         tokens = trace.tokens
         n = len(tokens)
         order = torch.as_tensor(order).cpu().tolist()
@@ -182,6 +251,8 @@ class GDNReplay:
         # Each block holds (token count, summary forest, raw-QKV convolution tail).
         empty = (0, (), (-1,) * conv_kernel_size)
         blocks, windows, paths = {}, [None] * n, [None] * n
+        scan = read_backend == "chunk"
+        live, versions, views, homes = {}, [], [None] * n, [None] * n
         update_index = 0
         for step, rows in groupby(enumerate(tokens), key=lambda x: x[1].step):
             rows = list(rows)
@@ -209,6 +280,18 @@ class GDNReplay:
                     count = len(update.sources)
                     tail = windows[update.sources[-1]] if count else empty[2]
                 blocks[update.block] = (count, forest, tail)
+                if scan:
+                    versions.append(
+                        [inverse[source] for source in update.sources]
+                        if update.refs is None
+                        else [
+                            source
+                            for block, length in update.refs
+                            if length
+                            for source in versions[live[block]]
+                        ]
+                    )
+                    live[update.block] = len(versions) - 1
                 update_index += 1
             kinds = {token.kind for _, token in rows}
             if len(kinds) != 1 or not kinds <= {"prefill", "decode"}:
@@ -223,7 +306,7 @@ class GDNReplay:
                 count, forest, _ = blocks.get(token.block, empty)
                 if count != token.position:
                     raise ValueError("Token position does not match the live block")
-                path, tail = [], empty[2]
+                path, tail, seen = [], empty[2], []
                 for block, length in token.view:
                     length -= int(block in written) if decode else int(block == token.block)
                     read_blocks = blocks if not decode and block == token.block else before
@@ -231,8 +314,25 @@ class GDNReplay:
                     if length != state[0]:
                         raise ValueError("GDN view must reference the block's pre-update prefix")
                     path.extend(state[1])
+                    seen.append((block, length))
                     if length:
                         tail = state[2]
+                if scan:
+                    if token.block not in live:
+                        live[token.block] = len(versions)
+                        versions.append([])
+                    own = live[token.block]
+                    merged = bool(seen) and seen[-1] == (token.block, count)
+                    views[row] = (
+                        tuple(
+                            (live[block], length)
+                            for block, length in seen[: len(seen) - merged]
+                            if length
+                        ),
+                        merged,
+                    )
+                    homes[row] = (own, count)
+                    versions[own].append(inverse[row])
                 leaf = inverse[row] + 1
                 windows[row] = (*tail[1:], row)
                 paths[row] = (*path, leaf)
@@ -262,6 +362,10 @@ class GDNReplay:
         reads = [[remap[i] for i in reversed(paths[row])] for row in order]
         reads = [path + [0] * (depth - len(path)) for path in reads]
         conv = [[inverse[i] if i >= 0 else -1 for i in windows[row]] for row in order]
+        if scan and sum(map(len, versions)) > 64 * n:
+            raise NotImplementedError(
+                "Chunked GDN replay expands copied histories; use torch reads"
+            )
         return cls(
             torch.tensor(conv, device=device),
             levels,
@@ -270,6 +374,9 @@ class GDNReplay:
             read_mode,
             cache_reused,
             read_backend,
+            tuple(views[row] for row in order) if scan else (),
+            tuple(homes[row] for row in order) if scan else (),
+            tuple(map(tuple, versions)),
         )
 
 
@@ -544,16 +651,83 @@ class _Delta(torch.autograd.Function):
         return grad_query, grad_key, grad_value, grad_alpha, grad_beta, None, None
 
 
+class _Chunk(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, query, key, value, log_alpha, beta, replay, save):
+        from .gdn_kernel import chunk_read, chunk_states
+
+        n, heads, dk = key.shape
+        width = max(16, 1 << (dk - 1).bit_length())
+        sources, _, bounds, levels = replay.chunk_plan
+        query, key = (F.pad(x, (0, width - dk)) for x in (query, key))
+        output = value.new_zeros(n, heads, value.shape[-1])
+        key, value, log_alpha, beta = (
+            torch.cat((x, x.new_zeros(1, *x.shape[1:])))[sources].contiguous()
+            for x in (key, value, log_alpha, beta)
+        )
+        cum, w, inverse, state, new = chunk_states(key, value, log_alpha, beta, bounds)
+        r, queries, weights = query * dk**-0.5, [], []
+        for rows, positions, _, _, tiles in levels:
+            queries.append(r[rows].contiguous())
+            out, weight = chunk_read(queries[-1], positions, tiles, key, cum, state, new, save)
+            weights.append(weight)
+            output.index_add_(0, rows, out[..., width:])
+            r = torch.zeros_like(r).index_copy_(0, rows, out[..., :width])
+        ctx.save_for_backward(key, value, beta, cum, w, inverse, state, new, *queries, *weights)
+        ctx.replay, ctx.dk = replay, dk
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if torch.is_grad_enabled():
+            raise RuntimeError("GDN replay supports first-order gradients only")
+        from .gdn_kernel import chunk_read_backward, chunk_states_backward
+
+        key, value, beta, cum, w, inverse, state, new, *tape = ctx.saved_tensors
+        _, gather, bounds, levels = ctx.replay.chunk_plan
+        queries, weights = tape[: len(levels)], tape[len(levels) :]
+        grad_output = grad_output.float()
+        n, heads, width = len(grad_output), key.shape[1], key.shape[-1]
+        grads = tuple(map(torch.zeros_like, (state, new, key, cum)))
+        grad_r = None
+        for (rows, positions, targets, offsets, _), query, weight in zip(
+            reversed(levels), reversed(queries), reversed(weights)
+        ):
+            upper = query.new_zeros(query.shape) if grad_r is None else grad_r[rows]
+            grad = torch.cat((upper, grad_output[rows]), -1)
+            grad_query = chunk_read_backward(
+                query, weight, grad, positions, targets, offsets, key, cum, state, new, grads
+            )
+            grad_r = query.new_zeros(n, heads, width).index_copy_(0, rows, grad_query)
+        grads = chunk_states_backward(key, value, beta, cum, w, inverse, state, new, bounds, grads)
+        grad_key, grad_value, grad_log_alpha, grad_beta = (
+            torch.cat((x, x.new_zeros(1, *x.shape[1:])))[gather].sum(1) for x in grads
+        )
+        dk = ctx.dk
+        return (
+            grad_r[..., :dk] * dk**-0.5,
+            grad_key[..., :dk],
+            grad_value,
+            grad_log_alpha,
+            grad_beta,
+            None,
+            None,
+        )
+
+
 def delta(query, key, value, alpha, beta, replay: GDNReplay):
     """First-order Torch replay with bounded short-segment reconstruction.
 
     T dense summaries use O(T H d^2); vectors use O(N D H d) at execution depth D.
     Factorized reads add O(P H d) for P cached factor columns. Traces store indices.
     """
-    if replay.read_backend not in {"torch", "triton"}:
-        raise ValueError("Read backend must be torch or triton")
+    if replay.read_backend not in {"torch", "triton", "chunk"}:
+        raise ValueError("Read backend must be torch, triton or chunk")
     if replay.read_backend == "triton" and not query.is_cuda:
         raise ValueError("Triton GDN reads require CUDA FP32 inputs")
+    if replay.read_backend == "chunk":
+        log_alpha = alpha.float().clamp_min(torch.finfo(torch.float32).tiny).log()
+        return chunk_delta(query, key, value, log_alpha, beta, replay)
     with torch.autocast(query.device.type, enabled=False):
         inputs = tuple(x.float() for x in (query, key, value, alpha, beta))
         query, key, value, alpha, beta = inputs
@@ -561,6 +735,19 @@ def delta(query, key, value, alpha, beta, replay: GDNReplay):
         key = key * torch.rsqrt(key.square().sum(-1, keepdim=True) + 1e-6)
         save = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
         return _Delta.apply(query, key, value, alpha, beta, replay, save)
+
+
+def chunk_delta(query, key, value, log_alpha, beta, replay: GDNReplay):
+    """Chunked block-view replay with Triton kernels, taking log decay directly."""
+    if replay.read_backend != "chunk" or not query.is_cuda:
+        raise ValueError("Chunked GDN reads require a chunk replay and CUDA FP32 inputs")
+    with torch.autocast(query.device.type, enabled=False):
+        inputs = tuple(x.float() for x in (query, key, value, log_alpha, beta))
+        query, key, value, log_alpha, beta = inputs
+        query = query * torch.rsqrt(query.square().sum(-1, keepdim=True) + 1e-6)
+        key = key * torch.rsqrt(key.square().sum(-1, keepdim=True) + 1e-6)
+        save = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
+        return _Chunk.apply(query, key, value, log_alpha, beta, replay, save)
 
 
 def gdn_forward(module, hidden_states, replay: GDNReplay):
@@ -585,7 +772,11 @@ def gdn_forward(module, hidden_states, replay: GDNReplay):
     g = -module.A_log.float().exp() * F.softplus(
         module.in_proj_a(x).float() + module.dt_bias.float()
     )
-    core = delta(q, k, v, g.exp(), beta, replay).to(raw.dtype)
+    if replay.read_backend == "chunk":
+        core = chunk_delta(q, k, v, g, beta, replay)
+    else:
+        core = delta(q, k, v, g.exp(), beta, replay)
+    core = core.to(raw.dtype)
     z = module.in_proj_z(x).view_as(core)
     core = module.norm(core, z).reshape(len(x), module.value_dim)
     return module.out_proj(core)[None]
