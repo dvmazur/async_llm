@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minisgl-examples"
+version = "0.1.0"
+description = "Inference demos and trace training workflows for minisgl"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["minisgl"]
+
+[project.scripts]
+async-thoughts = "minisgl_examples.demos.async_thoughts.__main__:main"
+minisgl-sft = "minisgl_examples.training.sft:main"
+minisgl-stress = "minisgl_examples.training.stress:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["minisgl_examples*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.md", "*.ipynb", "*.sh"]
+
+[tool.uv.sources]
+minisgl = {path = "..", editable = true}

@@ -7,6 +7,7 @@ from typing import List, Tuple
 import torch
 from minisgl.llm import AsyncLLM
 from minisgl.shared_cache import CacheBlock
+from minisgl.training import RecordedAsyncLLM
 from transformers import AutoTokenizer
 
 
@@ -70,13 +71,13 @@ class ModeSwitchProbe:
 
     def __init__(
         self,
-        llm: AsyncLLM,
+        llm: AsyncLLM | RecordedAsyncLLM,
         tokenizer: AutoTokenizer,
         mode_switching_prompt: str,
         mode_switching_question: str,
         yes_token: str,
         no_token: str,
-    ):
+    ) -> None:
         self.llm = llm
         self.yes_id = single_token_id(yes_token, tokenizer)
         self.no_id = single_token_id(no_token, tokenizer)

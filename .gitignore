@@ -33,7 +33,7 @@ env/
 .coverage
 
 # local Doom experiment
-/scripts/doom_basic/deadly_corridor_probe.ipynb
+/scripts/minisgl_examples/demos/doom_basic/deadly_corridor_probe.ipynb
 
 # local training data and checkpoints
 /training_runs/

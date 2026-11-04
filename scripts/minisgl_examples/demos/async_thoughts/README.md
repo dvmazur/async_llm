@@ -14,17 +14,17 @@ server are needed.
 
 ## Install and run
 
-Install the parent project first (see the [main README](../../README.md)), then
+Install the parent project first (see the [main README](../../../../README.md)), then
 run these commands from the repository root:
 
 ```bash
-uv pip install -e scripts/async_thoughts
+uv pip install -e ./scripts
 uv run --no-sync async-thoughts
 uv run --no-sync async-thoughts --model Qwen/Qwen3.5-0.8B \
   --problem "What is 17 * 23?" --max-think-tokens 192 --max-answer-tokens 192
 ```
 
-The installed package also supports `uv run --no-sync python -m async_thoughts`.
+The installed package also supports `uv run --no-sync python -m minisgl_examples.demos.async_thoughts`.
 A CUDA-capable GPU is required. The default model is `Qwen/Qwen3.5-27B` in BF16;
 use a smaller model if GPU memory is limited. Decode and short probe prefills use
 CUDA graphs, including for Qwen3.5's hybrid attention.
@@ -40,7 +40,7 @@ CUDA graphs, including for Qwen3.5's hybrid attention.
 | `--page-size` | `1` | Tokens per cache page. |
 | `--trace-output` | off | Save request-batch traces and aligned sampled-token targets to a new JSON file. |
 
-Defaults are defined in `async_thoughts/demo.py`.
+Defaults are defined in `minisgl_examples/demos/async_thoughts/demo.py`.
 
 ## Record a demo and train from it
 
@@ -71,7 +71,7 @@ The JSON is accepted directly by the existing trainer. One update exercises
 parallel forward, backward, and an optimizer step, then saves an HF checkpoint:
 
 ```bash
-uv run --no-sync python -m minisgl.training.sft train \
+uv run --no-sync python -m minisgl_examples.training.sft train \
   --data training_runs/async_thoughts/trace.json \
   --output training_runs/async_thoughts/checkpoint --steps 1 --lr 1e-6 \
   --gradient-checkpointing
@@ -96,7 +96,7 @@ import torch
 from transformers import AutoConfig, AutoModelForCausalLM
 
 from minisgl.training import Trace, replay_trace
-from minisgl.training.sft import compute_supervised_loss
+from minisgl_examples.training.loss import compute_supervised_loss
 
 data = json.loads(Path("training_runs/async_thoughts/trace.json").read_text())
 example = data["examples"][0]

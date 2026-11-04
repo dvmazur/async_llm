@@ -8,8 +8,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from . import __doc__ as _PKG_DOC
-from .demo import (
+from minisgl_examples.demos.async_thoughts import __doc__ as _PKG_DOC
+from minisgl_examples.demos.async_thoughts.demo import (
     DEFAULT_MAX_ANSWER_TOKENS,
     DEFAULT_MAX_STEPS,
     DEFAULT_MEMORY_RATIO,
