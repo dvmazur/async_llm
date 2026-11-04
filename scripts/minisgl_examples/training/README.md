@@ -9,16 +9,22 @@ and differentiable replay; see the [training API](../../../python/minisgl/traini
   and mutations through `RecordedAsyncLLM` and its scheduler.
 - `loss.py`: shared supervised loss and evaluation helpers. They select original
   trace rows and project vocabulary logits in checkpointed chunks.
+- `student.py`: shared HF student loading, training, evaluation and checkpoint
+  reload checks for [parallel thinking](parallel_thinking/README.md) and
+  [distillation](distillation/README.md). Both demos accept an in-memory collected
+  example or a saved trace, and expose `record`, `train`, `verify`, and `run` stages.
+- `process.py`: run model stages in separate processes, preserving the caller's
+  environment and releasing accelerator memory between stages.
 
 ## Data and checkpoints
 
-Both miners write JSON containing a model ID and an `examples` list. Each example
+The SFT and stress miners write JSON containing a model ID and an `examples` list. Each example
 contains a format-v2 `trace`, row-aligned `targets` (`-100` for unsupervised rows),
 and `logprobs` (`null` for unsupervised rows). Sampled labels belong to the forward
 row whose logits produced them; a global next-token shift misaligns interleaved
 workers. The async-thoughts demo exports the same schema.
 
-Before training, replay checks the recorded target log-probabilities with a maximum
+For the SFT CLI below, replay checks the recorded target log-probabilities with a maximum
 absolute error of `0.1`. Each AdamW update accumulates all examples, normalized by
 their total supervised token count. Pixel traces select the full conditional
 generation model so the vision tower also receives gradients; checkpoints include

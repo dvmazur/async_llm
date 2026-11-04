@@ -17,7 +17,13 @@ their modules with `python -m minisgl_examples.<package>.<module>`.
 | `training.sft` | `minisgl-sft` | Collect traces or train saved examples |
 | `training.stress` | `minisgl-stress` | Record cache mutation workloads through the async scheduler |
 
-Training workflows share `training.recording` and `training.loss`. The library
+The parallel-thinking and distillation packages each contain `demo.py` for
+`record`, `train`, `verify`, and `run` stages, and `rollout.py` for their generation
+schedule. Both accept collected examples directly or saved traces. Their notebooks
+call the same Python implementations.
+
+Training workflows share `training.recording`, `training.loss`, and the HF student
+loop in `training.student`; `training.process` isolates model stages. The library
 recorder is always `minisgl.training.RecordedAsyncLLM`; sampled targets and file
 export remain application responsibilities. The Doom example is documentation
 under `demos/doom_basic`.
