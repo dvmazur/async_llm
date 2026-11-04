@@ -1,7 +1,16 @@
+from collections.abc import Sequence
+
 import torch
 
+from .trace import Trace
 
-def rotate(x, positions, inv_freq, mrope_section=None):
+
+def rotate(
+    x: torch.Tensor,
+    positions: torch.Tensor,
+    inv_freq: torch.Tensor,
+    mrope_section: Sequence[int] | None = None,
+) -> torch.Tensor:
     if positions.ndim == 2:
         if mrope_section is None:
             raise ValueError("Three-axis positions require an mRoPE model")
@@ -22,14 +31,14 @@ def rotate(x, positions, inv_freq, mrope_section=None):
 class MropeLayout:
     """Block coordinate frames, independent of token-count visibility."""
 
-    def __init__(self, trace):
+    def __init__(self, trace: Trace) -> None:
         self.batches = {batch.step: batch for batch in trace.batches}
         self.spans = {}
         self.keys = []
         self.queries = []
         self.copy_offsets = []
 
-    def replace(self, block, refs=()):
+    def replace(self, block: int, refs: Sequence[tuple[int, int]] = ()) -> None:
         offsets, span = [], 0
         for source, length in refs:
             if length:
@@ -38,7 +47,7 @@ class MropeLayout:
         self.copy_offsets.append(offsets)
         self.spans[block] = span
 
-    def begin_step(self, step):
+    def begin_step(self, step: int) -> None:
         batch = self.batches[step]
         writers = {request.write_to for request in batch.requests}
         new_spans = {}
