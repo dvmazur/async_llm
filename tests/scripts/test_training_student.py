@@ -2,16 +2,82 @@
 
 import copy
 import json
+import os
+import subprocess
+import sys
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 from minisgl.training import Trace
 from minisgl_examples.training import student
+from minisgl_examples.training.process import isolated
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from transformers import PreTrainedTokenizerFast
 
 from tests.scripts.training_helpers import source as source
+
+
+async def _process_probe(fail=False):
+    print("stage stdout", flush=True)
+    print("stage stderr", file=sys.stderr, flush=True)
+    if fail:
+        raise ValueError("stage failed")
+    return sys.executable, os.getenv("CUDA_VISIBLE_DEVICES"), str(Path.cwd())
+
+
+@pytest.mark.parametrize("logged", [False, True])
+def test_isolated_stage_preserves_environment_and_cleans_up(tmp_path, monkeypatch, logged):
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(
+            [str(root), str(root / "python"), str(root / "scripts"), os.getenv("PYTHONPATH", "")]
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "parent-device")
+    assert isolated(os.getenv, "CUDA_VISIBLE_DEVICES") == "parent-device"
+    log = tmp_path / "logs" / "stage.log" if logged else None
+    assert isolated(_process_probe, log_path=log) == (
+        sys.executable,
+        "parent-device",
+        str(tmp_path),
+    )
+    if log is not None:
+        assert "stage stdout" in log.read_text() and "stage stderr" in log.read_text()
+    assert not list(tmp_path.glob("minisgl-demo-*"))
+    with pytest.raises(RuntimeError, match="stage failed"):
+        isolated(_process_probe, fail=True, log_path=log)
+    if log is not None:
+        assert "stage failed" in log.read_text()
+    assert not list(tmp_path.glob("minisgl-demo-*"))
+
+
+def test_isolated_interrupt_reaps_child(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    children = []
+
+    class InterruptedProcess(subprocess.Popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            children.append(self)
+
+        def communicate(self, *args, **kwargs):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(subprocess, "Popen", InterruptedProcess)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            isolated(os.getcwd)
+        assert children and children[0].returncode is not None
+        assert not list(tmp_path.glob("minisgl-demo-*"))
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
 
 
 def test_trace_roundtrip_preserves_targets_and_rollout_metadata(source, tmp_path):

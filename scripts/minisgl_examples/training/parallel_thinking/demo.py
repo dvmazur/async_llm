@@ -24,9 +24,15 @@ async def collect_trace(model: str, **generation_options: Any) -> dict[str, Any]
     generation_options.setdefault(
         "sampling", SamplingParams(temperature=0.7, top_p=0.8, top_k=20, max_tokens=1)
     )
-    result = await solve(model, **generation_options)
-    example = result.pop("example")
-    return {**example, "model": str(model), "prompt_ids": result["prompt_ids"], "rollout": result}
+    return (await solve(model, **generation_options))["example"]
+
+
+def _prepare_example(source: TraceSource, chunk_size: int) -> dict[str, Any]:
+    example = load_example(source)
+    example["trace"] = example["trace"].to(
+        query_chunk_size=chunk_size, attention_checkpointing=True, cache_plans=True
+    )
+    return example
 
 
 def train_student(
@@ -41,12 +47,8 @@ def train_student(
     dtype: torch.dtype = torch.bfloat16,
 ) -> dict[str, Any]:
     """Train on a collected example or saved trace, retaining the CPU optimizer."""
-    example = load_example(example)
-    example["trace"] = example["trace"].to(
-        query_chunk_size=chunk_size, attention_checkpointing=True, cache_plans=True
-    )
     return student.train_student(
-        example,
+        _prepare_example(example, chunk_size),
         model,
         output,
         steps=steps,
@@ -67,12 +69,12 @@ def verify_checkpoint(
     dtype: torch.dtype = torch.bfloat16,
     chunk_size: int = 64,
 ) -> dict[str, Any]:
-    source = load_example(source)
-    source["trace"] = source["trace"].to(
-        query_chunk_size=chunk_size, attention_checkpointing=True, cache_plans=True
-    )
     return student.verify_checkpoint(
-        source, checkpoint, device=device, dtype=dtype, chunk_size=chunk_size
+        _prepare_example(source, chunk_size),
+        checkpoint,
+        device=device,
+        dtype=dtype,
+        chunk_size=chunk_size,
     )
 
 
@@ -90,11 +92,13 @@ def run_workflow(
     output = Path(output)
     if output.exists():
         raise FileExistsError(output)
+    output.mkdir(parents=True)
     if trace is None:
-        example = isolated(collect_trace, teacher, **generation_options)
+        example = isolated(
+            collect_trace, teacher, log_path=output / "teacher.log", **generation_options
+        )
     else:
         example = load_example(trace)
-    output.mkdir(parents=True)
     save_example(example, output / "trace.json")
     training = isolated(
         train_student,
@@ -103,6 +107,7 @@ def run_workflow(
         output / "checkpoint",
         steps=steps,
         learning_rate=learning_rate,
+        log_path=output / "training.log",
     )
     teacher_result = example.get("rollout", {})
     prompt_ids = example.get("prompt_ids", teacher_result.get("prompt_ids"))
@@ -111,7 +116,7 @@ def run_workflow(
         prompt_block = recorded.batches[0].requests[0].write_to
         prompt_ids = [token.token_id for token in recorded.tokens if token.block == prompt_block]
     options = dict(generation_options, prompt_ids=prompt_ids)
-    generated = isolated(solve, training["checkpoint"], **options)
+    generated = isolated(solve, training["checkpoint"], log_path=output / "student.log", **options)
     generated.pop("example")
     report = {"teacher": teacher_result, "training": training, "student": generated}
     (output / "report.json").write_text(json.dumps(report, allow_nan=False, indent=2) + "\n")
@@ -156,28 +161,22 @@ def main(argv: list[str] | None = None) -> None:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments and arguments[0].startswith("--") and arguments[0] != "--help":
         arguments.insert(0, "run")
-    args = parser.parse_args(arguments)
-    if args.command == "train":
-        result = train_student(
-            args.model,
-            args.trace,
-            args.output,
-            steps=args.steps,
-            learning_rate=args.learning_rate,
-            device=args.device,
-        )
-    elif args.command == "verify":
-        result = verify_checkpoint(args.trace, args.model, device=args.device)
-        args.output.write_text(json.dumps(result, allow_nan=False) + "\n")
+    options = vars(parser.parse_args(arguments))
+    command = options.pop("command")
+    if command in {"train", "verify"}:
+        model, source, output = options.pop("model"), options.pop("trace"), options.pop("output")
+        if command == "train":
+            result = train_student(model, source, output, **options)
+        else:
+            result = verify_checkpoint(source, model, **options)
+            output.write_text(json.dumps(result, allow_nan=False) + "\n")
     else:
-        options = vars(args).copy()
-        options.pop("command")
         options["synchronized"] = options.pop("mode") == "synchronized"
-        if args.command == "record":
+        if command == "record":
             model, output = options.pop("model"), options.pop("output")
             if output.exists():
                 raise FileExistsError(output)
-            example = isolated(collect_trace, model, **options)
+            example = isolated(collect_trace, model, log_path=output / "generation.log", **options)
             path = save_example(example, output / "trace.json")
             result = {"trace": str(path), "tokens": example["trace"].num_tokens}
         else:

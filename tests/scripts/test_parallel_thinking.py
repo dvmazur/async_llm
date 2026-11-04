@@ -4,7 +4,6 @@ import ast
 import asyncio
 import hashlib
 import json
-import os
 import sys
 from contextlib import nullcontext
 from dataclasses import asdict
@@ -16,7 +15,6 @@ import torch
 from minisgl.training import Trace
 from minisgl_examples.training.parallel_thinking import demo
 from minisgl_examples.training.parallel_thinking.rollout import MathFormatting
-from minisgl_examples.training.process import isolated
 from minisgl_examples.training.student import load_example, save_example
 
 from tests.scripts.training_helpers import collect_example
@@ -54,16 +52,19 @@ def test_recorded_schedules_preserve_samples_and_publications(synchronized):
         assert any(len(batch.requests) == 2 for batch in trace.batches if batch.kind == "decode")
 
 
-def test_isolated_process_respects_accelerator_selection(monkeypatch):
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "preserved")
-    assert isolated(os.getenv, "CUDA_VISIBLE_DEVICES") == "preserved"
-
-
 def test_collection_retains_metadata_through_disk_roundtrip(tmp_path, monkeypatch):
     result, example = collect_example(True)
 
     async def solve(*args, **kwargs):
-        return {**result, "example": example}
+        return {
+            **result,
+            "example": {
+                **example,
+                "model": args[0],
+                "prompt_ids": result["prompt_ids"],
+                "rollout": result,
+            },
+        }
 
     monkeypatch.setattr(demo, "solve", solve)
     source = asyncio.run(demo.collect_trace("teacher"))
@@ -118,6 +119,7 @@ def test_saved_trace_workflow_skips_collection_and_reuses_prompt(tmp_path, monke
     )
     assert len(calls) == 2 and report["teacher"]["answer_text"] == result["answer_text"]
     assert load_example(tmp_path / "run" / "trace.json")["trace"] == example["trace"]
+    assert [call[2]["log_path"].name for call in calls] == ["training.log", "student.log"]
 
 
 @pytest.mark.parametrize("command", ["record", "train", "verify", "run"])
@@ -164,8 +166,10 @@ def test_notebook_runs_collection_training_and_generation(path, tmp_path, monkey
 
     def isolated_step(function, *args, **kwargs):
         calls.append(function)
-        if function is demo.solve:
+        if function in (demo.solve, demo.collect_trace):
             result, example = collect_example(kwargs.get("synchronized", True))
+            if function is demo.collect_trace:
+                return {**example, "model": args[0], "rollout": result}
             return {**result, "example": example}
         assert function is demo.train_student
         return function(*args, **kwargs)
@@ -189,7 +193,8 @@ def test_notebook_runs_collection_training_and_generation(path, tmp_path, monkey
             )
             exec(code, namespace)
     assert calls.count(demo.train_student) == 1
-    assert calls.count(demo.solve) == (5 if path.stem == "no_barrier" else 2)
+    assert calls.count(demo.collect_trace) == 1
+    assert calls.count(demo.solve) == (4 if path.stem == "no_barrier" else 1)
 
 
 def test_refactored_prompt_and_step_boundaries_are_preserved():

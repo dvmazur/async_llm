@@ -4,17 +4,44 @@ These repository scripts collect trajectories, optimize their recorded targets,
 and save standard Hugging Face checkpoints. The library itself exposes recording
 and differentiable replay; see the [training API](../../../python/minisgl/training/README.md).
 
+## Trace-to-student demos
+
+[Parallel thinking](parallel_thinking/README.md) trains on Alice/Bob cache sharing;
+[distillation](distillation/README.md) trains on an async-thoughts teacher. Both
+provide `record`, `train`, `verify`, and `run` commands in `demo.py`, with generation
+in `rollout.py`. After setting up the project environment, install the examples
+from the repository root:
+
+```bash
+uv pip install -e './scripts[notebooks]'
+```
+
+Use the same Python interface for fresh examples or saved traces:
+
+```python
+from minisgl_examples.training.parallel_thinking import demo
+from minisgl_examples.training.process import isolated
+from minisgl_examples.training.student import save_example
+
+example = isolated(demo.collect_trace, "Qwen/Qwen3-4B")
+save_example(example, "training_runs/teacher.json")
+report = isolated(demo.train_student, "Qwen/Qwen3-1.7B", example, "training_runs/checkpoint")
+# Pass "training_runs/teacher.json" instead of example to train from disk.
+```
+
+Import `distillation.demo` for the other schedule. Its training output directory
+contains a `checkpoint/` subdirectory. `student.py` shares HF loading, optimization
+and reload checks; `process.isolated` releases model memory between stages.
+`RecordedAsyncLLM` records requests and cache views, with sampled targets aligned
+to the forward rows that produced them.
+
+## Other tools
+
 - `sft.py`: collect short asynchronous arithmetic traces, or train from saved traces.
 - `stress.py`: collect a seeded synthetic workload with complex cache views
   and mutations through `RecordedAsyncLLM` and its scheduler.
 - `loss.py`: shared supervised loss and evaluation helpers. They select original
   trace rows and project vocabulary logits in checkpointed chunks.
-- `student.py`: shared HF student loading, training, evaluation and checkpoint
-  reload checks for [parallel thinking](parallel_thinking/README.md) and
-  [distillation](distillation/README.md). Both demos accept an in-memory collected
-  example or a saved trace, and expose `record`, `train`, `verify`, and `run` stages.
-- `process.py`: run model stages in separate processes, preserving the caller's
-  environment and releasing accelerator memory between stages.
 
 ## Data and checkpoints
 

@@ -1,10 +1,9 @@
-"""Distillation precision, trace checks, and portable process launching."""
+"""Distillation trace checks, workflow acceptance, and notebook integration."""
 
 import ast
 import asyncio
 import copy
 import json
-import sys
 from contextlib import nullcontext
 from dataclasses import asdict
 from pathlib import Path
@@ -26,6 +25,15 @@ from tests.training.workloads import mutation_trace
 @pytest.fixture(autouse=True)
 def cpu_profiling(monkeypatch):
     monkeypatch.setattr(torch.cuda.nvtx, "range", lambda *args, **kwargs: nullcontext())
+
+
+@pytest.fixture
+def direct_stages(monkeypatch):
+    def isolated(function, *args, log_path=None, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(demo, "isolated", isolated)
+    monkeypatch.setattr(processes, "isolated", isolated)
 
 
 class AnswerTokenizer:
@@ -111,81 +119,77 @@ def test_trace_canonicalization_preserves_cache_mutations():
     assert rollout.normalize_trace(original) != rollout.normalize_trace(renamed)
 
 
-def test_launcher_inherits_environment_and_interpreter(tmp_path, monkeypatch):
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-parent")
-    monkeypatch.setenv("OMP_NUM_THREADS", "16")
-    monkeypatch.setenv("HF_HOME", str(tmp_path / "cache"))
-    log = tmp_path / "worker.log"
-    demo.run_process(
-        tmp_path,
-        [
-            "-c",
-            "import json, os, sys; print(json.dumps([sys.executable, os.environ['CUDA_VISIBLE_DEVICES'], os.environ['OMP_NUM_THREADS'], os.environ['HF_HOME']]))",
-        ],
-        log,
-    )
-    assert json.loads(log.read_text()) == [
-        sys.executable,
-        "GPU-parent",
-        "16",
-        str(tmp_path / "cache"),
-    ]
-
-
 def test_cli_runs_workflow_from_callers_directory(tmp_path, monkeypatch):
     run = MagicMock(return_value={})
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(demo, "run_workflow", run)
     demo.main(["run", "--output", "experiment"])
-    assert run.call_args.args == (tmp_path.resolve(),)
+    assert not run.call_args.args
     assert run.call_args.kwargs["output"] == Path("experiment")
 
 
-def test_launcher_interrupt_terminates_and_reaps_its_child(tmp_path, monkeypatch):
-    process = MagicMock()
-    process.stdout.__iter__.side_effect = KeyboardInterrupt
-    process.poll.return_value = None
-    monkeypatch.setattr(processes.subprocess, "Popen", lambda *args, **kwargs: process)
-    with pytest.raises(KeyboardInterrupt):
-        demo.run_process(tmp_path, ["-c", "pass"], tmp_path / "interrupted.log")
-    process.terminate.assert_called_once_with()
-    process.wait.assert_called_once_with(timeout=10)
-    process.kill.assert_not_called()
-    process.stdout.close.assert_called_once_with()
+@pytest.mark.parametrize("command", ["record", "train", "verify"])
+def test_cli_routes_each_stage(tmp_path, monkeypatch, command, direct_stages):
+    calls = []
+
+    def invoke(*args, **kwargs):
+        calls.append((args, kwargs))
+        return demo.load_example(async_example()) if command == "record" else {"loss": 0.1}
+
+    monkeypatch.setattr(
+        demo,
+        {"record": "collect_trace", "train": "train_student", "verify": "verify_checkpoint"}[
+            command
+        ],
+        invoke,
+    )
+    source, output = tmp_path / "source.json", tmp_path / "result"
+    arguments = (
+        [command, "teacher", str(output), "--no-cuda-graphs"]
+        if command == "record"
+        else [command, str(source), "student", str(output), "--device", "cpu"]
+    )
+    demo.main(arguments)
+    assert len(calls) == 1
+    args, options = calls[0]
+    if command == "record":
+        assert args == ("teacher",) and not options["cuda_graphs"]
+        assert (output / "trace.json").exists()
+    else:
+        assert options["device"] == "cpu"
+        assert args == (("student", source, output) if command == "train" else (source, "student"))
 
 
-def test_full_workflow_stops_before_training_when_teacher_is_wrong(tmp_path, monkeypatch):
-    trace = tmp_path / "teacher.json"
+def test_full_workflow_stops_before_training_when_teacher_is_wrong(
+    tmp_path, monkeypatch, direct_stages
+):
     example = async_example()
     example["writer_tokens"] = [2]
-    trace.write_text(json.dumps({"examples": [example]}))
-    monkeypatch.setattr(demo, "record_rollout", lambda *args, **kwargs: trace)
+    monkeypatch.setattr(demo, "collect_trace", lambda *args, **kwargs: example)
     monkeypatch.setattr(demo.AutoTokenizer, "from_pretrained", lambda model: AnswerTokenizer())
     monkeypatch.setattr(
-        demo, "fit_student", lambda *args, **kwargs: pytest.fail("trained with wrong teacher")
+        demo, "train_student", lambda *args, **kwargs: pytest.fail("trained with wrong teacher")
     )
     with pytest.raises(RuntimeError, match="Teacher answer"):
-        demo.run_workflow(tmp_path, "teacher", "student", tmp_path / "run")
+        demo.run_workflow("teacher", "student", tmp_path / "run")
 
 
 @pytest.mark.parametrize("overfit,reload_loss", [(False, 0.005), (True, 0.0051)])
 def test_full_workflow_preserves_overfit_and_reload_requirements(
-    tmp_path, monkeypatch, overfit, reload_loss
+    tmp_path, monkeypatch, overfit, reload_loss, direct_stages
 ):
-    trace = tmp_path / "teacher.json"
-    trace.write_text(json.dumps({"examples": [async_example()]}))
     calls = []
 
     def record(*args, **kwargs):
         calls.append(args)
         assert len(calls) == 1, "Independent generation started before checkpoint acceptance"
-        return trace
+        return async_example()
 
-    monkeypatch.setattr(demo, "record_rollout", record)
+    monkeypatch.setattr(demo, "collect_trace", record)
     monkeypatch.setattr(demo.AutoTokenizer, "from_pretrained", lambda model: AnswerTokenizer())
     monkeypatch.setattr(
         demo,
-        "fit_student",
+        "train_student",
         lambda *args, **kwargs: {
             "overfit_achieved": overfit,
             "checkpoint": str(tmp_path / "checkpoint"),
@@ -201,7 +205,7 @@ def test_full_workflow_preserves_overfit_and_reload_requirements(
         },
     )
     with pytest.raises(RuntimeError, match="Overfit not reached|Saved checkpoint"):
-        demo.run_workflow(tmp_path, "teacher", "student", tmp_path / "run")
+        demo.run_workflow("teacher", "student", tmp_path / "run")
 
 
 def test_notebook_has_executable_cells_without_stale_outputs():
@@ -249,20 +253,22 @@ def test_collection_returns_trace_without_file_and_closes_engine(monkeypatch, fa
 
 
 @pytest.mark.parametrize("on_disk", [False, True])
-def test_workflow_accepts_saved_or_in_memory_teacher_without_mining(tmp_path, monkeypatch, on_disk):
+def test_workflow_accepts_saved_or_in_memory_teacher_without_mining(
+    tmp_path, monkeypatch, on_disk, direct_stages
+):
     example = {**async_example(), "model": "recorded-teacher"}
     source = demo.save_example(example, tmp_path / "source.json") if on_disk else example
     calls = []
 
-    def record(root, model, prompt, directory, **kwargs):
+    def record(model, *, prompt, **kwargs):
         calls.append((model, prompt))
-        return demo.save_example(example, directory / "trace.json")
+        return example
 
-    monkeypatch.setattr(demo, "record_rollout", record)
+    monkeypatch.setattr(demo, "collect_trace", record)
     monkeypatch.setattr(demo.AutoTokenizer, "from_pretrained", lambda model: AnswerTokenizer())
     monkeypatch.setattr(
         demo,
-        "fit_student",
+        "train_student",
         lambda *args, **kwargs: {
             "overfit_achieved": True,
             "checkpoint": "trained-student",
@@ -270,10 +276,8 @@ def test_workflow_accepts_saved_or_in_memory_teacher_without_mining(tmp_path, mo
         },
     )
     monkeypatch.setattr(demo, "verify_checkpoint", lambda *args: {"accuracy": 1.0, "loss": 0.005})
-    result = demo.run_workflow(
-        tmp_path, "unused-teacher", "student", tmp_path / "run", trace=source
-    )
-    assert calls == [(Path("trained-student"), example["prompt"])]
+    result = demo.run_workflow("unused-teacher", "student", tmp_path / "run", trace=source)
+    assert calls == [("trained-student", example["prompt"])]
     assert result["teacher_answer"]["status"] == result["student_answer"]["status"] == "PASS"
     assert (tmp_path / "run" / "checks.json").exists()
 
@@ -285,7 +289,9 @@ def test_cli_passes_saved_trace_to_workflow(tmp_path, monkeypatch):
     assert run.call_args.kwargs["trace"] == tmp_path / "trace.json"
 
 
-def test_notebook_runs_unchanged_experiment_through_python_stages(tmp_path, monkeypatch):
+def test_notebook_runs_unchanged_experiment_through_python_stages(
+    tmp_path, monkeypatch, direct_stages
+):
     calls = []
     example = {**async_example(), "model": "teacher"}
 
@@ -293,13 +299,13 @@ def test_notebook_runs_unchanged_experiment_through_python_stages(tmp_path, monk
         def decode(self, tokens, **kwargs):
             return super().decode(tokens, **kwargs) if tokens[0] in {1, 2, 3} else "thoughts"
 
-    def record(root, model, prompt, directory, **options):
+    def record(model, *, prompt, **options):
         calls.append(("record", model, options))
-        return demo.save_example(example, directory / "trace.json")
+        return example
 
     final = {"accuracy": 1.0, "loss": 0.005}
 
-    def fit(root, trace, model, directory, **options):
+    def fit(model, trace, directory, **options):
         calls.append(("train", model, options))
         return {
             "initial": {"accuracy": 0.0, "loss": 2.0},
@@ -311,8 +317,8 @@ def test_notebook_runs_unchanged_experiment_through_python_stages(tmp_path, monk
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(demo.AutoTokenizer, "from_pretrained", lambda model: NotebookTokenizer())
-    monkeypatch.setattr(demo, "record_rollout", record)
-    monkeypatch.setattr(demo, "fit_student", fit)
+    monkeypatch.setattr(demo, "collect_trace", record)
+    monkeypatch.setattr(demo, "train_student", fit)
     monkeypatch.setattr(demo, "verify_checkpoint", lambda *args: final)
     notebook = Path(demo.__file__).with_name("simple_distillation.ipynb")
     namespace = {}
@@ -320,7 +326,7 @@ def test_notebook_runs_unchanged_experiment_through_python_stages(tmp_path, monk
         if cell["cell_type"] == "code":
             exec(compile("".join(cell["source"]), str(notebook), "exec"), namespace)
     assert [call[0] for call in calls] == ["record", "train", "record"]
-    assert calls[1][2] == {"steps": 100, "lr": 1e-6}
+    assert calls[1][2] == {"steps": 100, "learning_rate": 1e-6}
     assert calls[0][2] == calls[2][2] == namespace["LIMITS"]
     assert namespace["report"]["exact_recorded_rollout"]["status"] == "PASS"
     assert (namespace["RUN"] / "checks.json").exists()
