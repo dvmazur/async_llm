@@ -128,7 +128,9 @@ def load_weight(model_path: str, device: torch.device, *,
     merge_buf: Dict[str, Dict[str, torch.Tensor]] = {}
     expert_buf: Dict[str, Dict[int, torch.Tensor]] = {}
     for file in tqdm(files, desc="Loading weights", disable=not tp_info.is_primary()):
-        with safetensors.safe_open(file, framework="pt", device=str(device)) as f:
+        # safetensors' CUDA path allocates a full pinned host tensor, which can
+        # fail for large weights. Read on CPU, shard, then copy to the device.
+        with safetensors.safe_open(file, framework="pt", device="cpu") as f:
             for name in f.keys():
                 # Strip multimodal wrapper prefix, skip vision/projector weights
                 if name.startswith(("vision_tower.", "multi_modal_projector.")):
@@ -147,7 +149,9 @@ def load_weight(model_path: str, device: torch.device, *,
                 if config.is_hybrid:
                     name = name.replace("model.language_model.", "model.", 1)
                 name = name.removeprefix("language_model.")
-                tensor = _shard_tensor(name, raw, tp_info.rank, tp_info.size, config.num_kv_heads)
+                tensor = _shard_tensor(
+                    name, raw, tp_info.rank, tp_info.size, config.num_kv_heads
+                ).to(device)
                 del raw
                 if (info := _get_merge_info(name)) is None:
                     out = (name, tensor)

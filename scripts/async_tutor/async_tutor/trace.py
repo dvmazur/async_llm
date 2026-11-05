@@ -62,6 +62,18 @@ class Trace:
             scope.has_text = True
             self.add("first_text", duration_ms=scope.elapsed())
 
+    def generation_done(self, generated_tokens, token_limit, finish_reason):
+        """Attach decoding counts and termination reason to the active inference span."""
+        fields = {
+            "generated_tokens": generated_tokens,
+            "token_limit": token_limit,
+            "finish_reason": finish_reason,
+        }
+        scope = _CURRENT.get()
+        if scope is not None and scope.trace is self:
+            scope.data.update(fields)
+        self.add("generation_done", **fields)
+
 
 class _Span:
     def __init__(self, trace, stage, fields):
@@ -102,6 +114,8 @@ class _Span:
         elif error is not None:
             status = "error"
             details["error"] = f"{type(error).__name__}: {error}"
+        elif details.get("finish_reason") in {"stopped", "consumer_closed"}:
+            status = "interrupted"
         details.update(duration_ms=self.elapsed(), status=status)
         self.trace.add("end", **details)
 
