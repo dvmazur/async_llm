@@ -1,12 +1,19 @@
+from __future__ import annotations
+
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import groupby
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn.functional as F
 
 from .trace import Trace
+
+if TYPE_CHECKING:
+    from transformers.cache_utils import Cache
 
 
 @dataclass
@@ -90,7 +97,7 @@ class GDNReplay:
 
     @cached_property
     @torch.inference_mode(False)
-    def read_paths(self):
+    def read_paths(self) -> torch.Tensor:
         reads = self.partitions[1]
         paths = torch.zeros(len(self.reads), len(reads), 2, dtype=torch.long)
         for depth, groups in enumerate(reads):
@@ -101,7 +108,14 @@ class GDNReplay:
 
     @cached_property
     @torch.inference_mode(False)
-    def partitions(self):
+    def partitions(
+        self,
+    ) -> tuple[
+        list[tuple[int, int, torch.Tensor, torch.Tensor, torch.Tensor]],
+        list[list[tuple[torch.Tensor, torch.Tensor]]],
+        torch.Tensor,
+        tuple[list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]], torch.Tensor],
+    ]:
         n, device = len(self.reads), self.reads.device
         if self.segment_size < 1:
             raise ValueError("Segment size must be positive")
@@ -207,14 +221,14 @@ class GDNReplay:
     def from_trace(
         cls,
         trace: Trace,
-        order,
-        device="cpu",
-        conv_kernel_size=4,
-        segment_size=8,
-        read_mode="expanded",
-        cache_reused=True,
-        read_backend="torch",
-    ):
+        order: Sequence[int] | torch.Tensor,
+        device: torch.device | str = "cpu",
+        conv_kernel_size: int = 4,
+        segment_size: int = 8,
+        read_mode: str = "expanded",
+        cache_reused: bool = True,
+        read_backend: str = "torch",
+    ) -> GDNReplay:
         """Compile shared snapshot summaries and original convolution windows."""
         if read_backend not in {"torch", "triton", "chunk"}:
             raise ValueError("Read backend must be torch, triton or chunk")
@@ -370,7 +384,9 @@ class GDNReplay:
         )
 
 
-def _segment_factors(key, value, alpha, beta):
+def _segment_factors(
+    key: torch.Tensor, value: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """HF-style triangular summary with products preserving zero-decay gradients."""
     key, value, alpha, beta = (x.transpose(1, 2) for x in (key, value, alpha, beta))
     positions = torch.arange(key.shape[-2], device=key.device)
@@ -385,7 +401,9 @@ def _segment_factors(key, value, alpha, beta):
     return prefix[..., -1], -keys.transpose(1, 2), values.transpose(1, 2), tail.transpose(1, 2)
 
 
-def _segment_matrices(key, value, alpha, beta):
+def _segment_matrices(
+    key: torch.Tensor, value: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
     scale, u, z, w = _segment_factors(key, value, alpha, beta)
     identity = torch.eye(key.shape[-1], dtype=key.dtype, device=key.device)
     w = w.transpose(1, 2)
@@ -394,7 +412,16 @@ def _segment_matrices(key, value, alpha, beta):
 
 class _Delta(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, query, key, value, alpha, beta, replay, save):
+    def forward(
+        ctx: Any,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        alpha: torch.Tensor,
+        beta: torch.Tensor,
+        replay: GDNReplay,
+        save: bool,
+    ) -> torch.Tensor:
         n, heads, dk = key.shape
         dv = value.shape[-1]
         levels, reads, cached, (factors, lookup) = replay.partitions
@@ -504,14 +531,18 @@ class _Delta(torch.autograd.Function):
         return output
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(
+        ctx: Any, grad_output: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         if torch.is_grad_enabled():
             raise RuntimeError("GDN replay supports first-order gradients only")
         with torch.autocast(grad_output.device.type, enabled=False):
             return _Delta._backward(ctx, grad_output)
 
     @staticmethod
-    def _backward(ctx, grad_output):
+    def _backward(
+        ctx: Any, grad_output: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         key, value, alpha, beta, a, b, vectors, cached, scale, fu, fz, fw, lookup, *indices = (
             ctx.saved_tensors
         )
@@ -705,7 +736,14 @@ class _Chunk(torch.autograd.Function):
         )
 
 
-def delta(query, key, value, alpha, beta, replay: GDNReplay):
+def delta(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
+    replay: GDNReplay,
+) -> torch.Tensor:
     """First-order Torch replay with bounded short-segment reconstruction.
 
     T dense summaries use O(T H d^2); vectors use O(N D H d) at execution depth D.
@@ -740,7 +778,9 @@ def chunk_delta(query, key, value, log_alpha, beta, replay: GDNReplay):
         return _Chunk.apply(query, key, value, log_alpha, beta, replay, save)
 
 
-def gdn_forward(module, hidden_states, replay: GDNReplay):
+def gdn_forward(
+    module: torch.nn.Module, hidden_states: torch.Tensor, replay: GDNReplay
+) -> torch.Tensor:
     if hidden_states.shape[0] != 1 or module.activation not in {"silu", "swish"}:
         raise ValueError("GDN replay requires one packed sequence and SiLU activation")
     x = hidden_states[0]
@@ -773,8 +813,14 @@ def gdn_forward(module, hidden_states, replay: GDNReplay):
 
 
 def replay_gdn(
-    module, hidden_states, cache_params=None, attention_mask=None, *, gdn_replay=None, **kwargs
-):
+    module: torch.nn.Module,
+    hidden_states: torch.Tensor,
+    cache_params: Cache | None = None,
+    attention_mask: torch.Tensor | None = None,
+    *,
+    gdn_replay: GDNReplay | None = None,
+    **kwargs: Any,
+) -> torch.Tensor:
     if gdn_replay is None:
         return module._replay_native_forward(
             hidden_states, cache_params=cache_params, attention_mask=attention_mask, **kwargs

@@ -88,7 +88,22 @@ def _read_paths(
     tl.store(Out + (row * H + head) * DV + v, output, v < DV)
 
 
-def read_paths(query, key, value, alpha, beta, a, b, scale, u, z, w, lookup, paths, save):
+def read_paths(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
+    a: torch.Tensor,
+    b: torch.Tensor,
+    scale: torch.Tensor,
+    u: torch.Tensor,
+    z: torch.Tensor,
+    w: torch.Tensor,
+    lookup: torch.Tensor,
+    paths: torch.Tensor,
+    save: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
     n, heads, dk = query.shape
     dv, depth = value.shape[-1], paths.shape[1]
     if not query.is_cuda or query.dtype != torch.float32:
