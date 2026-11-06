@@ -22,7 +22,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from .demo import AsyncLLMBackend, FrameGate, TutorSession, create_llm
+from .demo import FRAME_INTERVAL_MS, AsyncLLMBackend, FrameGate, TutorSession, create_llm
 
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 WIDTH, HEIGHT = 1440, 900
@@ -775,7 +775,7 @@ def main(argv=None):
     parser.add_argument("--mode", choices=["all", "video", "student"], default="all")
     parser.add_argument("--duration", type=float, default=90)
     parser.add_argument("--start", type=float, default=40, help="Source clip start in seconds")
-    parser.add_argument("--interval", type=float, default=2.5)
+    parser.add_argument("--interval", type=float, default=FRAME_INTERVAL_MS / 1000)
     parser.add_argument("--turns", type=int, default=4)
     parser.add_argument("--distributed-port", type=int, default=0)
     parser.add_argument(
