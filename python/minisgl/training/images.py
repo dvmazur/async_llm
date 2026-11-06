@@ -1,7 +1,9 @@
 import torch
 
+from .trace import Trace
 
-def compute_input_embeddings(model, trace):
+
+def compute_input_embeddings(model: torch.nn.Module, trace: Trace) -> torch.Tensor:
     """Re-encode recorded images and scatter them into packed token embeddings."""
     states = model.get_input_embeddings()(trace.input_ids)
     image_id = getattr(model.config, "image_token_id", None)

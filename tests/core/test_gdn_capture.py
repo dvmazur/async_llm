@@ -5,8 +5,8 @@ import torch
 from minisgl.shared_cache.gdn import SharedCacheGDN
 from minisgl.shared_cache.gdn_decode import GDNDecodeBuffers
 from minisgl.shared_cache.shared_block import CacheBlock
-from _gdn_reference import SharedCacheGDN as ReferenceGDN
-from test_gdn_compose import capture as capture_graph
+from tests.training._gdn_reference import SharedCacheGDN as ReferenceGDN
+from tests.core.test_gdn_compose import capture as capture_graph
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA affine capture')
 

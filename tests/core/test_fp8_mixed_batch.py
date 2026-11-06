@@ -11,7 +11,7 @@ import torch
 
 from minisgl.core import Batch
 from minisgl.scheduler.utils import mix_batches
-from test_mixed_batch import _hybrid_config, _make_req
+from tests.core.test_mixed_batch import _hybrid_config, _make_req
 from tests.e2e.fp8 import comparison as metrics, serving as mixed
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
