@@ -76,7 +76,7 @@ class ModeSwitchProbe:
         mode_switching_question: str,
         yes_token: str,
         no_token: str,
-    ):
+    ) -> None:
         self.llm = llm
         self.yes_id = single_token_id(yes_token, tokenizer)
         self.no_id = single_token_id(no_token, tokenizer)

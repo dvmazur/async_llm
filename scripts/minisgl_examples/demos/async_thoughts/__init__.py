@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from .demo import DemoConfig, run
+from minisgl_examples.demos.async_thoughts.demo import DemoConfig, run
 
 __all__ = ["DemoConfig", "run"]

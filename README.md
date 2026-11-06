@@ -112,7 +112,7 @@ probes, e.g. reading the next-token distribution over a fixed set of actions.
 
 **Asynchronous thinking:** concurrent thinker and writer streams with a shared-cache
 readiness probe, based on [AsyncReasoning](https://arxiv.org/abs/2512.10931).
-See the [async-thoughts README](./scripts/async_thoughts/README.md) for setup and usage.
+See the [async-thoughts README](./scripts/minisgl_examples/demos/async_thoughts/README.md) for setup and usage.
 
 ### Coming soon 🚧
 

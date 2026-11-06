@@ -19,9 +19,10 @@ from typing import List
 import torch
 from minisgl.llm import AsyncLLM
 from minisgl.shared_cache import AsyncContext
+from minisgl.training import RecordedAsyncLLM
 from transformers import AutoTokenizer
 
-from .engine import (
+from minisgl_examples.demos.async_thoughts.engine import (
     ModeSwitchProbe,
     build_async_llm,
     encode,
@@ -29,7 +30,11 @@ from .engine import (
     single_token_id,
     vocab_id_or_none,
 )
-from .training import DemoRecorder, save_training_example
+from minisgl_examples.training.recording import (
+    Samples,
+    generate_with_targets,
+    save_training_example,
+)
 
 # Default math problem from the original AsyncReasoning notebook.
 DEFAULT_PROBLEM = "Calculate x - x^2 + x^3 for x = 5, 6, 7, 8. Return all 4 answers in \\boxed{ }."
@@ -62,7 +67,7 @@ class Prompting:
     Based on AsyncReasoning's ``AsyncReasoningPrompting``.
     """
 
-    def __init__(self, problem: str):
+    def __init__(self, problem: str) -> None:
         self.input_prompt = f"<|im_start|>user\n{problem}\n"
         self.thinker_output_prefix = "<|im_end|>\n<|im_start|>assistant\n<think>"
         self.writer_output_prefix = " ... [SYSTEM: thoughts will continue here]\n</think>\n"
@@ -120,6 +125,7 @@ async def _run_loop(
     llm: AsyncLLM,
     tokenizer: AutoTokenizer,
     prompting: Prompting,
+    samples: Samples | None = None,
 ) -> tuple[List[int], List[int]]:
     if min(config.max_steps, config.max_answer_tokens, config.probe_period) < 1:
         raise ValueError("Token budgets and probe period must be positive")
@@ -174,8 +180,8 @@ async def _run_loop(
             reason = "thinker hit token limit"
             try:
                 async with aclosing(
-                    llm.async_generate(
-                        thinker_ctx, forbid_ids=forbidden, max_steps=config.max_steps
+                    generate_with_targets(
+                        llm, thinker_ctx, samples, forbid_ids=forbidden, max_steps=config.max_steps
                     )
                 ) as stream:
                     async for token in stream:
@@ -208,8 +214,12 @@ async def _run_loop(
                 if done.is_set():
                     return
                 async with aclosing(
-                    llm.async_generate(
-                        writer_ctx, forbid_ids=writer_forbidden, max_steps=config.max_answer_tokens
+                    generate_with_targets(
+                        llm,
+                        writer_ctx,
+                        samples,
+                        forbid_ids=writer_forbidden,
+                        max_steps=config.max_answer_tokens,
                     )
                 ) as stream:
                     async for token in stream:
@@ -305,10 +315,12 @@ async def _run_demo(
 
         if config.trace_output.exists():
             raise FileExistsError(config.trace_output)
-        with DemoRecorder(llm) as recorded:
-            result = await _run_loop(config, recorded, tokenizer, prompting)
+        samples: Samples = {}
+        with RecordedAsyncLLM(llm) as recorded:
+            result = await _run_loop(config, recorded, tokenizer, prompting, samples)
         save_training_example(
             recorded,
+            samples,
             config.trace_output,
             model=config.model,
             problem=config.problem,
