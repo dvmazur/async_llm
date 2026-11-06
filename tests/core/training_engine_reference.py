@@ -307,7 +307,7 @@ class RuntimeHistory:
                 keys.add(key)
                 wanted = tuple(
                     (order[start + j], offset + j)
-                    for start, end, offset in replay.source_spans(version, lo, hi)
+                    for start, end, offset in replay.compute_source_spans(version, lo, hi)
                     for j in range(end - start)
                 )
                 actual_position, sources, visible = self.attention[key]
@@ -315,7 +315,7 @@ class RuntimeHistory:
                 assert sources[:visible] == wanted, (key, "attention provenance")
         assert keys == set(self.attention)
         for mode in ("expanded", "factorized"):
-            plan = GDNReplay.from_trace(replay.trace, replay.order, segment_size=8, read_mode=mode)
+            plan = GDNReplay.from_trace(replay, replay.order, segment_size=8, read_mode=mode)
             nodes = [()] + [(row,) for row in order]
             for level in plan.levels:
                 nodes.extend(nodes[left] + nodes[right] for left, right in level.tolist())
@@ -375,7 +375,9 @@ class RuntimeHistory:
                         paths[row].append(
                             (order[source],)
                             if kind == 0
-                            else dense[source] if kind == 1 else short[source]
+                            else dense[source]
+                            if kind == 1
+                            else short[source]
                         )
             for packed, path in enumerate(paths):
                 assert sum(reversed(path), ()) == self.gdn[order[packed]][0], (

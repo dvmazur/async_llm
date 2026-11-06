@@ -57,8 +57,9 @@ def build_engine(args):
 
 def record(args):
     from minisgl.shared_cache import AsyncContext, PrefillJob, SharedCacheSession, WorkerGroup
-    from minisgl.training.stress import workload
-    from minisgl.training.trace import RecordingSession, Trace
+    from minisgl.training import Trace
+    from minisgl.training.recording import _TraceRecorder
+    from minisgl.training.stress import generate_workload
 
     engine = build_engine(args)
     dtype = getattr(torch, args.dtype)
@@ -75,7 +76,7 @@ def record(args):
         raw.sc_gdn.prepare_decode = lambda *a, **kw: None
         raw.sc_gdn.state_dtype = getattr(torch, args.dtype)
 
-    class Capture(RecordingSession):
+    class Capture(_TraceRecorder):
         def __init__(self, session):
             super().__init__(session)
             self.rows, self.logits, self.phases = [], [], []
@@ -196,7 +197,7 @@ def record(args):
 
     started = time.perf_counter()
     try:
-        workload(capture, vocab, large_size=256)
+        generate_workload(capture, vocab, large_size=256)
         prompt = capture.create_block()
         prefill(prompt, 2048, phase="long_prefix")
         a, b, c = [capture.create_block() for _ in range(3)]
@@ -273,9 +274,8 @@ def record(args):
             ),
             "peak_gpu_bytes": torch.cuda.max_memory_allocated(),
         }
-        from minisgl.training.replay import Replay
 
-        metadata["provenance"] = history.assert_replay(Replay.from_trace(capture.trace))
+        metadata["provenance"] = history.assert_replay(capture.trace.to(device="cpu"))
         assert metadata["tokens"] == 4099 and metadata["updates"] == 39
         assert metadata["output_rows"] == 213 and metadata["max_depth"] == 12
         features = {}
@@ -317,15 +317,15 @@ def record(args):
 
 def record_image(args):
     from minisgl.shared_cache import SharedCacheSession, WorkerGroup
+    from minisgl.training import Trace
     from minisgl.training.gdn import GDNReplay
-    from minisgl.training.replay import Replay
-    from minisgl.training.trace import RecordingSession, Trace
+    from minisgl.training.recording import _TraceRecorder
 
     engine = build_engine(args)
     try:
         weights = fingerprints(engine.model.state_dict())
         raw = SharedCacheSession(engine)
-        recorder = RecordingSession(raw)
+        recorder = _TraceRecorder(raw)
         rows, logits, phases = [], [], []
 
         def save(value, phase):
@@ -379,12 +379,12 @@ def record_image(args):
         assert torch.equal(torch.cat([tokens for tokens, _ in calls]), ids)
         assert torch.equal(
             torch.cat([positions for _, positions in calls], dim=1),
-            request.mrope_positions.tensor(),
+            request.mrope_positions.to_tensor(),
         )
         for field, tensor in image.items():
-            assert torch.equal(getattr(request, field).tensor(), tensor), field
+            assert torch.equal(getattr(request, field).to_tensor(), tensor), field
         pixels.add_(1)
-        assert torch.equal(request.pixel_values.tensor(), original_pixels)
+        assert torch.equal(request.pixel_values.to_tensor(), original_pixels)
         span = block.mrope_span
         assert span < block.num_tokens == len(ids)
         text = torch.tensor([42, 43, 44], dtype=torch.int32)
@@ -395,7 +395,7 @@ def record_image(args):
         request = recorder.trace.batches[-1].requests[0]
         assert request.write_span == span and request.cache_spans == (span,)
         assert torch.equal(
-            request.mrope_positions.tensor(), torch.arange(span, span + 3).expand(3, -1)
+            request.mrope_positions.to_tensor(), torch.arange(span, span + 3).expand(3, -1)
         )
         assert block.mrope_span == baseline.mrope_span == span + 3
         token = torch.tensor([45], dtype=torch.int32)
@@ -431,9 +431,9 @@ def record_image(args):
         assert data["format_version"] == 2 and "tokens" not in data
         assert len(restored.batches) == 5 and len(restored.updates) == 2
         assert sum(r.pixel_values is not None for b in restored.batches for r in b.requests) == 2
-        replay = Replay.from_trace(restored)
-        assert replay.input_ids.numel() == restored.num_tokens
-        gdn = GDNReplay.from_trace(restored, replay.order)
+        prepared_trace = restored.to(device="cpu")
+        assert prepared_trace.input_ids.numel() == restored.num_tokens
+        gdn = GDNReplay.from_trace(restored, prepared_trace.order)
         assert gdn.conv_sources.shape[0] == restored.num_tokens
         metadata = {
             "image_tokens": len(ids),
@@ -484,9 +484,7 @@ def record_image_long(args):
 
 
 def replay(args):
-    from minisgl.training import replay
-    from minisgl.training.replay import Replay
-    from minisgl.training.sft import restore_trace
+    from minisgl.training import Trace, replay_trace
     from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText
     from transformers.models.qwen3_5 import modeling_qwen3_5 as modeling
 
@@ -502,7 +500,7 @@ def replay(args):
         setattr(modeling, name, inspect.unwrap(getattr(modeling, name)))
     data = json.loads((ROOT / f"{args.source}.json").read_text())
     saved = torch.load(ROOT / f"{args.source}.pt", weights_only=True)
-    trace = restore_trace(data["trace"])
+    trace = Trace.from_dict(data["trace"])
     dtype = getattr(torch, args.dtype)
     config = AutoConfig.from_pretrained(MODEL, local_files_only=True)
     model_class = AutoModelForImageTextToText if trace.multimodal else AutoModelForCausalLM
@@ -529,8 +527,7 @@ def replay(args):
 
     math_mode = DoubleMath() if args.dtype == "float64" else nullcontext()
     math_mode.__enter__()
-    plan = Replay.from_trace(
-        trace,
+    plan = trace.to(
         device="cuda",
         query_chunk_size=32,
         gdn_segment_size=args.segment,
@@ -558,7 +555,7 @@ def replay(args):
         )
     started = time.perf_counter()
     with torch.no_grad():
-        logits = replay.forward(model, plan, rows=saved["rows"].to("cuda")).cpu()
+        logits = replay_trace(model, plan, rows=saved["rows"].to("cuda"), hidden_only=False).cpu()
         assert logits.dtype == dtype and logits.shape == saved["logits"].shape
         assert torch.isfinite(logits).all()
     torch.cuda.synchronize()

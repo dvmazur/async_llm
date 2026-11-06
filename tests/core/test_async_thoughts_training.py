@@ -5,17 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from contextlib import aclosing
+from contextlib import aclosing, nullcontext
 from pathlib import Path
 
 import pytest
 import torch
 import torch.nn.functional as F
 from minisgl.shared_cache import AsyncContext
-from minisgl.training import replay
-from minisgl.training.replay import Replay
-from minisgl.training.sft import restore_trace, supervised_loss
-from minisgl.training.trace import RecordingSession
+from minisgl.training import Trace, replay_trace
+from minisgl.training.sft import compute_supervised_loss
 from test_async_llm import _make_llm
 from test_training_gdn import tiny_hybrid
 from test_training_logits import torch_reference_kernels as torch_reference_kernels
@@ -26,6 +24,11 @@ if _SCRIPTS_DIR not in sys.path:
 
 from async_thoughts import demo
 from async_thoughts.training import DemoRecorder
+
+
+@pytest.fixture(autouse=True)
+def cpu_stub_profiling(monkeypatch):
+    monkeypatch.setattr(torch.cuda.nvtx, "range", lambda *args, **kwargs: nullcontext())
 
 
 @pytest.fixture
@@ -68,7 +71,7 @@ def exported_example(monkeypatch, tmp_path):
         assert ca.next_input_id is None and cb.next_input_id == 15
         assert a.token_ids == [3, 4, 5, 6, 8]
         assert b.token_ids == [9, 10, 11, 13]
-        state["decode_calls"] = len(llm.async_engine.session.session.decode_calls)
+        state["decode_calls"] = len(state["session"].decode_calls)
         for block in (probe, a, b, prompt):
             await llm.free_block(block)
         # Treat 15 as a terminal: excluded from displayed output, still a target.
@@ -77,7 +80,7 @@ def exported_example(monkeypatch, tmp_path):
     monkeypatch.setattr(demo, "_run_loop", run_loop)
 
     async def run():
-        llm, _ = _make_llm()
+        llm, state["session"] = _make_llm()
         config = demo.DemoConfig(model="stub-model", problem="test", trace_output=path)
         result = await demo._run_demo(config, llm, demo.Prompting(config.problem))
         assert result == ([6, 8], [13])
@@ -93,11 +96,11 @@ def test_demo_export_aligns_batched_samples_and_masks_nongeneration_rows(exporte
     state = exported_example
     data = state["data"]
     (example,) = data["examples"]
-    trace = restore_trace(example["trace"])
+    trace = Trace.from_dict(example["trace"])
     assert data["model"] == "stub-model"
     assert example["prompt"] == "test"
     assert example["thinker_tokens"] == [6, 8] and example["writer_tokens"] == [13]
-    assert trace == state["recorder"].trace
+    assert trace == state["recorder"].get_trace()
     assert example["trace"]["format_version"] == 2 and "tokens" not in example["trace"]
     assert len(example["targets"]) == len(example["logprobs"]) == trace.num_tokens == 13
     assert [len(batch.requests) for batch in trace.batches if batch.kind == "decode"] == [2, 2, 1]
@@ -131,16 +134,16 @@ def test_demo_export_aligns_batched_samples_and_masks_nongeneration_rows(exporte
 @pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
 def test_export_reloads_for_hybrid_forward_and_backward(exported_example, read_mode):
     (example,) = exported_example["data"]["examples"]
-    trace = restore_trace(example["trace"])
-    plan = Replay.from_trace(trace, gdn_segment_size=2, gdn_read_mode=read_mode)
+    trace = Trace.from_dict(example["trace"])
+    plan = trace.to(gdn_segment_size=2, gdn_read_mode=read_mode)
     targets = torch.tensor(example["targets"])
     rows = (targets != -100).nonzero().flatten()
     assert not torch.equal(plan.order, torch.arange(trace.num_tokens))
     model = tiny_hybrid().train()
     with torch.no_grad():
-        logits = replay.forward(model, plan)
+        logits = replay_trace(model, plan, hidden_only=False)
         expected = F.cross_entropy(logits[rows], targets[rows], reduction="sum")
-    loss = supervised_loss(model, plan, targets, chunk_size=2)
+    loss = compute_supervised_loss(model, plan, targets, chunk_size=2)
     torch.testing.assert_close(loss, expected)
     loss.backward()
     for parameter in (
@@ -166,22 +169,22 @@ def test_recorder_closes_underlying_generator_and_resumes_pending_token(monkeypa
                     closed.append(True)
 
         monkeypatch.setattr(llm, "async_generate", tracked)
-        recorder = DemoRecorder(llm)
         try:
-            block = await recorder.create_block()
-            await recorder.forward([1], write_to=block, return_logits=False)
-            ctx = AsyncContext(cache_view=[block], next_input_id=5)
-            async with aclosing(recorder.async_generate(ctx, max_steps=100)) as stream:
-                assert await anext(stream) == 7
-            assert closed == [True]
-            assert ctx.next_input_id == 7 and block.token_ids == [1, 5]
-            async with aclosing(recorder.async_generate(ctx, max_steps=1)) as stream:
-                assert await anext(stream) == 9
-                with pytest.raises(StopAsyncIteration):
-                    await anext(stream)
-            assert closed == [True, True]
-            assert ctx.next_input_id == 9 and block.token_ids == [1, 5, 7]
-            assert len(session.decode_calls) == 2 and recorder.trace.num_tokens == 3
+            with DemoRecorder(llm) as recorder:
+                block = await recorder.create_block()
+                await recorder.forward([1], write_to=block, return_logits=False)
+                ctx = AsyncContext(cache_view=[block], next_input_id=5)
+                async with aclosing(recorder.async_generate(ctx, max_steps=100)) as stream:
+                    assert await anext(stream) == 7
+                assert closed == [True]
+                assert ctx.next_input_id == 7 and block.token_ids == [1, 5]
+                async with aclosing(recorder.async_generate(ctx, max_steps=1)) as stream:
+                    assert await anext(stream) == 9
+                    with pytest.raises(StopAsyncIteration):
+                        await anext(stream)
+                assert closed == [True, True]
+                assert ctx.next_input_id == 9 and block.token_ids == [1, 5, 7]
+                assert len(session.decode_calls) == 2 and recorder.get_trace().num_tokens == 3
         finally:
             await llm.close()
 
@@ -219,7 +222,7 @@ def test_failed_demo_does_not_export_an_artifact(monkeypatch, tmp_path, failure)
         assert llm._closed and llm._loop_task is None
         assert not path.exists()
         expected_rows = 0 if failure == "prefill" else 2 if failure == "decode" else 3
-        assert state["recorder"].trace.num_tokens == expected_rows
+        assert state["recorder"].get_trace().num_tokens == expected_rows
 
     asyncio.run(run())
 
@@ -240,7 +243,6 @@ def test_demo_refuses_existing_artifact_before_recording(monkeypatch, tmp_path):
         with pytest.raises(FileExistsError):
             await demo._run_demo(config, llm, demo.Prompting(config.problem))
         assert llm.async_engine.session is session
-        assert not isinstance(session, RecordingSession)
         assert llm._closed and llm._loop_task is None
 
     asyncio.run(run())

@@ -1,17 +1,19 @@
 import inspect
 import os
+from dataclasses import replace
 from itertools import groupby
+from types import SimpleNamespace as NS
 
 import pytest
 import torch
-from minisgl.training import replay
-from minisgl.training.replay import Replay
+from minisgl.training import replay_trace
 from test_training import (
     example_trace,
     mutation_trace,
     repeated_view_trace,
     sequential_attention,
     single_block_trace,
+    tiny_model,
 )
 from test_training_gdn import (
     cuda_delta_math as cuda_delta_math,
@@ -84,6 +86,141 @@ def four_layer_hybrid(device):
     return model
 
 
+def test_hybrid_trace_mutation_recompiles_attention_and_recurrent_plans():
+    model, trace = tiny_hybrid(), mutation_trace()
+    before = replay_trace(model, trace, hidden_only=False)
+    recurrent = next(iter(trace._gdn.values()))
+    attention = next(iter(trace._attention.values()))
+    update = trace.updates[0]
+    trace.updates[0] = replace(update, refs=tuple(reversed(update.refs)))
+    actual = replay_trace(model, trace, hidden_only=False)
+    torch.testing.assert_close(actual, sequential_hybrid_logits(model, trace), atol=3e-6, rtol=3e-5)
+    assert not torch.allclose(actual, before)
+    assert next(iter(trace._gdn.values())) is not recurrent
+    assert next(iter(trace._attention.values())) is not attention
+
+
+def live_llm(reference):
+    """Represent inference's fused leaf tensors without initializing a GPU engine."""
+    from minisgl.llm import AsyncLLM
+
+    parameters = dict(reference.named_parameters())
+    groups = {name: [name] for name in parameters}
+    for name in parameters:
+        for projections, fused in ((("q", "k", "v"), "qkv"), (("gate", "up"), "gate_up")):
+            part = f".{projections[0]}_proj."
+            if part in name:
+                sources = [name.replace(part, f".{projection}_proj.") for projection in projections]
+                for source in sources:
+                    groups.pop(source)
+                groups[name.replace(part, f".{fused}_proj.")] = sources
+    weights = {
+        name: (
+            parameters[sources[0]].detach().clone()
+            if len(sources) == 1
+            else torch.cat([parameters[source].detach() for source in sources])
+        )
+        for name, sources in groups.items()
+    }
+    llm = object.__new__(AsyncLLM)
+    llm.engine = NS(
+        model=NS(state_dict=lambda: weights),
+        config=NS(hf_config=reference.config, tp_info=NS(size=1), quantization=None),
+    )
+    llm.async_engine = NS(has_work=False)
+    return llm, weights, groups
+
+
+@pytest.mark.parametrize("factory", [tiny_model, tiny_hybrid], ids=["qwen3", "qwen3.5"])
+def test_async_llm_replay_uses_live_fused_weights_and_gradients(factory):
+    reference = factory()
+    llm, weights, groups = live_llm(reference)
+    addresses = {name: weight.data_ptr() for name, weight in weights.items()}
+    trace = mutation_trace()
+    rows = [18, 0, 7, 7, 13]
+    expected = replay_trace(reference, trace, rows=rows, hidden_only=False)
+    actual = replay_trace(llm, trace, rows=rows, hidden_only=False)
+    torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
+    expected.square().sum().backward()
+    actual.square().sum().backward()
+    parameters = dict(reference.named_parameters())
+    for name, sources in groups.items():
+        expected_grad = (
+            parameters[sources[0]].grad
+            if len(sources) == 1
+            else torch.cat([parameters[source].grad for source in sources])
+        )
+        assert weights[name].is_leaf and weights[name].data_ptr() == addresses[name]
+        torch.testing.assert_close(weights[name].grad, expected_grad, atol=2e-5, rtol=3e-4)
+    assert all(parameter.is_meta for parameter in llm.engine._training_model.parameters())
+
+
+@pytest.mark.parametrize("factory", [tiny_model, tiny_hybrid], ids=["qwen3", "qwen3.5"])
+def test_async_llm_replay_observes_weight_updates_and_defaults_to_hidden(factory):
+    reference = factory()
+    llm, weights, groups = live_llm(reference)
+    trace = single_block_trace(mixed_steps=True)
+    before = replay_trace(llm, trace)
+    torch.testing.assert_close(before, replay_trace(reference, trace), atol=3e-6, rtol=3e-5)
+    adapter = llm.engine._training_model
+    key = next(name for name in weights if ".gate_up_proj." in name)
+    with torch.no_grad():
+        weights[key].add_(0.1)
+        parameters = dict(reference.named_parameters())
+        for source in groups[key]:
+            parameters[source].add_(0.1)
+    after = replay_trace(llm, trace)
+    torch.testing.assert_close(after, replay_trace(reference, trace), atol=3e-6, rtol=3e-5)
+    assert not torch.allclose(after, before)
+    assert llm.engine._training_model is adapter
+    after.square().sum().backward()
+    assert weights[key].grad is not None and weights[key].grad.abs().sum() > 0
+    assert weights["lm_head.weight"].grad is None
+
+
+@pytest.mark.parametrize("factory", [tiny_model, tiny_hybrid], ids=["qwen3", "qwen3.5"])
+def test_async_llm_replay_trains_replaced_weights_after_inference_warmup(factory):
+    reference = factory()
+    llm, weights, groups = live_llm(reference)
+    trace = mutation_trace()
+    with torch.inference_mode():
+        replay_trace(llm, trace)
+    key = next(name for name in weights if ".qkv_proj." in name)
+    original = weights[key]
+    replacement = original.detach().clone().add_(0.1)
+    weights[key] = replacement
+    with torch.no_grad():
+        parameters = dict(reference.named_parameters())
+        for source in groups[key]:
+            parameters[source].add_(0.1)
+    expected = replay_trace(reference, trace, hidden_only=False)
+    actual = replay_trace(llm, trace, hidden_only=False)
+    torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
+    expected.square().sum().backward()
+    actual.square().sum().backward()
+    assert replacement.is_leaf and replacement.requires_grad
+    torch.testing.assert_close(
+        replacement.grad,
+        torch.cat([parameters[source].grad for source in groups[key]]),
+        atol=2e-5,
+        rtol=3e-4,
+    )
+    assert original.grad is None
+
+
+@pytest.mark.parametrize("unsupported", ["tensor_parallel", "quantization", "pending_work"])
+def test_async_llm_replay_rejects_unsupported_engine_state(unsupported):
+    llm, _, _ = live_llm(tiny_model())
+    if unsupported == "tensor_parallel":
+        llm.engine.config.tp_info.size = 2
+    elif unsupported == "quantization":
+        llm.engine.config.quantization = "fp8"
+    else:
+        llm.async_engine.has_work = True
+    with pytest.raises((NotImplementedError, RuntimeError), match="AsyncLLM"):
+        replay_trace(llm, mutation_trace())
+
+
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
 @torch.no_grad()
 def test_sequential_hybrid_logits_match_cached_huggingface(request, device):
@@ -101,11 +238,13 @@ def test_sequential_hybrid_logits_match_cached_huggingface(request, device):
     torch.testing.assert_close(
         sequential_hybrid_logits(model, trace), expected, atol=3e-6, rtol=3e-5
     )
-    actual = replay.forward(model, Replay.from_trace(trace, device=device, query_chunk_size=3))
+    actual = replay_trace(model, trace.to(device=device, query_chunk_size=3), hidden_only=False)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
 
 
-@pytest.mark.parametrize("device,backend", [("cpu", "torch"), ("cuda", "torch"), ("cuda", "triton")])
+@pytest.mark.parametrize(
+    "device,backend", [("cpu", "torch"), ("cuda", "torch"), ("cuda", "triton")]
+)
 @pytest.mark.parametrize("trace_factory", [example_trace, mutation_trace, repeated_view_trace])
 @pytest.mark.parametrize(
     "read_mode,segment_size,query_chunk_size,cache_reused",
@@ -120,8 +259,7 @@ def test_parallel_hybrid_logits_match_sequential(
     trace = trace_factory()
     with torch.no_grad():
         expected = sequential_hybrid_logits(model, trace)
-    plan = Replay.from_trace(
-        trace,
+    plan = trace.to(
         device=device,
         query_chunk_size=query_chunk_size,
         gdn_segment_size=segment_size,
@@ -129,14 +267,17 @@ def test_parallel_hybrid_logits_match_sequential(
         gdn_cache_reused=cache_reused,
         gdn_read_backend=backend,
     )
-    actual = replay.forward(model, plan)
+    actual = replay_trace(model, plan, hidden_only=False)
     assert actual.requires_grad
     assert actual.shape == (len(trace.tokens), model.config.vocab_size)
     assert torch.isfinite(expected).all() and torch.isfinite(actual).all()
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     rows = torch.tensor([len(trace.tokens) - 1, 0, len(trace.tokens) // 2, 0], device=device)
     torch.testing.assert_close(
-        replay.forward(model, plan, rows=rows), expected[rows], atol=3e-6, rtol=3e-5
+        replay_trace(model, plan, rows=rows, hidden_only=False),
+        expected[rows],
+        atol=3e-06,
+        rtol=3e-05,
     )
 
 
@@ -167,9 +308,9 @@ def pretrained_hybrid(torch_reference_kernels):
 def test_pretrained_parallel_hybrid_logits(pretrained_hybrid, trace_factory, read_mode, backend):
     trace = trace_factory()
     expected = sequential_hybrid_logits(pretrained_hybrid, trace)
-    plan = Replay.from_trace(
-        trace, device="cuda", query_chunk_size=3, gdn_read_mode=read_mode, gdn_read_backend=backend
+    plan = trace.to(
+        device="cuda", query_chunk_size=3, gdn_read_mode=read_mode, gdn_read_backend=backend
     )
-    actual = replay.forward(pretrained_hybrid, plan)
+    actual = replay_trace(pretrained_hybrid, plan, hidden_only=False)
     assert torch.isfinite(expected).all() and torch.isfinite(actual).all()
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)

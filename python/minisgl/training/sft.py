@@ -1,8 +1,9 @@
-"""Mine short AsyncLLM trajectories and overfit their sampled-token targets."""
+"""Training script example scheduled to move to scripts."""
 
 import argparse
 import asyncio
 import json
+import warnings
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
@@ -18,13 +19,9 @@ from transformers import (
     AutoTokenizer,
 )
 
-from . import replay
-from .replay import Replay
-from .trace import Trace, record
-
-
-def restore_trace(data):
-    return Trace.from_dict(data)
+from .forward import replay_trace
+from .recording import RecordedAsyncLLM
+from .trace import Trace, _validate_replay_options
 
 
 async def mine(args):
@@ -41,190 +38,204 @@ async def mine(args):
         max_seq_len_override=1024 if args.stress else 512,
         max_prefill_rows=8 if args.stress else 32,
     )
-    session = llm.async_engine.session
     examples = []
     try:
         problems = ["What is 17 + 26?", "What is 9 * 7?", "What is 45 - 18?"]
         for index, problem in enumerate(problems[:2] if args.stress else problems):
-            trace = record(llm)
-            blocks = [await llm.create_block() for _ in range(7 if args.stress else 3)]
-            prompt, *writers = blocks
-            a, b = writers[:2]
-            targets, logprobs = {}, {}
-            operations = Counter()
+            with RecordedAsyncLLM(llm) as recorded:
+                trace = recorded.get_trace()
+                blocks = [await recorded.create_block() for _ in range(7 if args.stress else 3)]
+                prompt, *writers = blocks
+                a, b = writers[:2]
+                targets, logprobs = {}, {}
+                operations = Counter()
 
-            async def seed(block, text, context):
-                ids = llm.tokenizer.encode(text, add_special_tokens=False)
-                if len(ids) > 1:
-                    await llm.forward(ids[:-1], cache_view=[*context, block], write_to=block)
-                return ids[-1]
-
-            async def sample(block, view, pending, generator):
-                cursor, batch_cursor = trace.num_tokens, len(trace.batches)
-                context = AsyncContext(cache_view=view, output_block=block, next_input_id=pending)
-                output = await llm.forward(cache_view=context)
-                rows, start = [], cursor
-                for batch in trace.batches[batch_cursor:]:
-                    for request in batch.requests:
-                        end = start + len(request.input_ids)
-                        if request.write_to == block.block_id:
-                            rows.extend(range(start, end))
-                        start = end
-                if len(rows) != 1:
-                    raise RuntimeError("Sampling requires exactly one writer per block")
-                row = rows[0]
-                values, ids = output.logits.float().topk(20)
-                choice = torch.multinomial(
-                    (values / args.temperature).softmax(-1), 1, generator=generator
-                )
-                token = int(ids[choice].item())
-                targets[row] = token
-                logprobs[row] = output.logits.float().log_softmax(-1)[token].item()
-                return token
-
-            async def generate(block, view, pending, stream):
-                generator = torch.Generator(device="cuda").manual_seed(
-                    args.seed + 10 * index + stream
-                )
-                sampled = []
-                for _ in range(args.max_tokens):
-                    pending = await sample(block, view, pending, generator)
-                    sampled.append(pending)
-                    if pending == llm.tokenizer.eos_token_id:
-                        break
-                await llm.forward([pending], cache_view=view, write_to=block, return_logits=False)
-                return llm.tokenizer.decode(sampled, skip_special_tokens=False)
-
-            published = list(writers)
-
-            def view(worker, turn, include_self=True):
-                width = 2 + (worker + turn) % 5
-                context = [prompt, *(published[(worker + j) % len(writers)] for j in range(width))]
-                context = list(
-                    {
-                        block.block_id: block for block in context if block is not writers[worker]
-                    }.values()
-                )
-                offset = turn % len(context)
-                context = context[offset:] + context[:offset]
-                return context + ([writers[worker]] if include_self else [])
-
-            async def stress_worker(worker, pending):
-                block = writers[worker]
-                generator = torch.Generator(device="cuda").manual_seed(
-                    args.seed + 10 * index + worker
-                )
-                sampled = []
-                for turn in range(args.max_tokens):
-                    for _ in range((worker + turn) % 3):
-                        await asyncio.sleep(0)
-                    if turn and (worker + turn) % 4 == 0:
-                        await llm.forward(
-                            [pending],
-                            cache_view=view(worker, turn),
-                            write_to=block,
-                            return_logits=False,
+                async def seed(block, text, context):
+                    ids = recorded.tokenizer.encode(text, add_special_tokens=False)
+                    if len(ids) > 1:
+                        await recorded.forward(
+                            ids[:-1], cache_view=[*context, block], write_to=block
                         )
-                        merged = await llm.merge_blocks(block, writers[(worker + 1) % len(writers)])
-                        copied = await llm.create_block()
-                        blocks.extend([merged, copied])
-                        await llm.append_block(copied, merged)
-                        operations.update(["merge", "copy"])
-                        if worker % 2 == 0:
-                            await llm.append_block(copied, copied)
-                            operations["self_append"] += 1
-                        published[worker] = copied
-                        while llm.async_engine._block_in_use(block):
-                            await asyncio.sleep(0)
-                        await llm.free_block(block)
-                        await llm.free_block(merged)
-                        operations["clear_reuse"] += 1
-                        pending = await seed(block, f"\nPhase {turn}: ", view(worker, turn)[:-1])
-                    elif turn == worker % 3 + 1:
-                        await llm.forward(
-                            [pending],
-                            cache_view=view(worker, turn),
-                            write_to=block,
-                            return_logits=False,
-                        )
-                        pending = await seed(block, "\nNote: ", view(worker, turn)[:-1])
-                        operations["prefill_extension"] += 1
-                    pending = await sample(
-                        block, view(worker, turn, turn % 4 != 2), pending, generator
+                    return ids[-1]
+
+                async def sample(block, view, pending, generator):
+                    cursor, batch_cursor = trace.num_tokens, len(trace.batches)
+                    context = AsyncContext(
+                        cache_view=view, output_block=block, next_input_id=pending
                     )
-                    sampled.append(pending)
-                await llm.forward(
-                    [pending],
-                    cache_view=view(worker, args.max_tokens),
-                    write_to=block,
-                    return_logits=False,
-                )
-                return llm.tokenizer.decode(sampled, skip_special_tokens=False)
+                    output = await recorded.forward(cache_view=context)
+                    rows, start = [], cursor
+                    for batch in trace.batches[batch_cursor:]:
+                        for request in batch.requests:
+                            end = start + len(request.input_ids)
+                            if request.write_to == block.block_id:
+                                rows.extend(range(start, end))
+                            start = end
+                    if len(rows) != 1:
+                        raise RuntimeError("Sampling requires exactly one writer per block")
+                    row = rows[0]
+                    values, ids = output.logits.float().topk(20)
+                    choice = torch.multinomial(
+                        (values / args.temperature).softmax(-1), 1, generator=generator
+                    )
+                    token = int(ids[choice].item())
+                    targets[row] = token
+                    logprobs[row] = output.logits.float().log_softmax(-1)[token].item()
+                    return token
 
-            prompt_ids = llm.tokenizer.apply_chat_template(
-                [
-                    {
-                        "role": "system",
-                        "content": "Solve the arithmetic problem. Keep the answer brief.",
-                    },
-                    {"role": "user", "content": problem},
-                ],
-                tokenize=True,
-                return_dict=False,
-                add_generation_prompt=True,
-                enable_thinking=False,
-            )
-            await llm.forward(prompt_ids, write_to=prompt, return_logits=False)
-            seeds = await asyncio.gather(
-                *(seed(block, f"Worker {i}: ", [prompt]) for i, block in enumerate(writers))
-            )
-            if args.stress:
-                workers = await asyncio.gather(
-                    *(stress_worker(i, pending) for i, pending in enumerate(seeds))
+                async def generate(block, view, pending, stream):
+                    generator = torch.Generator(device="cuda").manual_seed(
+                        args.seed + 10 * index + stream
+                    )
+                    sampled = []
+                    for _ in range(args.max_tokens):
+                        pending = await sample(block, view, pending, generator)
+                        sampled.append(pending)
+                        if pending == recorded.tokenizer.eos_token_id:
+                            break
+                    await recorded.forward(
+                        [pending], cache_view=view, write_to=block, return_logits=False
+                    )
+                    return recorded.tokenizer.decode(sampled, skip_special_tokens=False)
+
+                published = list(writers)
+
+                def view(worker, turn, include_self=True):
+                    width = 2 + (worker + turn) % 5
+                    context = [
+                        prompt,
+                        *(published[(worker + j) % len(writers)] for j in range(width)),
+                    ]
+                    context = list(
+                        {
+                            block.block_id: block
+                            for block in context
+                            if block is not writers[worker]
+                        }.values()
+                    )
+                    offset = turn % len(context)
+                    context = context[offset:] + context[:offset]
+                    return context + ([writers[worker]] if include_self else [])
+
+                async def stress_worker(worker, pending):
+                    block = writers[worker]
+                    generator = torch.Generator(device="cuda").manual_seed(
+                        args.seed + 10 * index + worker
+                    )
+                    sampled = []
+                    for turn in range(args.max_tokens):
+                        for _ in range((worker + turn) % 3):
+                            await asyncio.sleep(0)
+                        if turn and (worker + turn) % 4 == 0:
+                            await recorded.forward(
+                                [pending],
+                                cache_view=view(worker, turn),
+                                write_to=block,
+                                return_logits=False,
+                            )
+                            merged = await recorded.merge_blocks(
+                                block, writers[(worker + 1) % len(writers)]
+                            )
+                            copied = await recorded.create_block()
+                            blocks.extend([merged, copied])
+                            await recorded.append_block(copied, merged)
+                            operations.update(["merge", "copy"])
+                            if worker % 2 == 0:
+                                await recorded.append_block(copied, copied)
+                                operations["self_append"] += 1
+                            published[worker] = copied
+                            while recorded.async_engine._block_in_use(block):
+                                await asyncio.sleep(0)
+                            await recorded.free_block(block)
+                            await recorded.free_block(merged)
+                            operations["clear_reuse"] += 1
+                            pending = await seed(
+                                block, f"\nPhase {turn}: ", view(worker, turn)[:-1]
+                            )
+                        elif turn == worker % 3 + 1:
+                            await recorded.forward(
+                                [pending],
+                                cache_view=view(worker, turn),
+                                write_to=block,
+                                return_logits=False,
+                            )
+                            pending = await seed(block, "\nNote: ", view(worker, turn)[:-1])
+                            operations["prefill_extension"] += 1
+                        pending = await sample(
+                            block, view(worker, turn, turn % 4 != 2), pending, generator
+                        )
+                        sampled.append(pending)
+                    await recorded.forward(
+                        [pending],
+                        cache_view=view(worker, args.max_tokens),
+                        write_to=block,
+                        return_logits=False,
+                    )
+                    return recorded.tokenizer.decode(sampled, skip_special_tokens=False)
+
+                prompt_ids = recorded.tokenizer.apply_chat_template(
+                    [
+                        {
+                            "role": "system",
+                            "content": "Solve the arithmetic problem. Keep the answer brief.",
+                        },
+                        {"role": "user", "content": problem},
+                    ],
+                    tokenize=True,
+                    return_dict=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
                 )
-                answer = None
-            else:
-                workers = await asyncio.gather(
-                    generate(a, [prompt, b, a], seeds[0], 0),
-                    generate(b, [prompt, a, b], seeds[1], 1),
+                await recorded.forward(prompt_ids, write_to=prompt, return_logits=False)
+                seeds = await asyncio.gather(
+                    *(seed(block, f"Worker {i}: ", [prompt]) for i, block in enumerate(writers))
                 )
-                merged = await llm.merge_blocks(a, b)
-                copied = await llm.create_block()
-                blocks.extend([merged, copied])
-                await llm.append_block(copied, merged)
-                for block in (a, b, merged):
-                    await llm.free_block(block)
-                pending = await seed(a, "\nFinal answer: ", [prompt, copied])
-                answer = await generate(a, [prompt, copied, a], pending, 2)
-            for block in blocks:
-                await llm.free_block(block)
-            tokens = trace.tokens
-            batches = Counter(t.step for t in tokens if t.kind == "decode")
-            coverage = {
-                "blocks": len(blocks),
-                "operations": dict(operations),
-                "ordered_views": len({tuple(b for b, _ in t.view) for t in tokens}),
-                "max_view_depth": max(len(t.view) for t in tokens),
-                "prefill_steps": len({t.step for t in tokens if t.kind == "prefill"}),
-                "decode_batch_sizes": dict(sorted(Counter(batches.values()).items())),
-            }
-            examples.append(
-                {
-                    "prompt": problem,
-                    "workers": workers,
-                    "answer": answer,
-                    "trace": asdict(trace),
-                    "targets": [targets.get(i, -100) for i in range(trace.num_tokens)],
-                    "logprobs": [logprobs.get(i) for i in range(trace.num_tokens)],
-                    "coverage": coverage,
+                if args.stress:
+                    workers = await asyncio.gather(
+                        *(stress_worker(i, pending) for i, pending in enumerate(seeds))
+                    )
+                    answer = None
+                else:
+                    workers = await asyncio.gather(
+                        generate(a, [prompt, b, a], seeds[0], 0),
+                        generate(b, [prompt, a, b], seeds[1], 1),
+                    )
+                    merged = await recorded.merge_blocks(a, b)
+                    copied = await recorded.create_block()
+                    blocks.extend([merged, copied])
+                    await recorded.append_block(copied, merged)
+                    for block in (a, b, merged):
+                        await recorded.free_block(block)
+                    pending = await seed(a, "\nFinal answer: ", [prompt, copied])
+                    answer = await generate(a, [prompt, copied, a], pending, 2)
+                for block in blocks:
+                    await recorded.free_block(block)
+                tokens = trace.tokens
+                batches = Counter(t.step for t in tokens if t.kind == "decode")
+                coverage = {
+                    "blocks": len(blocks),
+                    "operations": dict(operations),
+                    "ordered_views": len({tuple(b for b, _ in t.view) for t in tokens}),
+                    "max_view_depth": max(len(t.view) for t in tokens),
+                    "prefill_steps": len({t.step for t in tokens if t.kind == "prefill"}),
+                    "decode_batch_sizes": dict(sorted(Counter(batches.values()).items())),
                 }
-            )
-            print(
-                f"{problem} inputs={trace.num_tokens} targets={len(targets)} answer={answer!r}",
-                flush=True,
-            )
-            print(f"coverage={coverage}", flush=True)
-            llm.async_engine.session = session
+                examples.append(
+                    {
+                        "prompt": problem,
+                        "workers": workers,
+                        "answer": answer,
+                        "trace": asdict(trace),
+                        "targets": [targets.get(i, -100) for i in range(trace.num_tokens)],
+                        "logprobs": [logprobs.get(i) for i in range(trace.num_tokens)],
+                        "coverage": coverage,
+                    }
+                )
+                print(
+                    f"{problem} inputs={trace.num_tokens} targets={len(targets)} answer={answer!r}",
+                    flush=True,
+                )
+                print(f"coverage={coverage}", flush=True)
     finally:
         await llm.close()
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -246,13 +257,13 @@ async def mine(args):
 def _supervised(model, plan, targets):
     device = next(model.parameters()).device
     rows = (targets != -100).nonzero().flatten()
-    if len(targets) != len(plan.input_ids) or not len(rows):
+    if len(targets) != plan.num_tokens or not len(rows):
         raise ValueError("Each trace needs aligned, nonempty supervision")
-    states = replay.forward(model, plan.to(device), rows=rows.to(device), hidden_only=True)
+    states = replay_trace(model, plan, rows=rows)
     return states, targets[rows].to(device)
 
 
-def supervised_loss(model, replay, targets, chunk_size=128, *, checkpointing=True):
+def compute_supervised_loss(model, replay, targets, chunk_size=128, *, checkpointing=True):
     if chunk_size < 1:
         raise ValueError("Loss chunk size must be positive")
     states, selected = _supervised(model, replay, targets)
@@ -301,30 +312,27 @@ def evaluate(model, examples, chunk_size=128):
 
 
 def train(args):
-    query_chunk_size = getattr(args, "query_chunk_size", 128)
+    query_chunk_size = getattr(args, "query_chunk_size", Trace.query_chunk_size)
     loss_chunk_size = getattr(args, "loss_chunk_size", 128)
-    attention_checkpointing = getattr(args, "attention_checkpointing", True)
+    attention_checkpointing = getattr(
+        args, "attention_checkpointing", Trace.attention_checkpointing
+    )
     loss_checkpointing = getattr(args, "loss_checkpointing", True)
-    cache_replay_plans = getattr(args, "cache_replay_plans", True)
-    gdn_segment_size = getattr(args, "gdn_segment_size", 8)
-    gdn_read_mode = getattr(args, "gdn_read_mode", "expanded")
-    gdn_cache_reused = getattr(args, "gdn_cache_reused", True)
-    gdn_read_backend = getattr(args, "gdn_read_backend", "torch")
-    if gdn_segment_size < 1:
-        raise ValueError("gdn_segment_size must be positive")
-    if gdn_read_mode not in {"expanded", "factorized"}:
-        raise ValueError("gdn_read_mode must be expanded or factorized")
-    if gdn_read_backend not in {"torch", "triton"}:
-        raise ValueError("gdn_read_backend must be torch or triton")
+    cache_replay_plans = getattr(args, "cache_replay_plans", Trace.cache_plans)
+    gdn_segment_size = getattr(args, "gdn_segment_size", Trace.gdn_segment_size)
+    gdn_read_mode = getattr(args, "gdn_read_mode", Trace.gdn_read_mode)
+    gdn_cache_reused = getattr(args, "gdn_cache_reused", Trace.gdn_cache_reused)
+    gdn_read_backend = getattr(args, "gdn_read_backend", Trace.gdn_read_backend)
+    _validate_replay_options(query_chunk_size, gdn_segment_size, gdn_read_mode, gdn_read_backend)
     data = json.loads(args.data.read_text())
     examples = []
     for example in data["examples"]:
-        trace = restore_trace(example["trace"])
+        trace = Trace.from_dict(example["trace"])
         targets = torch.tensor(example["targets"])
         if len(targets) != trace.num_tokens or not (targets != -100).any():
             raise ValueError("Each trace needs aligned, nonempty supervision")
-        plan = Replay.from_trace(
-            trace,
+        plan = trace.to(
+            "cpu",
             query_chunk_size=query_chunk_size,
             attention_checkpointing=attention_checkpointing,
             cache_plans=cache_replay_plans,
@@ -337,7 +345,7 @@ def train(args):
     multimodal = any(
         request.pixel_values is not None
         for plan, _ in examples
-        for batch in plan.trace.batches
+        for batch in plan.batches
         for request in batch.requests
     )
     config = AutoConfig.from_pretrained(data["model"])
@@ -371,7 +379,7 @@ def train(args):
         optimizer.zero_grad(set_to_none=True)
         for plan, targets in examples:
             loss = (
-                supervised_loss(
+                compute_supervised_loss(
                     model, plan, targets, loss_chunk_size, checkpointing=loss_checkpointing
                 )
                 / count
@@ -422,6 +430,12 @@ def train(args):
 
 
 def main():
+    warnings.warn(
+        "The minisgl.training.sft CLI is scheduled for future deprecation; "
+        "its current commands remain supported.",
+        FutureWarning,
+        stacklevel=2,
+    )
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     mining = commands.add_parser("mine")
@@ -445,7 +459,7 @@ def main():
     training.add_argument(
         "--attention-checkpointing",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=Trace.attention_checkpointing,
         help="Recompute attention chunks during backward to reduce saved activations",
     )
     training.add_argument(
@@ -457,33 +471,33 @@ def main():
     training.add_argument(
         "--cache-replay-plans",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=Trace.cache_plans,
         help="Keep replay plans between forwards; disable to save device memory and recompile each time",
     )
-    training.add_argument("--query-chunk-size", type=int, default=128)
+    training.add_argument("--query-chunk-size", type=int, default=Trace.query_chunk_size)
     training.add_argument("--loss-chunk-size", type=int, default=128)
     training.add_argument(
         "--gdn-segment-size",
         type=int,
-        default=8,
+        default=Trace.gdn_segment_size,
         help="Maximum compact GDN segment length; 1 disables short-segment compaction",
     )
     training.add_argument(
         "--gdn-read-mode",
         choices=("expanded", "factorized"),
-        default="expanded",
+        default=Trace.gdn_read_mode,
         help="Apply compact GDN reads token by token or through segment factors",
     )
     training.add_argument(
         "--gdn-cache-reused",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=Trace.gdn_cache_reused,
         help="Cache dense transforms for heavily reused GDN summaries",
     )
     training.add_argument(
         "--gdn-read-backend",
         choices=("torch", "triton"),
-        default="torch",
+        default=Trace.gdn_read_backend,
         help="Use Torch or fused Triton kernels for GDN reads",
     )
     args = parser.parse_args()

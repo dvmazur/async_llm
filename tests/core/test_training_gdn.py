@@ -8,12 +8,12 @@ from unittest.mock import patch
 import pytest
 import torch
 import torch.nn.functional as F
-from minisgl.training import replay
+from minisgl.training import Trace, replay_trace
 from minisgl.training.gdn import GDNReplay, delta, gdn_forward
-from minisgl.training.replay import Replay
-from minisgl.training.sft import supervised_loss
-from minisgl.training.stress import workload
-from minisgl.training.trace import BlockUpdate, RecordingSession, Token, Trace
+from minisgl.training.recording import _TraceRecorder
+from minisgl.training.sft import compute_supervised_loss
+from minisgl.training.stress import generate_workload
+from minisgl.training.trace import BlockUpdate, ForwardBatch, ForwardRequest
 from test_training import (
     Session,
     apply_updates,
@@ -200,7 +200,7 @@ class Float64DeltaMath(TorchFunctionMode):
 
 
 def uneven_history_trace():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     tip, large, small = [session.create_block() for _ in range(3)]
 
     def prefill(block, ids, context=()):
@@ -297,7 +297,9 @@ def test_delta_autocast_preserves_fp32_core(request, device, backend, read_mode,
         request.getfixturevalue("cuda_delta_math")
     torch.manual_seed(7)
     n = 17
-    trace = Trace([Token(i, 0, 0, i, ((0, i + 1),), "prefill") for i in range(n)])
+    trace = Trace(
+        batches=[ForwardBatch(0, "prefill", (ForwardRequest(tuple(range(n)), 0, 0, ((0, 0),)),))]
+    )
     replay = GDNReplay.from_trace(
         trace, torch.arange(n), device=device, read_mode=read_mode, read_backend=backend
     )
@@ -395,8 +397,8 @@ def test_triton_delta_outputs_and_gradients(
     cuda_delta_math, trace_kind, segment_size, read_mode, dk, dv, boundaries
 ):
     if trace_kind == "stress":
-        session = RecordingSession(Session())
-        workload(session, vocab_size=32, large_size=2)
+        session = _TraceRecorder(Session())
+        generate_workload(session, vocab_size=32, large_size=2)
         trace = session.trace
     else:
         trace = uneven_history_trace() if trace_kind == "uneven" else mutation_trace()
@@ -495,10 +497,10 @@ def test_triton_hybrid_parameter_gradients(cuda_delta_math, read_mode, use_reent
         )
     trace = mutation_trace()
     options = {"device": "cuda", "gdn_read_mode": read_mode}
-    native = Replay.from_trace(trace, **options, gdn_read_backend="torch")
-    plan = Replay.from_trace(trace, **options, gdn_read_backend="triton")
-    expected = replay.forward(reference, native)
-    actual = replay.forward(model, plan)
+    native = trace.to(**options, gdn_read_backend="torch")
+    plan = trace.to(**options, gdn_read_backend="triton")
+    expected = replay_trace(reference, native, hidden_only=False)
+    actual = replay_trace(model, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     targets = plan.input_ids.roll(-1)
     F.cross_entropy(expected, targets).backward()
@@ -521,8 +523,8 @@ def test_triton_hybrid_parameter_gradients(cuda_delta_math, read_mode, use_reent
 @pytest.mark.parametrize("trace_kind", ["single", "mutation", "uneven", "stress", "repeated"])
 def test_delta_fp64_outputs_and_gradients(trace_kind, segment_size, read_mode, record_property):
     if trace_kind == "stress":
-        session = RecordingSession(Session())
-        workload(session, vocab_size=32, large_size=2)
+        session = _TraceRecorder(Session())
+        generate_workload(session, vocab_size=32, large_size=2)
         trace = session.trace
     elif trace_kind == "uneven":
         trace = uneven_history_trace()
@@ -566,7 +568,9 @@ def test_delta_fp64_outputs_and_gradients(trace_kind, segment_size, read_mode, r
 def test_delta_long_causal_fp64_outputs_and_gradients(segment_size, read_mode, record_property):
     torch.manual_seed(7)
     n, heads, dk, dv = 512, 2, 16, 12
-    trace = Trace([Token(i, 0, 0, i, ((0, i + 1),), "prefill") for i in range(n)])
+    trace = Trace(
+        batches=[ForwardBatch(0, "prefill", (ForwardRequest(tuple(range(n)), 0, 0, ((0, 0),)),))]
+    )
     order = torch.randperm(n)
     replay = GDNReplay.from_trace(trace, order, segment_size=segment_size, read_mode=read_mode)
     inputs = tuple(
@@ -641,11 +645,16 @@ def test_delta_gate_boundaries(alpha, beta, segment_size, read_mode):
 @pytest.mark.parametrize("segment_size", [1, 2, 8])
 def test_delta_copy_clear_gradcheck(segment_size, read_mode):
     trace = Trace(
-        [
-            Token(1, 0, 0, 0, ((0, 1),), "prefill"),
-            Token(2, 0, 0, 1, ((0, 2),), "prefill"),
-            Token(3, 1, 0, 0, ((1, 5), (0, 1)), "decode"),
-            Token(4, 1, 1, 4, ((0, 1), (1, 5)), "decode"),
+        batches=[
+            ForwardBatch(0, "prefill", (ForwardRequest((1, 2), 0, 0, ((0, 0),)),)),
+            ForwardBatch(
+                1,
+                "decode",
+                (
+                    ForwardRequest((3,), 0, 0, ((1, 4), (0, 0))),
+                    ForwardRequest((4,), 1, 4, ((0, 0), (1, 4))),
+                ),
+            ),
         ],
         updates=[
             BlockUpdate(1, 1, refs=((0, 2),)),
@@ -862,7 +871,7 @@ def test_delta_leaf_saved_storage_is_linear_in_head_width(record_property):
 
 @pytest.mark.parametrize("segment_size", [1, 2, 8])
 def test_delta_reused_leaf_merges_survive_clear_and_reuse(segment_size):
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     source, target, empty = [session.create_block() for _ in range(3)]
 
     def prefill(block, token):
@@ -906,7 +915,7 @@ def test_delta_reused_leaf_merges_survive_clear_and_reuse(segment_size):
 
 
 def test_odd_history_self_copies_stay_compact_and_preserve_gradient_counts():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     block = session.create_block()
     session.prefill_batch(
         [NS(block=block, input_ids=torch.tensor([1, 2, 3]), context=[], pixel_values=None)]
@@ -1144,7 +1153,9 @@ def test_delta_summary_copy_and_storage_do_not_grow_with_tree_depth(segment_size
 def test_delta_compact_segments_reduce_causal_saved_storage(record_property):
     torch.manual_seed(7)
     n, heads, dk, dv = 64, 2, 32, 24
-    trace = Trace([Token(i, 0, 0, i, ((0, i + 1),), "prefill") for i in range(n)])
+    trace = Trace(
+        batches=[ForwardBatch(0, "prefill", (ForwardRequest(tuple(range(n)), 0, 0, ((0, 0),)),))]
+    )
     inputs = tuple(
         x.requires_grad_()
         for x in (
@@ -1240,7 +1251,7 @@ def test_delta_factorized_reads_preserve_vector_depth(record_property):
 def test_gdn_parallel_outputs_and_gradients(trace_factory, read_mode):
     module = tiny_hybrid().cuda().model.layers[0].linear_attn
     trace = trace_factory()
-    order = Replay.from_trace(trace).order
+    order = trace.to().order
     replay = GDNReplay.from_trace(
         trace, order, device="cuda", conv_kernel_size=module.conv_kernel_size, read_mode=read_mode
     )
@@ -1258,11 +1269,11 @@ def test_gdn_parallel_outputs_and_gradients(trace_factory, read_mode):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_gdn_synthetic_stress_workload_outputs_and_gradients():
-    session = RecordingSession(Session())
-    workload(session, vocab_size=32, large_size=2)
+    session = _TraceRecorder(Session())
+    generate_workload(session, vocab_size=32, large_size=2)
     trace = session.trace
     module = tiny_hybrid().cuda().model.layers[0].linear_attn
-    order = Replay.from_trace(trace).order
+    order = trace.to().order
     replay = GDNReplay.from_trace(
         trace, order, device="cuda", conv_kernel_size=module.conv_kernel_size
     )
@@ -1281,11 +1292,17 @@ def test_gdn_synthetic_stress_workload_outputs_and_gradients():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_gdn_decode_reads_peer_before_batch():
     trace = Trace(
-        [
-            Token(1, 0, 0, 0, ((0, 1),), "prefill"),
-            Token(2, 1, 1, 0, ((1, 1),), "prefill"),
-            Token(3, 2, 0, 1, ((1, 2), (0, 2)), "decode"),
-            Token(4, 2, 1, 1, ((0, 2), (1, 2)), "decode"),
+        batches=[
+            ForwardBatch(0, "prefill", (ForwardRequest((1,), 0, 0, ((0, 0),)),)),
+            ForwardBatch(1, "prefill", (ForwardRequest((2,), 1, 0, ((1, 0),)),)),
+            ForwardBatch(
+                2,
+                "decode",
+                (
+                    ForwardRequest((3,), 0, 1, ((1, 1), (0, 1))),
+                    ForwardRequest((4,), 1, 1, ((0, 1), (1, 1))),
+                ),
+            ),
         ]
     )
     module = tiny_hybrid().cuda().model.layers[0].linear_attn
@@ -1304,7 +1321,7 @@ def test_gdn_decode_reads_peer_before_batch():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_gdn_copied_history_survives_clear_and_isolates_reuse():
-    session = RecordingSession(Session())
+    session = _TraceRecorder(Session())
     source, child, empty = [session.create_block() for _ in range(3)]
 
     def prefill(block, ids, context=()):
@@ -1337,7 +1354,7 @@ def test_gdn_copied_history_survives_clear_and_isolates_reuse():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_hybrid_gdn_options_survive_transfer_and_separate_compiled_cache():
     model = tiny_hybrid().cuda()
-    plan = Replay.from_trace(mutation_trace(), device="cuda")
+    plan = mutation_trace().to(device="cuda")
     expected = None
     for i, (segment_size, read_mode, cache_reused) in enumerate(
         (
@@ -1351,7 +1368,7 @@ def test_hybrid_gdn_options_survive_transfer_and_separate_compiled_cache():
         plan.gdn_segment_size, plan.gdn_read_mode = segment_size, read_mode
         plan.gdn_cache_reused = cache_reused
         with torch.no_grad():
-            actual = replay.forward(model, plan)
+            actual = replay_trace(model, plan, hidden_only=False)
         if expected is None:
             expected = actual
         torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
@@ -1371,7 +1388,7 @@ def test_hybrid_gdn_options_survive_transfer_and_separate_compiled_cache():
         assert transferred is plan
         assert transferred._gdn is plan._gdn
     with torch.no_grad():
-        replay.forward(model, plan)
+        replay_trace(model, plan, hidden_only=False)
     assert len(plan._gdn) == 4 and list(plan._gdn.values())[-1] is compiled
 
 
@@ -1381,12 +1398,12 @@ def test_hybrid_causal_forward_and_backward_match_huggingface(mixed_steps):
     reference, model = torch_hybrid().cuda().train(), tiny_hybrid().cuda().train()
     if mixed_steps:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    plan = Replay.from_trace(single_block_trace(mixed_steps), device="cuda", query_chunk_size=3)
+    plan = single_block_trace(mixed_steps).to(device="cuda", query_chunk_size=3)
     ids = plan.input_ids[None]
     expected = reference(ids, use_cache=False).logits[0]
     with torch.no_grad():
         native = model(ids, use_cache=False).logits[0]
-    actual = replay.forward(model, plan)
+    actual = replay_trace(model, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
     targets = plan.input_ids.roll(-1)
     F.cross_entropy(expected, targets).backward()
@@ -1412,12 +1429,12 @@ def test_hybrid_autocast_parameter_gradients(cuda_delta_math, backend, use_reent
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
         )
-    trace = Trace([Token(i, 0, 0, i, ((0, i + 1),), "prefill") for i in range(17)])
-    plan = Replay.from_trace(
-        trace, device="cuda", gdn_read_mode="factorized", gdn_read_backend=backend
+    trace = Trace(
+        batches=[ForwardBatch(0, "prefill", (ForwardRequest(tuple(range(17)), 0, 0, ((0, 0),)),))]
     )
+    plan = trace.to(device="cuda", gdn_read_mode="factorized", gdn_read_backend=backend)
     with torch.autocast("cuda", dtype=torch.bfloat16):
-        logits = replay.forward(model, plan)
+        logits = replay_trace(model, plan, hidden_only=False)
         loss = F.cross_entropy(logits, plan.input_ids.roll(-1))
         loss.backward()
     assert logits.dtype == torch.bfloat16
@@ -1447,15 +1464,15 @@ def test_hybrid_inference_warmup_then_training(cuda_delta_math, backend, use_ree
         )
     trace = mutation_trace()
     options = {"device": "cuda", "gdn_read_mode": read_mode, "gdn_read_backend": backend}
-    native = Replay.from_trace(trace, **options)
-    expected = replay.forward(reference, native)
+    native = trace.to(**options)
+    expected = replay_trace(reference, native, hidden_only=False)
     expected.square().mean().backward()
     with torch.inference_mode():
-        plan = Replay.from_trace(trace, **options)
-        warmed = replay.forward(model.eval(), plan)
+        plan = trace.to(**options)
+        warmed = replay_trace(model.eval(), plan, hidden_only=False)
         compiled = next(iter(plan._gdn.values()))
         assert warmed.is_inference()
-    actual = replay.forward(model.train(), plan)
+    actual = replay_trace(model.train(), plan, hidden_only=False)
     actual.square().mean().backward()
     assert next(iter(plan._gdn.values())) is compiled
     torch.testing.assert_close(actual, expected)
@@ -1470,7 +1487,7 @@ def test_hybrid_replay_checkpoint_reloads_as_native_huggingface(tmp_path):
     original_keys = set(model.state_dict())
     with torch.no_grad():
         expected = model(ids, use_cache=False).logits
-        replay.forward(model, Replay.from_trace(mutation_trace(), device="cuda"))
+        replay_trace(model, mutation_trace().to(device="cuda"), hidden_only=False)
     model.save_pretrained(tmp_path)
     config = json.loads((tmp_path / "config.json").read_text())
     assert not any("attn_implementation" in key for key in config)
@@ -1498,7 +1515,7 @@ def test_hybrid_replay_preserves_native_sdpa_masks_and_cache():
         expected = model(ids, attention_mask=mask, use_cache=False).logits
         cache = model(ids[:1, :-1], use_cache=True).past_key_values
         assert sdpa.call_count == 2
-        replay.forward(model, Replay.from_trace(mutation_trace(), device="cuda"))
+        replay_trace(model, mutation_trace().to(device="cuda"), hidden_only=False)
         assert sdpa.call_count == 2 and cache.get_seq_length() == ids.shape[1] - 1
         assert model.config._attn_implementation == "sdpa"
         assert model.model.layers[1].self_attn.config._attn_implementation == "sdpa"
@@ -1524,12 +1541,12 @@ def test_hybrid_checkpointed_replay_gradients(use_reentrant):
     checkpointed.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
     )
-    plan = Replay.from_trace(mutation_trace(), device="cuda")
+    plan = mutation_trace().to(device="cuda")
     with patch.object(
         F, "scaled_dot_product_attention", wraps=F.scaled_dot_product_attention
     ) as sdpa:
-        expected = replay.forward(reference, plan)
-        actual = replay.forward(checkpointed, plan)
+        expected = replay_trace(reference, plan, hidden_only=False)
+        actual = replay_trace(checkpointed, plan, hidden_only=False)
         torch.testing.assert_close(actual, expected)
         assert sdpa.call_count == 0
         with torch.no_grad():
@@ -1553,11 +1570,13 @@ def test_hybrid_checkpointed_chunked_supervised_loss():
     checkpointed.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
-    plan = Replay.from_trace(mutation_trace(), device="cuda", query_chunk_size=3)
+    plan = mutation_trace().to(device="cuda", query_chunk_size=3)
     targets = torch.arange(len(plan.input_ids), device="cuda") % 32
     targets[::3] = -100
-    expected = F.cross_entropy(replay.forward(reference, plan), targets, reduction="sum")
-    actual = supervised_loss(checkpointed, plan, targets, chunk_size=3)
+    expected = F.cross_entropy(
+        replay_trace(reference, plan, hidden_only=False), targets, reduction="sum"
+    )
+    actual = compute_supervised_loss(checkpointed, plan, targets, chunk_size=3)
     torch.testing.assert_close(actual, expected)
     expected_grads = torch.autograd.grad(expected, tuple(reference.parameters()))
     actual_grads = torch.autograd.grad(actual, tuple(checkpointed.parameters()))
@@ -1569,7 +1588,7 @@ def test_hybrid_checkpointed_chunked_supervised_loss():
 def test_hybrid_overfits_recorded_sequence_targets():
     model = tiny_hybrid().cuda().train()
     trace = example_trace()
-    plan = Replay.from_trace(trace, device="cuda")
+    plan = trace.to(device="cuda")
     targets = torch.full((len(trace.tokens),), -100, dtype=torch.long, device="cuda")
     latest = {}
     for row, token in enumerate(trace.tokens):
@@ -1580,7 +1599,7 @@ def test_hybrid_overfits_recorded_sequence_targets():
     losses = []
     for _ in range(30):
         optimizer.zero_grad()
-        loss = F.cross_entropy(replay.forward(model, plan), targets)
+        loss = F.cross_entropy(replay_trace(model, plan, hidden_only=False), targets)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
