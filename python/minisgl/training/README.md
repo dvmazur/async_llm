@@ -48,6 +48,51 @@ format-v1 JSON, and `BlockUpdate.sources` are no longer supported. Record throug
 `refs`, including `refs=()` for a clear. `trace.tokens` is a derived view for
 replay and inspection, not a serialized field.
 
+## Full attention backends
+
+The default `attention_backend="torch"` is the dense reference. It promotes
+FP16/BF16 Q/K/V to FP32 before indexing and RoPE, keeps attention math and
+shared-source gradient sums in FP32, and casts the final output to the original
+V dtype. QK and PV products disable autocast.
+
+Select `attention_backend="torch_optimized"` for the Torch performance baseline.
+It gathers K/V and applies K RoPE once per referenced block version per layer
+forward. Query chunks reuse views of those tensors and retain their historical
+key intervals. As in the reference, scores from all read blocks share one
+softmax, then a single PV product uses their concatenated V intervals. Repeated
+block reads keep their separate query positions and softmax mass.
+
+Precision and autograd are unchanged: FP16/BF16 Q/K/V are promoted to FP32
+before gathering and RoPE, QK/softmax/PV use FP32, and the final output has V's
+original dtype. All derivatives use ordinary Torch autograd. V intervals are
+still concatenated per query chunk; the optimization removes repeated K
+preparation and RoPE without changing the attention arithmetic.
+
+Attention checkpointing recomputes optimized query chunks while retaining the
+once-prepared K/V. Only the index/position plan is cached across forwards;
+prepared model activations are always rebuilt. The default FP32 reference is
+unchanged.
+
+The optional FA4 backend requires Hopper (SM90) and FP16/BF16 model activations.
+Install its dependencies in the training environment:
+
+```bash
+pip install 'flash-attn-4[cu13]==4.0.0b37' \
+  'nvidia-cutlass-dsl[cu13]==4.6.2' 'quack-kernels==0.6.4'
+```
+
+Select it with `trace.to("cuda", attention_backend="fa4")`. Each referenced
+KV-block version is packed once into a single varlen call. Queries are repeated
+for their recorded reads, with a CuTe mask enforcing each read's historical
+key range; growing prefixes do not create extra copies of K/V. A differentiable
+CuTe kernel merges the partial outputs and softmax normalizers, including
+gradients through both. Only trace metadata is cached. GDN uses its existing
+implementation and settings with either attention backend.
+
+FA4 and the merge kernels compile lazily on their first forward and backward.
+Training replay does not warm them automatically; inference CUDA-graph warmup
+does not exercise these training kernels.
+
 ## Record and backpropagate
 
 This text example records a single causal prefill, then backpropagates a

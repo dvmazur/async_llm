@@ -99,6 +99,7 @@ class Trace:
     gdn_cache_reused = True
     gdn_read_backend = "torch"
     attention_checkpointing = True
+    attention_backend = "torch"
     cache_plans = True
     _option_names = (
         "query_chunk_size",
@@ -107,6 +108,7 @@ class Trace:
         "gdn_cache_reused",
         "gdn_read_backend",
         "attention_checkpointing",
+        "attention_backend",
         "cache_plans",
     )
 
@@ -129,7 +131,7 @@ class Trace:
     def to(self, device: torch.device | str = "cpu", **options) -> "Trace":
         """Prepare trace metadata on a device, optionally changing replay settings.
 
-        Supported settings are query_chunk_size, attention_checkpointing,
+        Supported settings are query_chunk_size, attention_checkpointing, attention_backend,
         cache_plans, and the gdn_* settings documented in the training README.
         Recording data stays on the CPU and retains its serializable format.
         Returns self when the device and settings already match; otherwise returns
@@ -165,6 +167,8 @@ class Trace:
         """Compile visibility lazily; recording changes invalidate derived metadata."""
         if getattr(self, "_replay_snapshot", False):
             return self
+        if self.attention_backend not in {"torch", "torch_optimized", "fa4"}:
+            raise ValueError("attention_backend must be 'torch', 'torch_optimized' or 'fa4'")
         _validate_replay_options(
             self.query_chunk_size, self.gdn_segment_size, self.gdn_read_mode, self.gdn_read_backend
         )
