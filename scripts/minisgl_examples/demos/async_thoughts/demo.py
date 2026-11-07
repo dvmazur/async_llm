@@ -201,6 +201,9 @@ async def _run_loop(
     )
     done, thinking_done = asyncio.Event(), asyncio.Event()
     writer_may_run, probe_due = asyncio.Event(), asyncio.Event()
+    # A readiness vote and a writer step each observe and update the same gate.
+    # The thinker can continue submitting work while either is in progress.
+    writer_gate = asyncio.Lock()
     thinker_tokens, writer_tokens = [], []
     blocks, tasks = [], []
     start = time.perf_counter()
@@ -268,9 +271,6 @@ async def _run_loop(
 
         async def writer_coro() -> None:
             try:
-                await writer_may_run.wait()
-                if done.is_set():
-                    return
                 async with aclosing(
                     generate_with_targets(
                         llm,
@@ -280,25 +280,31 @@ async def _run_loop(
                         max_steps=config.max_answer_tokens,
                     )
                 ) as stream:
-                    async for token in stream:
-                        if done.is_set():
-                            break
-                        if token in stop_ids:
-                            _print_state_change("writer hit EOS -- finished")
-                            break
-                        writer_tokens.append(token)
-                        _stream_token(tokenizer.decode([token]), "writer")
-                        if len(writer_tokens) >= config.max_answer_tokens:
-                            _print_state_change("writer hit token limit -- finished")
-                            break
-                        if not thinking_done.is_set():
-                            if ends_with_double_newline(writer_tokens, tokenizer):
+                    while not done.is_set():
+                        await writer_may_run.wait()
+                        async with writer_gate:
+                            if done.is_set():
+                                break
+                            # A probe may have revoked permission while we waited for the lock.
+                            if not writer_may_run.is_set():
+                                continue
+                            token = await anext(stream, None)
+                            if token is None or done.is_set():
+                                break
+                            if token in stop_ids:
+                                _print_state_change("writer hit EOS -- finished")
+                                break
+                            writer_tokens.append(token)
+                            _stream_token(tokenizer.decode([token]), "writer")
+                            if len(writer_tokens) >= config.max_answer_tokens:
+                                _print_state_change("writer hit token limit -- finished")
+                                break
+                            if not thinking_done.is_set() and ends_with_double_newline(
+                                writer_tokens, tokenizer
+                            ):
                                 _print_state_change("writer end-of-step -> thinker leads")
+                                # Leave the sampled token pending until the next permitted step.
                                 writer_may_run.clear()
-                            # The sampled token stays pending while the writer is paused.
-                            await writer_may_run.wait()
-                        if done.is_set():
-                            break
             finally:
                 done.set()
                 writer_may_run.set()
@@ -309,24 +315,28 @@ async def _run_loop(
                 while True:
                     await probe_due.wait()
                     probe_due.clear()
-                    if done.is_set() or thinking_done.is_set():
-                        return
-                    should_write, yes_logit, no_logit = await probe.check_continue_writing(
-                        thinker_blk, writer_blk
-                    )
-                    # A result requested before thinking ended must not park the writer now.
-                    if done.is_set() or thinking_done.is_set():
-                        return
-                    changed = should_write != writer_may_run.is_set()
-                    if should_write:
-                        writer_may_run.set()
-                    else:
-                        writer_may_run.clear()
-                    if changed:
-                        state = "thinker_and_writer" if should_write else "thinker_only"
-                        _print_state_change(
-                            f"probe yes={yes_logit:.2f} no={no_logit:.2f} -> {state}"
+                    async with writer_gate:
+                        if done.is_set() or thinking_done.is_set():
+                            return
+                        should_write, yes_logit, no_logit = await probe.check_continue_writing(
+                            thinker_blk, writer_blk
                         )
+                        # A result requested before thinking ended must not park the writer now.
+                        if done.is_set() or thinking_done.is_set():
+                            return
+                        changed = should_write != writer_may_run.is_set()
+                        if should_write:
+                            writer_may_run.set()
+                        else:
+                            writer_may_run.clear()
+                        if changed:
+                            state = "thinker_and_writer" if should_write else "thinker_only"
+                            _print_state_change(
+                                f"probe yes={yes_logit:.2f} no={no_logit:.2f} -> {state}"
+                            )
+                    if changed and should_write:
+                        # Let the newly awakened writer queue before a coalesced probe.
+                        await asyncio.sleep(0)
             except BaseException:
                 done.set()
                 writer_may_run.set()
