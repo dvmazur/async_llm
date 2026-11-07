@@ -71,7 +71,6 @@ class Prompting:
     forbidden_tokens = ("<|im_start|>", "<|endoftext|>")
     end_think_token: str | None = "</think>"
     writer_seed = "\n\n"
-    thinker_reads_writer = False
 
     def __init__(self, problem: str) -> None:
         self.input_prompt = f"<|im_start|>user\n{problem}\n"
@@ -102,7 +101,6 @@ class LlamaPrompting(Prompting):
     forbidden_tokens = ()
     end_think_token = None
     writer_seed = "\n"
-    thinker_reads_writer = True
 
     def __init__(self, problem: str, tokenizer) -> None:
         def render(messages):
@@ -224,13 +222,8 @@ async def _run_loop(
         await asyncio.shield(tasks[0])
         prompt_blk, thinker_blk, writer_blk = blocks
         # Feed the header newline once; extra blank lines can end Qwen3.5's thoughts early.
-        thinker_view = (
-            [prompt_blk, writer_blk, thinker_blk]
-            if prompting.thinker_reads_writer
-            else [prompt_blk, thinker_blk]
-        )
         thinker_ctx = AsyncContext(
-            cache_view=thinker_view, next_input_id=single_token_id("\n", tokenizer)
+            cache_view=[prompt_blk, thinker_blk], next_input_id=single_token_id("\n", tokenizer)
         )
         writer_ctx = AsyncContext(
             cache_view=[prompt_blk, thinker_blk, writer_blk],

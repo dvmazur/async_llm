@@ -62,7 +62,6 @@ class FakeLLM:
         self.probe_release, self.writer_release = asyncio.Event(), asyncio.Event()
         self.thinker_flushed = asyncio.Event()
         self.probe_cancelled = False
-        self.thinker_view = [0, 1]
         if not hold_probe:
             self.probe_release.set()
         if not hold_writer:
@@ -145,7 +144,7 @@ class FakeLLM:
         writer = ctx.output_block is self.blocks[2]
         role = "writer" if writer else "thinker"
         assert [block.index for block in ctx.cache_view] == (
-            [0, 1, 2] if writer else self.thinker_view
+            [0, 1, 2] if writer else [0, 1]
         )
         for step in range(max_steps):
             self.active.update(block.index for block in ctx.cache_view)
@@ -197,7 +196,7 @@ class TestAsyncThoughtsPolicy(unittest.IsolatedAsyncioTestCase):
             for index in question_blocks:
                 self.assertEqual(llm.blocks[index].token_ids, llm.question_ids)
 
-    async def test_llama_uses_native_chat_live_peer_blocks_and_checkpoint_stops(self):
+    async def test_llama_keeps_thoughts_independent_and_shares_them_with_writer_and_probe(self):
         llm = FakeLLM([True] * 100, writer=("answer", "<turn-end>"))
 
         # Distinct delimiters stand in for a checkpoint-specific tokenizer template.
@@ -209,9 +208,9 @@ class TestAsyncThoughtsPolicy(unittest.IsolatedAsyncioTestCase):
         llm.prompting = demo.LlamaPrompting("17 times 23?", llm.tokenizer)
         llm.question_ids = llm.tokenizer.encode(llm.prompting.mode_switching_question)
         llm.eos_token_ids = {llm.tokenizer.eos_token_id, llm.writer[-1]}
-        llm.thinker_view = [0, 2, 1]
         _, answer = await self.run_demo(llm, max_steps=100, max_answer_tokens=4, probe_period=1)
         self.assertEqual(answer, llm.writer[:-1])
+        self.assertIn(llm.thinker_tokens[0], llm.first_writer_thoughts)
         self.assertTrue(llm.prompting.input_prompt.startswith("[user]17 times 23?"))
         self.assertTrue(llm.prompting.input_prompt.endswith("[assistant]"))
         self.assertTrue(llm.prompting.mode_switching_question.startswith("[end][user]"))

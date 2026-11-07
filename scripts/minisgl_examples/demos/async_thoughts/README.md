@@ -56,9 +56,9 @@ uv run --no-sync async-reasoning-llama \
   --max-think-tokens 48 --max-answer-tokens 32 --probe-period 4
 ```
 
-Both roles use the checkpoint's chat template. The thinker reads the writer's
-partial answer as it generates working notes. The writer reads those notes as
-it answers. Each role writes into its own KV block. A separate yes/no probe
+Both roles use the checkpoint's chat template. The thinker generates working
+notes using the prompt and its own history. The writer reads those notes and
+its own partial answer. Each role writes into its own KV block. A separate yes/no probe
 reads both blocks and decides when the writer can continue. Each stream stops at
 a checkpoint EOS token or its token budget. The terminal shows both streams
 and prints the writer's final answer separately. The demo uses an ordinary
