@@ -49,6 +49,20 @@ def single_token_id(text: str, tokenizer: AutoTokenizer) -> int:
     return int(ids[0])
 
 
+def _single_token_spellings(label: str, tokenizer: AutoTokenizer) -> list[int]:
+    """Candidate IDs in spelling order, starting with the supplied unspaced label."""
+    ids = []
+    unknown = getattr(tokenizer, "unk_token_id", None)
+    for prefix in ("", " "):
+        for spelling in (label.lower(), label.title(), label.upper()):
+            tokens = tokenizer.encode(prefix + spelling, add_special_tokens=False)
+            if len(tokens) == 1 and tokens[0] != unknown and tokens[0] not in ids:
+                ids.append(int(tokens[0]))
+    if not ids:
+        raise RuntimeError(f"No single-token spellings for probe label {label!r}")
+    return ids
+
+
 def vocab_id_or_none(tokenizer: AutoTokenizer, text: str) -> int | None:
     """Look up an optional special token."""
     return tokenizer.vocab.get(text)
@@ -76,10 +90,22 @@ class ModeSwitchProbe:
         mode_switching_question: str,
         yes_token: str,
         no_token: str,
+        *,
+        label_variants: bool = False,
     ) -> None:
         self.llm = llm
-        self.yes_id = single_token_id(yes_token, tokenizer)
-        self.no_id = single_token_id(no_token, tokenizer)
+        self._label_indices = None
+        if label_variants:
+            yes_ids = _single_token_spellings(yes_token, tokenizer)
+            no_ids = _single_token_spellings(no_token, tokenizer)
+            if set(yes_ids).intersection(no_ids):
+                raise ValueError("The yes and no probe labels share a token ID")
+            self.yes_id, self.no_id = yes_ids[0], no_ids[0]
+            self._yes_ids, self._no_ids = sorted(yes_ids), sorted(no_ids)
+            self._label_indices = torch.tensor(self._yes_ids + self._no_ids, dtype=torch.long)
+        else:
+            self.yes_id = single_token_id(yes_token, tokenizer)
+            self.no_id = single_token_id(no_token, tokenizer)
         self._prompt_ids = encode(mode_switching_prompt, tokenizer)
         self._question_ids = encode(mode_switching_question, tokenizer)
         self._prompt_block: CacheBlock | None = None
@@ -87,7 +113,7 @@ class ModeSwitchProbe:
     async def check_continue_writing(
         self, thinker: CacheBlock, writer: CacheBlock
     ) -> Tuple[bool, float, float]:
-        """Return ``(yes_logit > no_logit, yes_logit, no_logit)``."""
+        """Return the vote and the best logit for each of the two probe labels."""
         if self._prompt_block is None:
             prompt = await self.llm.create_block()
             try:
@@ -102,8 +128,21 @@ class ModeSwitchProbe:
             out = await self.llm.forward(
                 self._question_ids, [self._prompt_block, thinker, writer, question]
             )
-            yes_logit, no_logit = out.logits[[self.yes_id, self.no_id]].float().cpu().tolist()
-            return yes_logit > no_logit, yes_logit, no_logit
+            if self._label_indices is None:
+                yes, no = out.logits[[self.yes_id, self.no_id]].float().cpu().tolist()
+                return yes > no, yes, no
+
+            self._label_indices = self._label_indices.to(out.logits.device)
+            scores = out.logits[self._label_indices].float().cpu().tolist()
+            split = len(self._yes_ids)
+            yes_scores, no_scores = scores[:split], scores[split:]
+            yes, no = max(yes_scores), max(no_scores)
+            # Sorted IDs make the first tied maximum match torch.argmax's vocabulary order.
+            vote = yes > no or (
+                yes == no
+                and self._yes_ids[yes_scores.index(yes)] < self._no_ids[no_scores.index(no)]
+            )
+            return vote, yes, no
         finally:
             await self.llm.free_block(question)
 

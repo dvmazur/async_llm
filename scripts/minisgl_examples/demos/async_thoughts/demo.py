@@ -71,6 +71,7 @@ class Prompting:
     forbidden_tokens = ("<|im_start|>", "<|endoftext|>")
     end_think_token: str | None = "</think>"
     writer_seed = "\n\n"
+    probe_label_variants = False
 
     def __init__(self, problem: str) -> None:
         self.input_prompt = f"<|im_start|>user\n{problem}\n"
@@ -101,6 +102,7 @@ class LlamaPrompting(Prompting):
     forbidden_tokens = ()
     end_think_token = None
     writer_seed = "\n"
+    probe_label_variants = True
 
     def __init__(self, problem: str, tokenizer) -> None:
         def render(messages):
@@ -198,6 +200,7 @@ async def _run_loop(
         prompting.mode_switching_question,
         prompting.yes_token,
         prompting.no_token,
+        label_variants=prompting.probe_label_variants,
     )
     done, thinking_done = asyncio.Event(), asyncio.Event()
     writer_may_run, probe_due = asyncio.Event(), asyncio.Event()

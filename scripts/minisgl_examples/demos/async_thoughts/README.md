@@ -59,7 +59,9 @@ uv run --no-sync async-reasoning-llama \
 Both roles use the checkpoint's chat template. The thinker generates working
 notes using the prompt and its own history. The writer reads those notes and
 its own partial answer. Each role writes into its own KV block. A separate yes/no probe
-reads both blocks and decides when the writer can continue. Each stream stops at
+reads both blocks and decides when the writer can continue. It compares the
+best single-token spelling of each answer, including capitalized forms such
+as `No`. Each stream stops at
 a checkpoint EOS token or its token budget. The terminal shows both streams
 and prints the writer's final answer separately. The demo uses an ordinary
 instruction-tuned Llama checkpoint and needs no training.
