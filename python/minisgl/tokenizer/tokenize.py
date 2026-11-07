@@ -16,16 +16,14 @@ class TokenizeManager:
         # TODO: batch tokenization
         for msg in msgs:
             if isinstance(msg.text, list):
-                prompt = self.tokenizer.apply_chat_template(
+                input_ids = self.tokenizer.apply_chat_template(
                     msg.text,
-                    tokenize=False,
                     add_generation_prompt=True,
+                    tokenize=True,
+                    return_dict=False,
+                    return_tensors="pt",
                 )
-                assert isinstance(prompt, str)
             else:
-                prompt = msg.text
-            input_ids: torch.Tensor = (  # type: ignore
-                self.tokenizer.encode(prompt, return_tensors="pt")
-            )
+                input_ids = self.tokenizer.encode(msg.text, return_tensors="pt")
             results.append(input_ids.view(-1).to(torch.int32))
         return results

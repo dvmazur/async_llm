@@ -51,24 +51,34 @@ class EngineConfig:
         return cached_load_hf_config(self.model_path)
 
     @cached_property
-    def _default_generation_config(self) -> GenerationConfig:
+    def _effective_generation_config(self) -> GenerationConfig:
         """The configured generation config, or the model's own.
 
         Cached because resolving it hits the HF hub, and the shared-cache paths
         ask for default sampling params once per request per forward.
         """
+        if self.generation_config is not None:
+            return self.generation_config
         try:
             return GenerationConfig.from_pretrained(self.model_path)
         except OSError:  # missing file
             return GenerationConfig()
 
     def get_default_sampling_params(self):  # not a property to avoid accidental in-place changes
-        generation_config = (
-            self.generation_config
-            if self.generation_config is not None
-            else self._default_generation_config
-        )
-        return SamplingParams.from_hf(generation_config)
+        return SamplingParams.from_hf(self._effective_generation_config)
+
+    def get_eos_token_ids(self, tokenizer_eos_token_id: int | None) -> frozenset[int]:
+        """Use the generation EOS IDs, then the checkpoint or tokenizer default."""
+        eos = self._effective_generation_config.eos_token_id
+        if eos is None:
+            eos = getattr(self.hf_config, "eos_token_id", None)
+            if eos is None:
+                eos = getattr(getattr(self.hf_config, "text_config", None), "eos_token_id", None)
+        if eos is None:
+            eos = tokenizer_eos_token_id
+        if eos is None:
+            return frozenset()
+        return frozenset([eos] if isinstance(eos, int) else eos)
 
     @cached_property
     def model_config(self) -> ModelConfig:

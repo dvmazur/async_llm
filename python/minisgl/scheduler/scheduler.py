@@ -70,7 +70,7 @@ class Scheduler(SchedulerIOMixin):
         # some alias for easy access
         self.finished_reqs: Set[Req] = set()
         self.tokenizer = load_tokenizer(config.model_path)
-        self.eos_token_id = self.tokenizer.eos_token_id
+        self.eos_token_ids = config.get_eos_token_ids(self.tokenizer.eos_token_id)
         self.token_pool = self.table_manager.token_pool
         self.prefill_budget = config.max_extend_tokens
         # self.config = config
@@ -148,18 +148,22 @@ class Scheduler(SchedulerIOMixin):
         new_finished_reqs: Set[Req] = set()
         with self.cache_manager.lazy_free_region():
             for i, req in enumerate(batch.reqs):
-                if isinstance(req, ChunkedReq):
+                # The overlapping loop may already have launched one more decode
+                # when the previous result stopped this request on EOS.
+                if isinstance(req, ChunkedReq) or req in self.finished_reqs:
                     continue
                 next_token = next_tokens_cpu[i]
                 req.append_host(next_token.unsqueeze(0))
                 next_token = int(next_token.item())
-                finished = not req.can_decode
-                if not req.sampling_params.ignore_eos:
-                    finished |= next_token == self.eos_token_id
-                reply.append(DetokenizeMsg(uid=req.uid, next_token=next_token, finished=finished))
+                stopped_on_eos = (
+                    not req.sampling_params.ignore_eos and next_token in self.eos_token_ids
+                )
+                finished = stopped_on_eos or len(req.input_ids) >= req.max_device_len
+                reply.append(DetokenizeMsg(
+                    uid=req.uid, next_token=next_token, finished=finished, stopped_on_eos=stopped_on_eos
+                ))
 
-                # NOTE: overlap scheduling may make the request freed twice, skip second free
-                if finished and req not in self.finished_reqs:
+                if finished:
                     self.decode_manager.remove_req(req)
                     self._free_req_resources(req)
                     new_finished_reqs.add(req)

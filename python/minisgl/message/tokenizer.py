@@ -29,6 +29,7 @@ class DetokenizeMsg(BaseTokenizerMsg):
     uid: int
     next_token: int
     finished: bool
+    stopped_on_eos: bool = False
 
 
 @dataclass

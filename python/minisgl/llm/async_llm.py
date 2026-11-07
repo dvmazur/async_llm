@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
+from functools import cached_property
 from typing import TYPE_CHECKING, AsyncIterator, Optional, Sequence, Union
 
 import torch
@@ -123,6 +124,12 @@ class AsyncLLM:
     @property
     def config(self) -> EngineConfig:
         return self.engine.config
+
+    @cached_property
+    def eos_token_ids(self) -> frozenset[int]:
+        """Model stop IDs for callers consuming a raw async_generate stream."""
+        tokenizer_eos = self.tokenizer.eos_token_id if self.tokenizer is not None else None
+        return self.config.get_eos_token_ids(tokenizer_eos)
 
     async def create_block(self) -> CacheBlock:
         return self.async_engine.create_block()
@@ -323,8 +330,8 @@ class AsyncLLM:
 
         The token fed to a step is ``context.next_input_id`` — seeded by
         *first_token_id* (or a previous stream over the same context) and
-        advanced to each newly-sampled token.  Breaking out of the generator
-        stops the stream cleanly; a later ``async_generate`` over the same
+        advanced to each newly-sampled token. Callers can break on a token in
+        ``self.eos_token_ids`` to end a reply. A later ``async_generate`` over the same
         context resumes where it left off.
         """
         if first_token_id is not None:
