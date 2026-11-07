@@ -12,6 +12,7 @@ from typing import Any, TypeAlias
 
 import torch
 from minisgl.training import Trace, replay_trace
+from minisgl.training.forward import REPLAY_MODEL_TYPES
 from torch.func import functional_call
 from transformers import (
     AutoConfig,
@@ -91,8 +92,8 @@ def load_student(
         raise ValueError("Invalid or misaligned token IDs/targets")
     trace = trace.to(device)
     config = AutoConfig.from_pretrained(model_name)
-    if config.model_type not in {"qwen3", "qwen3_5", "qwen3_5_text"}:
-        raise ValueError("Only dense Qwen3 and Qwen3.5 students are supported")
+    if config.model_type not in REPLAY_MODEL_TYPES:
+        raise ValueError("Student training supports dense Llama, Qwen3 and Qwen3.5")
     multimodal = getattr(config, "vision_config", None) is not None
     factory = AutoModelForImageTextToText if multimodal else AutoModelForCausalLM
     processor = AutoProcessor.from_pretrained(model_name) if multimodal else tokenizer

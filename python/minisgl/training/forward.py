@@ -17,6 +17,9 @@ if TYPE_CHECKING:
     from minisgl.llm import AsyncLLM
 
 
+REPLAY_MODEL_TYPES = {"llama", "qwen3", "qwen3_5_text", "qwen3_5"}
+
+
 def _rows(rows, count, device):
     if rows is None:
         return None
@@ -41,18 +44,20 @@ def _rows(rows, count, device):
 
 
 def _forward(model, trace, rows, hidden_only):
-    if model.config.model_type not in {"qwen3", "qwen3_5_text", "qwen3_5"}:
-        raise ValueError("Only dense text Qwen3 and Qwen3.5 are supported")
+    if model.config.model_type not in REPLAY_MODEL_TYPES:
+        raise ValueError("Trace replay supports dense Llama, Qwen3 and Qwen3.5")
     backbone = model.model
     if model.config.model_type == "qwen3_5":
         backbone = backbone.language_model
     config, rotary = backbone.config, backbone.rotary_emb
-    if getattr(rotary, "rope_type", "default") != "default":
-        raise NotImplementedError("Only default RoPE is supported")
+    is_llama = config.model_type == "llama"
+    rope_type = getattr(rotary, "rope_type", "default")
+    if rope_type != "default" and not (is_llama and rope_type == "llama3"):
+        raise NotImplementedError(f"Unsupported replay RoPE type: {rope_type}")
     if getattr(backbone, "has_sliding_layers", False) or config.attention_dropout:
         raise NotImplementedError("Replay requires full attention and zero attention dropout")
     kwargs = {}
-    if "linear_attention" in config.layer_types:
+    if "linear_attention" in (getattr(config, "layer_types", None) or ()):
         from .gdn import GDNReplay
 
         if config.hidden_act not in {"silu", "swish"}:
@@ -94,10 +99,17 @@ def _forward(model, trace, rows, hidden_only):
         kwargs["inputs_embeds"] = compute_input_embeddings(model, trace)[None]
     else:
         kwargs["input_ids"] = trace.input_ids[None]
+    # Llama accepts a tensor mask, while Qwen accepts a per-layer-type mapping.
+    # Replay enforces visibility itself. A broadcastable 4D mask prevents HF
+    # from constructing a quadratic causal mask over the packed trace.
+    attention_mask = (
+        torch.ones((1, 1, 1, 1), device=trace.input_ids.device, dtype=torch.bool)
+        if is_llama else {"full_attention": None, "linear_attention": None}
+    )
     output = (backbone if hidden_only else model)(
         # The replay attention backend applies the recorded block-relative rotations.
         position_ids=torch.zeros_like(trace.input_ids)[None],
-        attention_mask={"full_attention": None, "linear_attention": None},
+        attention_mask=attention_mask,
         use_cache=False,
         replay=trace,
         inv_freq=rotary.inv_freq,
@@ -116,8 +128,8 @@ class _LiveModel(torch.nn.Module):
         from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
 
         config = deepcopy(engine.config.hf_config)
-        if config.model_type not in {"qwen3", "qwen3_5_text", "qwen3_5"}:
-            raise ValueError("Only dense text Qwen3 and Qwen3.5 are supported")
+        if config.model_type not in REPLAY_MODEL_TYPES:
+            raise ValueError("Trace replay supports dense Llama, Qwen3 and Qwen3.5")
         first = next(iter(weights.values()))
         factory = (
             AutoModelForImageTextToText if config.model_type == "qwen3_5" else AutoModelForCausalLM
@@ -235,7 +247,7 @@ def replay_trace(
     AsyncLLM uses its live, single-rank unquantized weights, enabling their gradients
     on the first call. Optimizers can use ``model.engine.model.state_dict().values()``;
     free inference blocks before resuming generation after a weight update.
-    Hugging Face Qwen3 and Qwen3.5 models are also accepted.
+    Hugging Face dense Llama, Qwen3 and Qwen3.5 models are also accepted.
     """
     if not isinstance(trace, Trace):
         raise TypeError("trace must be a Trace")

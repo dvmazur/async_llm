@@ -1,7 +1,7 @@
 # Training from AsyncLLM traces
 
 Record asynchronous inference and replay it as a differentiable forward pass.
-Supports dense text **Qwen3** and text/image **Qwen3.5** using Hugging Face layers
+Supports dense text **Llama** and **Qwen3**, and text/image **Qwen3.5**, using Hugging Face layers
 with live AsyncLLM weights or an HF model. The inference engine is unchanged.
 
 ## Pipeline
@@ -142,7 +142,9 @@ uv run --no-sync pytest -o addopts='' tests/training
 CUDA cases are skipped when CUDA is unavailable. Numerical parity uses tolerances
 because replay changes reduction order.
 
-Supported configurations require default RoPE, zero attention dropout, full
+Replay uses the HF model's rotary frequencies, including Llama 3 scaling on
+Llama 3.1, 3.2 text and 3.3. Other supported families use default RoPE.
+Supported configurations require zero attention dropout, full
 attention (no sliding windows), and SiLU GDN convolution. Video inputs, MoE,
 externally modified recurrent states, and higher-order GDN gradients are
 unsupported.
