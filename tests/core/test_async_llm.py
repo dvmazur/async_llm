@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from types import SimpleNamespace
 from typing import List
 
 import pytest
@@ -43,6 +44,16 @@ def _make_llm():
     session = StubSession()
     engine = AsyncCacheEngine(session=session, sampler=Sampler(CPU, VOCAB))
     return AsyncLLM(async_engine=engine), session
+
+
+def test_stop_ids_with_injected_async_engine():
+    llm, session = _make_llm()
+    assert llm.eos_token_ids == frozenset()
+
+    session.engine = SimpleNamespace(
+        config=SimpleNamespace(get_eos_token_ids=lambda _: frozenset({2, 3}))
+    )
+    assert AsyncLLM(async_engine=llm.async_engine).eos_token_ids == {2, 3}
 
 
 def test_public_imports():

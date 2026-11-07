@@ -103,11 +103,13 @@ class AsyncLLM:
                 engine = Engine(EngineConfig(model_path=model_path, dtype=dtype, **engine_kwargs))
                 self._owns_engine = True
             async_engine = AsyncCacheEngine(engine)
+        elif engine is None:
+            engine = getattr(async_engine.session, "engine", None)
         self.engine = engine
         self.async_engine = async_engine
         self.processor = self.tokenizer = None
         if model_path is not None:
-            if engine.config.model_config.is_multimodal:
+            if engine is not None and engine.config.model_config.is_multimodal:
                 self.processor = load_processor(model_path)
                 self.tokenizer = self.processor.tokenizer
             else:
@@ -129,6 +131,8 @@ class AsyncLLM:
     def eos_token_ids(self) -> frozenset[int]:
         """Model stop IDs for callers consuming a raw async_generate stream."""
         tokenizer_eos = self.tokenizer.eos_token_id if self.tokenizer is not None else None
+        if self.engine is None:
+            return frozenset() if tokenizer_eos is None else frozenset([tokenizer_eos])
         return self.config.get_eos_token_ids(tokenizer_eos)
 
     async def create_block(self) -> CacheBlock:
