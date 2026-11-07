@@ -88,7 +88,7 @@ async def mine(args: argparse.Namespace) -> None:
                     for _ in range(args.max_tokens):
                         pending = await sample(block, view, pending, generator)
                         sampled.append(pending)
-                        if pending == recorded.tokenizer.eos_token_id:
+                        if pending in recorded.eos_token_ids:
                             break
                     await recorded.forward(
                         [pending], cache_view=view, write_to=block, return_logits=False
