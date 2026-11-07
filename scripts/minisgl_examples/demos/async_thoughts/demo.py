@@ -40,6 +40,7 @@ from minisgl_examples.training.recording import (
 DEFAULT_PROBLEM = "Calculate x - x^2 + x^3 for x = 5, 6, 7, 8. Return all 4 answers in \\boxed{ }."
 
 DEFAULT_MODEL = os.environ.get("MINISGL_DEMO_MODEL", "Qwen/Qwen3.5-27B")
+DEFAULT_LLAMA_MODEL = "meta-llama/Llama-3.2-3B-Instruct"
 DEFAULT_MAX_STEPS = 1024
 DEFAULT_MAX_ANSWER_TOKENS = 1024
 DEFAULT_PROBE_PERIOD = 20
@@ -67,6 +68,11 @@ class Prompting:
     Based on AsyncReasoning's ``AsyncReasoningPrompting``.
     """
 
+    forbidden_tokens = ("<|im_start|>", "<|endoftext|>")
+    end_think_token: str | None = "</think>"
+    writer_seed = "\n\n"
+    thinker_reads_writer = False
+
     def __init__(self, problem: str) -> None:
         self.input_prompt = f"<|im_start|>user\n{problem}\n"
         self.thinker_output_prefix = "<|im_end|>\n<|im_start|>assistant\n<think>"
@@ -88,6 +94,49 @@ class Prompting:
         )
         self.yes_token = "yes"
         self.no_token = "no"
+
+
+class LlamaPrompting(Prompting):
+    """One native chat turn with two live continuations and a separate readiness chat."""
+
+    forbidden_tokens = ()
+    end_think_token = None
+    writer_seed = "\n"
+    thinker_reads_writer = True
+
+    def __init__(self, problem: str, tokenizer) -> None:
+        def render(messages):
+            return tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+
+        self.input_prompt = render(
+            [
+                {
+                    "role": "user",
+                    "content": f"{problem}\n\nWork through the problem in your working notes. "
+                    "In the final answer, answer the original question directly.",
+                }
+            ]
+        )
+        self.thinker_output_prefix = "\nWorking notes:"
+        self.writer_output_prefix = "\nFinal answer:"
+        self.yes_token, self.no_token = "yes", "no"
+
+        # Split where the two live KV blocks will appear in the probe's chat history.
+        marker = "MINISGL_LIVE_NOTES_AND_ANSWER"
+        probe_chat = render(
+            [
+                {"role": "user", "content": f"Work on this problem:\n{problem}"},
+                {"role": "assistant", "content": marker},
+                {
+                    "role": "user",
+                    "content": "Do the working notes contain enough information "
+                    "to continue writing the final answer? Respond with just yes or no.",
+                },
+            ]
+        )
+        self.mode_switching_prompt, self.mode_switching_question = probe_chat.rsplit(marker, 1)
 
 
 # ANSI colours keyed by role.
@@ -131,11 +180,18 @@ async def _run_loop(
         raise ValueError("Token budgets and probe period must be positive")
     forbidden = [
         i
-        for i in (vocab_id_or_none(tokenizer, t) for t in ("<|im_start|>", "<|endoftext|>"))
+        for i in (vocab_id_or_none(tokenizer, t) for t in prompting.forbidden_tokens)
         if i is not None
     ]
-    end_think = vocab_id_or_none(tokenizer, "</think>")
-    eos = tokenizer.eos_token_id
+    end_think = (
+        vocab_id_or_none(tokenizer, prompting.end_think_token)
+        if prompting.end_think_token
+        else None
+    )
+    stop_ids = llm.eos_token_ids
+    thinker_stops = set(stop_ids)
+    if end_think is not None:
+        thinker_stops.add(end_think)
     writer_forbidden = forbidden + ([end_think] if end_think is not None else [])
     probe = ModeSwitchProbe(
         llm,
@@ -168,12 +224,17 @@ async def _run_loop(
         await asyncio.shield(tasks[0])
         prompt_blk, thinker_blk, writer_blk = blocks
         # Feed the header newline once; extra blank lines can end Qwen3.5's thoughts early.
+        thinker_view = (
+            [prompt_blk, writer_blk, thinker_blk]
+            if prompting.thinker_reads_writer
+            else [prompt_blk, thinker_blk]
+        )
         thinker_ctx = AsyncContext(
-            cache_view=[prompt_blk, thinker_blk], next_input_id=single_token_id("\n", tokenizer)
+            cache_view=thinker_view, next_input_id=single_token_id("\n", tokenizer)
         )
         writer_ctx = AsyncContext(
             cache_view=[prompt_blk, thinker_blk, writer_blk],
-            next_input_id=single_token_id("\n\n", tokenizer),
+            next_input_id=single_token_id(prompting.writer_seed, tokenizer),
         )
 
         async def thinker_coro() -> None:
@@ -187,7 +248,7 @@ async def _run_loop(
                     async for token in stream:
                         if done.is_set():
                             break
-                        if token in (end_think, eos):
+                        if token in thinker_stops:
                             reason = "thinker finished"
                             break
                         thinker_tokens.append(token)
@@ -196,7 +257,11 @@ async def _run_loop(
                         if period_elapsed or ends_with_double_newline(thinker_tokens, tokenizer):
                             probe_due.set()
                 # Commit the final budget-limited thought before releasing the writer.
-                if not done.is_set() and thinker_ctx.next_input_id not in (None, end_think, eos):
+                if (
+                    not done.is_set()
+                    and thinker_ctx.next_input_id is not None
+                    and thinker_ctx.next_input_id not in thinker_stops
+                ):
                     await llm.forward(cache_view=thinker_ctx, return_logits=False)
                 if not done.is_set():
                     _print_state_change(f"{reason} -> writer continues")
@@ -225,7 +290,7 @@ async def _run_loop(
                     async for token in stream:
                         if done.is_set():
                             break
-                        if token == eos:
+                        if token in stop_ids:
                             _print_state_change("writer hit EOS -- finished")
                             break
                         writer_tokens.append(token)
@@ -306,10 +371,16 @@ async def _run_loop(
 
 
 async def _run_demo(
-    config: DemoConfig, llm: AsyncLLM, prompting: Prompting
+    config: DemoConfig, llm: AsyncLLM, prompting: Prompting | None = None
 ) -> tuple[List[int], List[int]]:
     tokenizer = llm.tokenizer
     try:
+        if prompting is None:
+            prompting = (
+                LlamaPrompting(config.problem, tokenizer)
+                if llm.config.model_config.model_type == "llama"
+                else Prompting(config.problem)
+            )
         if config.trace_output is None:
             return await _run_loop(config, llm, tokenizer, prompting)
 
@@ -348,10 +419,8 @@ def run(config: DemoConfig) -> None:
     llm = build_async_llm(
         config.model, memory_ratio=config.memory_ratio, page_size=config.page_size
     )
-    prompting = Prompting(config.problem)
-
     try:
-        asyncio.run(_run_demo(config, llm, prompting))
+        asyncio.run(_run_demo(config, llm))
     finally:
         gc.collect()
         torch.cuda.empty_cache()

@@ -12,6 +12,7 @@ their modules with `python -m minisgl_examples.<package>.<module>`.
 | Package | Command | Purpose |
 |---|---|---|
 | `demos.async_thoughts` | `async-thoughts` | Concurrent thinker/writer, with optional training trace export |
+| `demos.async_thoughts` | `async-reasoning-llama` | Llama Instruct thinker and writer sharing live KV blocks, with a readiness probe |
 | `training.parallel_thinking` | `parallel-thinking` | Synchronized or independent workers, training and checkpoint reload |
 | `training.distillation` | `async-distillation` | Teacher validation, trace distillation and independent student generation |
 | `training.sft` | `minisgl-sft` | Collect traces or train saved examples |

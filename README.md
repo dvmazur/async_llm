@@ -114,6 +114,16 @@ probes, e.g. reading the next-token distribution over a fixed set of actions.
 readiness probe, based on [AsyncReasoning](https://arxiv.org/abs/2512.10931).
 See the [async-thoughts README](./scripts/minisgl_examples/demos/async_thoughts/README.md) for setup and usage.
 
+For dense Llama 3.x Instruct checkpoints, install the examples with `uv pip install -e ./scripts`.
+Then run the two-stream demo on one CUDA GPU:
+
+```bash
+uv run --no-sync async-reasoning-llama --model meta-llama/Llama-3.2-3B-Instruct --problem "What is 17 * 23?"
+```
+
+The demo uses the checkpoint's chat template and end-of-turn tokens. `--model` also accepts a local
+checkpoint directory. Downloading the official Meta weights requires access to that model on Hugging Face.
+
 ### Coming soon 🚧
 
 More demos from the paper are on the way, all built on the same Qwen 3.x models with no fine-tuning:

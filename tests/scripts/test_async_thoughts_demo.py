@@ -46,6 +46,7 @@ class FakeLLM:
         hold_writer=False,
     ):
         self.tokenizer = Tokenizer()
+        self.eos_token_ids = {self.tokenizer.eos_token_id}
         self.prompting = demo.Prompting("test")
         self.question_ids = self.tokenizer.encode(self.prompting.mode_switching_question)
         self.decisions = list(decisions)
@@ -61,6 +62,7 @@ class FakeLLM:
         self.probe_release, self.writer_release = asyncio.Event(), asyncio.Event()
         self.thinker_flushed = asyncio.Event()
         self.probe_cancelled = False
+        self.thinker_view = [0, 1]
         if not hold_probe:
             self.probe_release.set()
         if not hold_writer:
@@ -142,7 +144,9 @@ class FakeLLM:
         assert sampling_params is None and first_token_id is None and not return_logits
         writer = ctx.output_block is self.blocks[2]
         role = "writer" if writer else "thinker"
-        assert ctx.cache_view == (self.blocks[:3] if writer else self.blocks[:2])
+        assert [block.index for block in ctx.cache_view] == (
+            [0, 1, 2] if writer else self.thinker_view
+        )
         for step in range(max_steps):
             self.active.update(block.index for block in ctx.cache_view)
             try:
@@ -192,6 +196,27 @@ class TestAsyncThoughtsPolicy(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(set(question_blocks)), len(question_blocks))
             for index in question_blocks:
                 self.assertEqual(llm.blocks[index].token_ids, llm.question_ids)
+
+    async def test_llama_uses_native_chat_live_peer_blocks_and_checkpoint_stops(self):
+        llm = FakeLLM([True] * 100, writer=("answer", "<turn-end>"))
+
+        # Distinct delimiters stand in for a checkpoint-specific tokenizer template.
+        def render(messages, *, tokenize, add_generation_prompt):
+            assert not tokenize and add_generation_prompt
+            return "".join(f"[{m['role']}]{m['content']}[end]" for m in messages) + "[assistant]"
+
+        llm.tokenizer.apply_chat_template = render
+        llm.prompting = demo.LlamaPrompting("17 times 23?", llm.tokenizer)
+        llm.question_ids = llm.tokenizer.encode(llm.prompting.mode_switching_question)
+        llm.eos_token_ids = {llm.tokenizer.eos_token_id, llm.writer[-1]}
+        llm.thinker_view = [0, 2, 1]
+        _, answer = await self.run_demo(llm, max_steps=100, max_answer_tokens=4, probe_period=1)
+        self.assertEqual(answer, llm.writer[:-1])
+        self.assertTrue(llm.prompting.input_prompt.startswith("[user]17 times 23?"))
+        self.assertTrue(llm.prompting.input_prompt.endswith("[assistant]"))
+        self.assertTrue(llm.prompting.mode_switching_question.startswith("[end][user]"))
+        self.assertTrue(llm.probe_views)
+        self.assert_released(llm)
 
     async def test_live_views_and_writer_resume_after_paragraph_pause(self):
         llm = FakeLLM([True, False, False, True] + [True] * 100)

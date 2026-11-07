@@ -10,6 +10,7 @@ from pathlib import Path
 
 from minisgl_examples.demos.async_thoughts import __doc__ as _PKG_DOC
 from minisgl_examples.demos.async_thoughts.demo import (
+    DEFAULT_LLAMA_MODEL,
     DEFAULT_MAX_ANSWER_TOKENS,
     DEFAULT_MAX_STEPS,
     DEFAULT_MEMORY_RATIO,
@@ -22,16 +23,17 @@ from minisgl_examples.demos.async_thoughts.demo import (
 )
 
 
-def parse_args(argv: list[str] | None = None) -> DemoConfig:
+def parse_args(argv: list[str] | None = None, *, llama: bool = False) -> DemoConfig:
+    default_model = DEFAULT_LLAMA_MODEL if llama else DEFAULT_MODEL
     p = argparse.ArgumentParser(
-        prog="async-thoughts",
+        prog="async-reasoning-llama" if llama else "async-thoughts",
         description=_PKG_DOC,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
         "--model",
-        default=DEFAULT_MODEL,
-        help=f"HF model path (default: {DEFAULT_MODEL}; override with MINISGL_DEMO_MODEL).",
+        default=default_model,
+        help=f"Hugging Face checkpoint ID or local directory (default: {default_model}).",
     )
     p.add_argument(
         "--problem", default=DEFAULT_PROBLEM, help="The user problem the assistant should solve."
@@ -92,6 +94,10 @@ def parse_args(argv: list[str] | None = None) -> DemoConfig:
 
 def main(argv: list[str] | None = None) -> None:
     run(parse_args(argv))
+
+
+def llama_main(argv: list[str] | None = None) -> None:
+    run(parse_args(argv, llama=True))
 
 
 if __name__ == "__main__":

@@ -42,6 +42,28 @@ CUDA graphs, including for Qwen3.5's hybrid attention.
 
 Defaults are defined in `minisgl_examples/demos/async_thoughts/demo.py`.
 
+## Llama Instruct
+
+`async-reasoning-llama` defaults to `meta-llama/Llama-3.2-3B-Instruct`.
+Install the examples package as above, then run on one visible CUDA GPU that fits
+the checkpoint. Use a local checkpoint directory or a Hugging Face model ID
+accessible to your account.
+
+```bash
+uv run --no-sync async-reasoning-llama \
+  --model meta-llama/Llama-3.2-3B-Instruct \
+  --problem "What is 17 times 23?" \
+  --max-think-tokens 48 --max-answer-tokens 32 --probe-period 4
+```
+
+Both roles use the checkpoint's chat template. The thinker reads the writer's
+partial answer as it generates working notes. The writer reads those notes as
+it answers. Each role writes into its own KV block. A separate yes/no probe
+reads both blocks and decides when the writer can continue. Each stream stops at
+a checkpoint EOS token or its token budget. The terminal shows both streams
+and prints the writer's final answer separately. The demo uses an ordinary
+instruction-tuned Llama checkpoint and needs no training.
+
 ## Record a demo and train from it
 
 After installing the demo, record a short run from the repository root:
