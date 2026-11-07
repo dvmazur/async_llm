@@ -7,9 +7,11 @@ only model execution is replaced. GPU execution requires MINISGL_E2E_MODEL.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import unittest
 from collections import Counter
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -34,6 +36,20 @@ class Tokenizer:
     def decode(self, tokens, **kwargs):
         return "".join(self.text[int(token)] for token in tokens)
 
+    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+        assert add_generation_prompt
+        text = "".join(f"[{m['role']}]{m['content']}[end]" for m in messages) + "[assistant]"
+        return self.encode(text) if tokenize else text
+
+
+@dataclass
+class StartObservation:
+    block: int
+    input_ids: list[int]
+    committed_thinker: list[int]
+    sampled_thinker: list[int]
+    writer_steps: int
+
 
 class FakeLLM:
     def __init__(
@@ -57,6 +73,7 @@ class FakeLLM:
         self.fail = fail
         self.blocks, self.freed, self.active = [], [], Counter()
         self.probe_views, self.probe_decisions, self.writer_feeds = [], [], []
+        self.start_observations, self.probe_kinds = [], []
         self.thinker_tokens, self.first_writer_thoughts = [], None
         self.probe_entered, self.probe_finished = asyncio.Event(), asyncio.Event()
         self.probe_release, self.writer_release = asyncio.Event(), asyncio.Event()
@@ -66,6 +83,10 @@ class FakeLLM:
             self.probe_release.set()
         if not hold_writer:
             self.writer_release.set()
+
+    def use_llama(self, problem="test"):
+        self.prompting = demo.LlamaPrompting(problem, self.tokenizer)
+        self.question_ids = self.tokenizer.encode(self.prompting.mode_switching_question)
 
     async def create_block(self):
         block = SimpleNamespace(token_ids=[], index=len(self.blocks))
@@ -99,26 +120,40 @@ class FakeLLM:
             assert write_to not in view
             view.append(write_to)
         self.active.update(block.index for block in view)
-        is_probe = ids == self.question_ids
+        standalone = write_to is not None and return_logits
+        is_probe = standalone or ids == self.question_ids
+        if standalone:
+            assert view == [write_to] and write_to.index >= 3 and not write_to.token_ids
+            self.start_observations.append(
+                StartObservation(
+                    write_to.index,
+                    ids.copy(),
+                    self.blocks[1].token_ids.copy(),
+                    self.thinker_tokens.copy(),
+                    len(self.writer_feeds),
+                )
+            )
         try:
             await asyncio.sleep(0)
             assert not set(self.freed).intersection(block.index for block in view)
             view[-1].token_ids.extend(ids)
             if not is_probe:
                 return SimpleNamespace(logits=None)
-            assert len(view) == 4
-            assert view[1:3] == self.blocks[1:3], "probe must reuse live stream KV"
-            assert view[0] not in self.blocks[:3]
-            assert view[-1] not in view[:-1]
-            self.probe_views.append(tuple(block.index for block in view))
+            self.probe_kinds.append("standalone" if standalone else "live")
+            if not standalone:
+                assert len(view) == 4
+                assert view[1:3] == self.blocks[1:3], "probe must reuse live stream KV"
+                assert view[0] not in self.blocks[:3]
+                assert view[-1] not in view[:-1]
+                self.probe_views.append(tuple(block.index for block in view))
             self.probe_entered.set()
             try:
                 await self.probe_release.wait()
             except asyncio.CancelledError:
                 self.probe_cancelled = True
                 raise
-            if self.fail == "probe":
-                raise RuntimeError("probe failed")
+            if self.fail == "probe" or (self.fail == "standalone" and standalone):
+                raise RuntimeError(f"{self.fail} failed")
             allowed = self.decisions.pop(0) if self.decisions else False
             self.probe_decisions.append(allowed)
             logits = torch.zeros(len(self.tokenizer.vocab))
@@ -143,9 +178,7 @@ class FakeLLM:
         assert sampling_params is None and first_token_id is None and not return_logits
         writer = ctx.output_block is self.blocks[2]
         role = "writer" if writer else "thinker"
-        assert [block.index for block in ctx.cache_view] == (
-            [0, 1, 2] if writer else [0, 1]
-        )
+        assert [block.index for block in ctx.cache_view] == ([0, 1, 2] if writer else [0, 1])
         for step in range(max_steps):
             self.active.update(block.index for block in ctx.cache_view)
             try:
@@ -189,6 +222,12 @@ class TestAsyncThoughtsPolicy(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(llm.active.values()))
         for block in llm.blocks[:3]:
             self.assertFalse(set(llm.question_ids).intersection(block.token_ids))
+        start_blocks = [o.block for o in llm.start_observations]
+        self.assertEqual(len(start_blocks), len(set(start_blocks)))
+        for o in llm.start_observations:
+            self.assertEqual(llm.blocks[o.block].token_ids, o.input_ids)
+            for block in llm.blocks[:3]:
+                self.assertFalse(set(o.input_ids).intersection(block.token_ids))
         if llm.probe_views:
             self.assertEqual(len({view[0] for view in llm.probe_views}), 1)
             question_blocks = [view[-1] for view in llm.probe_views]
@@ -197,16 +236,9 @@ class TestAsyncThoughtsPolicy(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(llm.blocks[index].token_ids, llm.question_ids)
 
     async def test_llama_keeps_thoughts_independent_and_shares_them_with_writer_and_probe(self):
-        llm = FakeLLM([True] * 100, writer=("answer", "<turn-end>"))
+        llm = FakeLLM([True] * 100, writer=("answer", "\n\n", "details", "<turn-end>"))
 
-        # Distinct delimiters stand in for a checkpoint-specific tokenizer template.
-        def render(messages, *, tokenize, add_generation_prompt):
-            assert not tokenize and add_generation_prompt
-            return "".join(f"[{m['role']}]{m['content']}[end]" for m in messages) + "[assistant]"
-
-        llm.tokenizer.apply_chat_template = render
-        llm.prompting = demo.LlamaPrompting("17 times 23?", llm.tokenizer)
-        llm.question_ids = llm.tokenizer.encode(llm.prompting.mode_switching_question)
+        llm.use_llama("17 times 23?")
         llm.eos_token_ids = {llm.tokenizer.eos_token_id, llm.writer[-1]}
         _, answer = await self.run_demo(llm, max_steps=100, max_answer_tokens=4, probe_period=1)
         self.assertEqual(answer, llm.writer[:-1])
@@ -214,7 +246,83 @@ class TestAsyncThoughtsPolicy(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(llm.prompting.input_prompt.startswith("[user]17 times 23?"))
         self.assertTrue(llm.prompting.input_prompt.endswith("[assistant]"))
         self.assertTrue(llm.prompting.mode_switching_question.startswith("[end][user]"))
+        self.assertTrue(llm.start_observations)
         self.assertTrue(llm.probe_views)
+        self.assert_released(llm)
+
+    async def test_llama_native_admission_snapshots_then_live_paragraph_resumes(self):
+        llm = FakeLLM(
+            [False, False, True] + [True] * 100, thinker=[f"«note{i}»" for i in range(64)]
+        )
+        question = 'Explain "π" in two steps.'
+        llm.use_llama(question)
+        _, answer = await self.run_demo(llm, max_steps=64, max_answer_tokens=4, probe_period=2)
+        self.assertEqual(answer, llm.writer[:-1])
+        self.assertEqual(llm.probe_kinds[:3], ["standalone"] * 3)
+        self.assertTrue(llm.probe_kinds[3:])
+        self.assertEqual(set(llm.probe_kinds[3:]), {"live"})
+        self.assertEqual(llm.probe_decisions[:3], [False, False, True])
+        self.assertGreater(llm.writer_feeds[2][2], llm.writer_feeds[1][2])
+        header = llm.tokenizer.encode(llm.prompting.thinker_output_prefix) + llm.tokenizer.encode(
+            "\n"
+        )
+        for obs in llm.start_observations:
+            self.assertEqual(obs.writer_steps, 0)
+            self.assertEqual(obs.committed_thinker[: len(header)], header)
+            committed = obs.committed_thinker[len(header) :]
+            self.assertEqual(committed, obs.sampled_thinker[:-1])
+            self.assertTrue(committed)
+            rendered = llm.tokenizer.decode(obs.input_ids)
+            user_json = rendered.rsplit("[user]", 1)[1].split("[end]", 1)[0]
+            payload = json.loads(user_json)
+            self.assertEqual(payload["task"], question)
+            self.assertEqual(payload["working_notes"], llm.tokenizer.decode(committed))
+            self.assertNotIn(
+                llm.tokenizer.decode(obs.sampled_thinker[-1:]), payload["working_notes"]
+            )
+            self.assertTrue(rendered.endswith("[assistant]"))
+        self.assert_released(llm)
+
+    async def test_llama_wait_releases_writer_at_thinker_budget_or_eos(self):
+        for terminal in (None, "<|im_end|>"):
+            with self.subTest(terminal=terminal):
+                steps = [f"«note{i}»" for i in range(5)]
+                llm = FakeLLM(
+                    thinker=steps + ([terminal] if terminal else []),
+                    writer=("answer", "<|im_end|>"),
+                )
+                llm.use_llama()
+                thoughts, answer = await self.run_demo(
+                    llm,
+                    max_steps=20 if terminal else len(steps),
+                    max_answer_tokens=2,
+                    probe_period=1,
+                )
+                self.assertEqual(thoughts, llm.thinker[: len(steps)])
+                self.assertTrue(llm.start_observations)
+                self.assertFalse(any(llm.probe_decisions))
+                self.assertFalse(llm.probe_views)
+                self.assertEqual(answer, llm.writer[:-1])
+                self.assertEqual(llm.first_writer_thoughts[-len(thoughts) :], thoughts)
+                self.assert_released(llm)
+
+    async def test_llama_insufficient_scratch_space_latches_into_live_probe(self):
+        class LowPages(FakeLLM):
+            async def forward(self, input_ids=None, cache_view=None, **kwargs):
+                if len(cache_view or []) == 4:
+                    self.engine.page_allocator.num_free_pages = 1000
+                return await super().forward(input_ids, cache_view, **kwargs)
+
+        llm = LowPages([False, True] + [True] * 100)
+        llm.engine = SimpleNamespace(
+            max_seq_len=1024, page_allocator=SimpleNamespace(page_size=16, num_free_pages=1)
+        )
+        llm.use_llama()
+        _, answer = await self.run_demo(llm, max_steps=30, max_answer_tokens=4, probe_period=1)
+        self.assertEqual(answer, llm.writer[:-1])
+        self.assertEqual(llm.probe_decisions[:2], [False, True])
+        self.assertTrue(llm.probe_views)
+        self.assertFalse(llm.start_observations)
         self.assert_released(llm)
 
     async def test_live_views_and_writer_resume_after_paragraph_pause(self):
@@ -318,27 +426,32 @@ class TestAsyncThoughtsPolicy(unittest.IsolatedAsyncioTestCase):
                 self.assert_released(llm)
 
     async def test_probe_is_independent_and_late_no_cannot_park_finished_thinker(self):
-        llm = FakeLLM([False], hold_probe=True, hold_writer=True)
-        task = asyncio.create_task(
-            self.run_demo(llm, max_steps=6, max_answer_tokens=4, probe_period=1)
-        )
-        try:
-            await asyncio.wait_for(llm.probe_entered.wait(), timeout=1)
-            started_at = len(llm.thinker_tokens)
-            await asyncio.wait_for(llm.thinker_flushed.wait(), timeout=1)
-            self.assertGreater(len(llm.thinker_tokens), started_at)
-            self.assertEqual(len(llm.thinker_tokens), 6)
-            self.assertFalse(task.done())
-            llm.probe_release.set()
-            await asyncio.wait_for(llm.probe_finished.wait(), timeout=1)
-        finally:
-            llm.probe_release.set()
-            llm.writer_release.set()
-        thoughts, answer = await task
-        self.assertEqual(thoughts, llm.thinker_tokens)
-        self.assertEqual(answer, llm.writer[:-1])
-        self.assertEqual(llm.probe_decisions, [False])
-        self.assert_released(llm)
+        for llama in (False, True):
+            with self.subTest(llama=llama):
+                llm = FakeLLM([False], hold_probe=True, hold_writer=True)
+                if llama:
+                    llm.use_llama()
+                task = asyncio.create_task(
+                    self.run_demo(llm, max_steps=6, max_answer_tokens=4, probe_period=1)
+                )
+                try:
+                    await asyncio.wait_for(llm.probe_entered.wait(), timeout=1)
+                    self.assertEqual(llm.probe_kinds, ["standalone" if llama else "live"])
+                    started_at = len(llm.thinker_tokens)
+                    await asyncio.wait_for(llm.thinker_flushed.wait(), timeout=1)
+                    self.assertGreater(len(llm.thinker_tokens), started_at)
+                    self.assertEqual(len(llm.thinker_tokens), 6)
+                    self.assertFalse(task.done())
+                    llm.probe_release.set()
+                    await asyncio.wait_for(llm.probe_finished.wait(), timeout=1)
+                finally:
+                    llm.probe_release.set()
+                    llm.writer_release.set()
+                thoughts, answer = await task
+                self.assertEqual(thoughts, llm.thinker_tokens)
+                self.assertEqual(answer, llm.writer[:-1])
+                self.assertEqual(llm.probe_decisions, [False])
+                self.assert_released(llm)
 
     async def test_outer_cancellation_drains_initial_prefill(self):
         entered, release = asyncio.Event(), asyncio.Event()
@@ -377,19 +490,35 @@ class TestAsyncThoughtsPolicy(unittest.IsolatedAsyncioTestCase):
         self.assert_released(llm)
 
     async def test_outer_cancellation_drains_in_flight_probe(self):
-        llm = FakeLLM([True], hold_probe=True)
-        config = demo.DemoConfig(problem="test", max_steps=100, probe_period=1)
-        task = asyncio.create_task(demo._run_loop(config, llm, llm.tokenizer, llm.prompting))
-        await asyncio.wait_for(llm.probe_entered.wait(), timeout=1)
-        task.cancel()
-        try:
-            await asyncio.sleep(0)
-            self.assertFalse(task.done())
-            self.assertFalse(llm.probe_cancelled)
-        finally:
-            llm.probe_release.set()
-        with self.assertRaises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=2)
+        for llama in (False, True):
+            with self.subTest(llama=llama):
+                llm = FakeLLM([True], hold_probe=True)
+                if llama:
+                    llm.use_llama()
+                config = demo.DemoConfig(problem="test", max_steps=100, probe_period=1)
+                task = asyncio.create_task(
+                    demo._run_loop(config, llm, llm.tokenizer, llm.prompting)
+                )
+                await asyncio.wait_for(llm.probe_entered.wait(), timeout=1)
+                self.assertEqual(llm.probe_kinds, ["standalone" if llama else "live"])
+                task.cancel()
+                try:
+                    await asyncio.sleep(0)
+                    self.assertFalse(task.done())
+                    self.assertFalse(llm.probe_cancelled)
+                finally:
+                    llm.probe_release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=2)
+                self.assert_released(llm)
+
+    async def test_standalone_failure_drains_siblings_and_frees_scratch(self):
+        llm = FakeLLM(fail="standalone")
+        llm.use_llama()
+        with self.assertRaisesRegex(RuntimeError, "standalone failed"):
+            await self.run_demo(llm, max_steps=50, max_answer_tokens=4, probe_period=2)
+        self.assertTrue(llm.start_observations)
+        self.assertFalse(llm.writer_feeds)
         self.assert_released(llm)
 
     async def test_failures_drain_siblings_and_release_all_blocks(self):

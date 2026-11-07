@@ -5,9 +5,9 @@ minisgl's shared cache. A thinker generates private reasoning while a writer
 produces the answer. The terminal shows both streams in different colors and
 logs when writing pauses or resumes.
 
-The readiness probe reuses the live thinker and writer cache blocks and encodes
-only a short yes/no question. It runs in a separate coroutine every 20 thinking
-tokens or at a thinker paragraph boundary. A writer paragraph pauses writing
+The readiness probe runs in a separate coroutine every 20 thinking tokens or
+at a thinker paragraph boundary. Qwen uses a short yes/no question over the
+live thinker and writer cache blocks. A writer paragraph pauses writing
 until the probe allows it to continue. When thinking ends or reaches its token
 budget, the writer finishes up to its own budget. No additional user inputs or
 server are needed.
@@ -57,11 +57,20 @@ uv run --no-sync async-reasoning-llama \
 ```
 
 Both roles use the checkpoint's chat template. The thinker generates working
-notes using the prompt and its own history. The writer reads those notes and
-its own partial answer. Each role writes into its own KV block. A separate yes/no probe
-reads both blocks and decides when the writer can continue. It compares the
-best single-token spelling of each answer, including capitalized forms such
-as `No`. Each stream stops at
+notes using the prompt and its own history. The writer starts under a
+`Solution:` heading and reads those notes and its own partial answer.
+
+Before the writer starts, Llama scores an independent yes/no chat containing
+the task and the notes already committed to the thinker cache. That chat asks
+whether the notes establish a usable intermediate result. A plan can receive
+a no even when it names the right method. A yes releases the writer. Subsequent
+pause and resume checks use the live thinker and writer cache blocks.
+If the independent chat exceeds available context or KV space, the demo uses
+the live probe for that problem. If thinking ends first, the writer can finish
+without another vote.
+
+Both checks compare the best single-token spelling of each label, including
+capitalized forms such as `No`. Each stream stops at
 a checkpoint EOS token or its token budget. The terminal shows both streams
 and prints the writer's final answer separately. The demo uses an ordinary
 instruction-tuned Llama checkpoint and needs no training.

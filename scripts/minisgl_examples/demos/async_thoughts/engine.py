@@ -110,6 +110,23 @@ class ModeSwitchProbe:
         self._question_ids = encode(mode_switching_question, tokenizer)
         self._prompt_block: CacheBlock | None = None
 
+    def can_fit_start_question(self, length: int) -> bool:
+        """Leave room for the thinker's pending decode while scoring a private copy of the notes."""
+        engine = getattr(self.llm, "engine", None)
+        allocator = getattr(engine, "page_allocator", None)
+        return length <= getattr(engine, "max_seq_len", length) and (
+            allocator is None or length <= (allocator.num_free_pages - 1) * allocator.page_size
+        )
+
+    async def check_start_writing(self, input_ids: List[int]) -> Tuple[bool, float, float]:
+        """Score an independent native chat without writing into either role's cache."""
+        scratch = await self.llm.create_block()
+        try:
+            out = await self.llm.forward(input_ids, write_to=scratch, return_logits=True)
+            return self._vote(out.logits)
+        finally:
+            await self.llm.free_block(scratch)
+
     async def check_continue_writing(
         self, thinker: CacheBlock, writer: CacheBlock
     ) -> Tuple[bool, float, float]:
@@ -128,23 +145,25 @@ class ModeSwitchProbe:
             out = await self.llm.forward(
                 self._question_ids, [self._prompt_block, thinker, writer, question]
             )
-            if self._label_indices is None:
-                yes, no = out.logits[[self.yes_id, self.no_id]].float().cpu().tolist()
-                return yes > no, yes, no
-
-            self._label_indices = self._label_indices.to(out.logits.device)
-            scores = out.logits[self._label_indices].float().cpu().tolist()
-            split = len(self._yes_ids)
-            yes_scores, no_scores = scores[:split], scores[split:]
-            yes, no = max(yes_scores), max(no_scores)
-            # Sorted IDs make the first tied maximum match torch.argmax's vocabulary order.
-            vote = yes > no or (
-                yes == no
-                and self._yes_ids[yes_scores.index(yes)] < self._no_ids[no_scores.index(no)]
-            )
-            return vote, yes, no
+            return self._vote(out.logits)
         finally:
             await self.llm.free_block(question)
+
+    def _vote(self, logits: torch.Tensor) -> Tuple[bool, float, float]:
+        if self._label_indices is None:
+            yes, no = logits[[self.yes_id, self.no_id]].float().cpu().tolist()
+            return yes > no, yes, no
+
+        self._label_indices = self._label_indices.to(logits.device)
+        scores = logits[self._label_indices].float().cpu().tolist()
+        split = len(self._yes_ids)
+        yes_scores, no_scores = scores[:split], scores[split:]
+        yes, no = max(yes_scores), max(no_scores)
+        # Sorted IDs make a tie match torch.argmax's vocabulary order.
+        vote = yes > no or (
+            yes == no and self._yes_ids[yes_scores.index(yes)] < self._no_ids[no_scores.index(no)]
+        )
+        return vote, yes, no
 
     async def close(self) -> None:
         if self._prompt_block is not None:
