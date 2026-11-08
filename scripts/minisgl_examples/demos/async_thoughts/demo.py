@@ -125,8 +125,7 @@ class LlamaPrompting(Prompting):
             ]
         )
         self.thinker_output_prefix = "\nWorking notes:"
-        # The writer can start with a worked step while the thinker is still deriving the answer.
-        self.writer_output_prefix = "\nSolution:"
+        self.writer_output_prefix = "\nFinal answer:"
         self.yes_token, self.no_token = "yes", "no"
 
         # Split where the two live KV blocks will appear in the probe's chat history.

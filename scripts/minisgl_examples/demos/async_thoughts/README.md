@@ -57,8 +57,7 @@ uv run --no-sync async-reasoning-llama \
 ```
 
 Both roles use the checkpoint's chat template. The thinker generates working
-notes using the prompt and its own history. The writer starts under a
-`Solution:` heading and reads those notes and its own partial answer.
+notes using the prompt and its own history. The writer reads those notes and its own partial answer.
 
 Before the writer starts, Llama scores an independent yes/no chat containing
 the task and the notes already committed to the thinker cache. That chat asks
