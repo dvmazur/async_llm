@@ -45,3 +45,17 @@ python -m minisgl_examples.demos.async_thoughts.math500 \
 
 The evaluator writes per-arm answers, selected sources, exact token sequences and compressed trace hashes. It resumes complete, checksummed rows only. Smoke-only output can be generated in a separate directory with --smoke-only.
 
+## Validation log
+
+The measured A100 source is commit `7526585`. An initial startup attempt queried the CUDA device name before the engine could initialize CUDA. It produced zero answers. The measured run queries the device after engine initialization and records ordinary forwards through the same trace recorder used for verification.
+
+On the A100, ordinary and native-chat both boxed 5 on the addition smoke and 9 on the divisor smoke. The native thinker matched 61 and 309 initial ordinary tokens, respectively. The writer saw the thinker block grow, with 34 and 211 joint decode batches. This checks execution and concurrency on Tülu independently of the benchmark score.
+
+To regrade a mirrored run offline, use the pinned tokenizer, dataset and measured source directory. The report checks the actual token inputs and compressed traces before calculating paired counts, timing summaries and output-source frequencies.
+
+~~~bash
+python -m minisgl_examples.demos.async_thoughts.math500_report \
+  --eval-dir "$RESULTS" --dataset "$MATH500_TEST_JSONL" --tokenizer "$TULU_TOKENIZER" \
+  --source-dir "$MEASURED_MODULE_DIR" --output "$REPORT"
+~~~
+
