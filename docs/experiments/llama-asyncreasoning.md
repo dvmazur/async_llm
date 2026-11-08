@@ -98,3 +98,21 @@ The next rental has a separate $2 ceiling. Its target is the original first 64 r
 The relaunch uses the same four measured source modules from commit `7526585`, checkpoint, dataset bytes, token limits and grader. Smoke verification occurs before the new benchmark records. An independently running host reads and verifies row/trace pairs directly from the pod, including a smoke artifact before the main phase. No model, prompt, or routing decision is selected using the grades observed in the first rental.
 
 Two paired outputs illustrate why the heading and turn structure were tested. On `test/algebra/1937.json`, the working-notes writer used five tokens to box 883. The native-chat writer evaluated the middle term as 798 and boxed the correct sum, 1600. The opposite happened on `test/intermediate_algebra/1300.json`. The working-notes writer correctly boxed 16 for the minimum of the product of a sum and the sum of reciprocals. The native-chat writer generated a longer derivation and boxed 64. These are individual cases. The paired totals determine the reported accuracy.
+
+## Completed paired results
+
+All **64 fixed problems** have three verified A100 runs, for **192 arm records**. The second rental reused 34 records and generated the remaining 158. Eleven complete triples came from the first A100 and 52 from the second. At rank 11, the native-chat row came from the first rental and the other two arms from the second. Both devices were A100-SXM4-80GB and used the same four measured source modules, PyTorch 2.13.0+cu130, BF16 and greedy decoding. The public ledger contains the boxed outputs, source labels, session labels and trace hashes. [64 paired cases](llama-math500-paired64.jsonl)
+
+| Protocol | Pure strict matches | With short retry | Native retries | Median first draft content | Median pure wall time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Ordinary Tülu | 31/64 (48.4%) | — | — | 0.047 s | 9.11 s |
+| Working-notes AR | 24/64 (37.5%) | 30/64 (46.9%) | 18 | 1.416 s | 6.86 s |
+| Native-chat AR | **33/64 (51.6%)** | **33/64 (51.6%)** | **0** | 1.761 s | 12.74 s |
+
+The native-chat writer gained 14 correct answers and lost five against working-notes, a net increase of nine answers or 14.1 percentage points. The unadjusted two-sided exact paired sign test gives p = 0.0636. Against ordinary generation it gained four and lost two, a net increase of two answers or 3.1 points (p = 0.6875). All 33 correct native-chat answers came from the concurrent writer. These estimates describe Tülu 3 8B on the 64 ranked problems. The patched native-chat protocol has no fresh 500-problem accuracy measurement.
+
+Both async protocols had joint decode batches and growing writer-visible thinker state on **64/64** problems. The native thinker matched at least eight initial ordinary tokens on 63/64 and at least 32 on 61/64. Its median shared prefix was 213.5 tokens. Across the cohort, native-chat generated 61,535 thinker content tokens and 51,747 writer content tokens. Ordinary generation produced 78,907 content tokens. The median wall times above exclude model load, smoke tests and artifact I/O. The buffered working-notes hybrid's median time to selected output was 9.04 seconds.
+
+On the magic-square item, test/prealgebra/1930.json, ordinary generation used its entire 16,384-token allowance without a box in 273.8 seconds. The native-chat writer boxed 7 in 21.8 seconds using 964 writer and 1,230 thinker content tokens. In the hard polynomial item, test/intermediate_algebra/1411.json, native-chat exhausted both stream budgets and missed in 663.4 seconds. The longer conversations can help or cost substantial computation depending on the question.
+
+The independent relay accepted the final 409-file SHA-256 catalog, combining the two sessions without resampling completed rows. Catalog SHA-256 is 42c31eb2c9ed012a589b067718bed0d83ab21f706cbb0325ca8103f5683cff97. The canonical verified report SHA-256 is 326478405dce1cfde7a4ca14290c77a399144d45c3985d3e65b190c62105e38e. The native-only 436-problem extension was outside the relaunched cohort.
