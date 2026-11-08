@@ -497,6 +497,7 @@ def report(directory, dataset, tokenizer, source_dir=None, historical=None):
             "verified_rows": len(present),
             "paired_target": p,
             "complete_paired_ranks": len(matched),
+            "paired_target_complete": len(matched) == p,
             "partial_paired_ranks": partial,
             "native_only_extension_target": l - p,
             "native_only_extension_completed": sum(r >= p for r in data),
@@ -505,6 +506,7 @@ def report(directory, dataset, tokenizer, source_dir=None, historical=None):
         },
         "complete_paired_cohort": {arm: summaries(stratum(matched, arm)) for arm in ARMS},
         "paired_effects": comparisons,
+        "paired_statistics_note": "Two-sided exact sign tests condition on discordant solves. P-values are unadjusted across contrasts. Partial snapshots are exploratory.",
         "native_thinker_vs_ordinary": {
             "matched_rows": len(parity),
             "shared_prefix_length": distribution([i["shared_first_ids"] for i in parity]),
