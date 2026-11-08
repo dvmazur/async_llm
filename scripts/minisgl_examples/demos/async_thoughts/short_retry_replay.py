@@ -8,13 +8,13 @@ it does not measure the new demo's scheduling, accuracy on fresh data, or wall t
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from collections import Counter
 from pathlib import Path
 
 from transformers import AutoTokenizer
 
+from minisgl_examples.demos.async_thoughts.math500 import digest, last_box
 from minisgl_examples.demos.async_thoughts.short_retry import MAX_SHORT_DRAFT, retry_allowance
 
 WRITER_BUDGET = 16_384
@@ -27,32 +27,14 @@ def _require(ok, message):
         raise ValueError(message)
 
 
-def _sha(data):
-    return hashlib.sha256(data).hexdigest()
-
-
 def _rows(path):
     return [json.loads(line) for line in path.read_bytes().splitlines()]
-
-
-def _boxed(text):
-    start = text.rfind(r"\boxed{")
-    if start < 0:
-        return None
-    start += len(r"\boxed{")
-    depth = 1
-    for offset in range(start, len(text)):
-        if text[offset - 1] != "\\":
-            depth += (text[offset] == "{") - (text[offset] == "}")
-        if not depth:
-            return text[start:offset].strip()
-    return None
 
 
 def _checked_trace(directory, row, expected_sha):
     path = directory / "traces" / f"{row['index']:04d}.json"
     data = path.read_bytes()
-    _require(_sha(data) == row["trace_sha256"] == expected_sha, f"Changed archive trace {path}")
+    _require(digest(data) == row["trace_sha256"] == expected_sha, f"Changed archive trace {path}")
     return json.loads(data)["batches"]
 
 
@@ -96,7 +78,7 @@ def replay(async_full, async_retry, comparison_run, tokenizer):
     ordered = [
         {"unique_id": r["unique_id"], "problem": r["problem"], "answer": r["gold"]} for r in cases
     ]
-    order_hash = _sha(json.dumps(ordered, ensure_ascii=False, separators=(",", ":")).encode())
+    order_hash = digest(json.dumps(ordered, ensure_ascii=False, separators=(",", ":")).encode())
     _require(order_hash == ORDER_DIGEST, "Canonical MATH-500 order, questions or answers changed")
     standard = json.loads((comparison_run / "matched/manifest.json").read_bytes())
     _require(
@@ -165,16 +147,16 @@ def replay(async_full, async_retry, comparison_run, tokenizer):
         remaining = retry_allowance(len(draft_ids), stop, WRITER_BUDGET)
         selected = native_ids[:remaining] if remaining else draft_ids
         retry_stop = native["stop_token_id"] if remaining > len(native_ids) else None
-        final_box = _boxed(tokenizer.decode(selected, skip_special_tokens=True))
+        final_box = last_box(tokenizer.decode(selected, skip_special_tokens=True))
         gold = case["gold"].strip()
-        draft_right = _boxed(tokenizer.decode(draft_ids, skip_special_tokens=True)) == gold
-        native_right = _boxed(tokenizer.decode(native_ids, skip_special_tokens=True)) == gold
+        draft_right = last_box(tokenizer.decode(draft_ids, skip_special_tokens=True)) == gold
+        native_right = last_box(tokenizer.decode(native_ids, skip_special_tokens=True)) == gold
         _require(
             draft_right == a["strict_exact"] and native_right == n["strict_exact"],
             "Source grade mismatch",
         )
         right = final_box == gold
-        fold = int.from_bytes(hashlib.sha256(uid.encode()).digest()[:8], "big") % len(folds)
+        fold = int(digest(uid.encode())[:16], 16) % len(folds)
         for count in (totals, folds[fold]):
             count.update(
                 problems=1,
@@ -212,8 +194,8 @@ def replay(async_full, async_retry, comparison_run, tokenizer):
         "kind": "archived_paired_policy_replay",
         "model_revision": MODEL_REVISION,
         "ordered_dataset_sha256": ORDER_DIGEST,
-        "comparison_sha256": _sha(paired_path.read_bytes()),
-        "ordinary_results_sha256": _sha(ordinary_path.read_bytes()),
+        "comparison_sha256": digest(paired_path.read_bytes()),
+        "ordinary_results_sha256": digest(ordinary_path.read_bytes()),
         "writer_budget": WRITER_BUDGET,
         "maximum_short_draft": MAX_SHORT_DRAFT,
         "counts": dict(totals),
