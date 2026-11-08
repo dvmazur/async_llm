@@ -588,6 +588,17 @@ def report(directory, dataset, tokenizer, source_dir=None, historical=None):
             "source_sha256": digest(historical.read_bytes()),
             "comparisons": comps,
         }
+    if (directory / "imported.json").exists():
+        from .math500_import import session_provenance
+
+        provenance = session_provenance(directory, settings, environment, result["cases"])
+        result["session_provenance"] = provenance
+        result["by_session"] = {}
+        for session in (provenance["origin_session"], provenance["destination_session"]):
+            cohort = [case for case in result["cases"] if case["session"] == session]
+            result["by_session"][session] = {
+                a: summaries([data[c["rank"]][a] for c in cohort if c["arm"] == a]) for a in ARMS
+            }
     return result
 
 
