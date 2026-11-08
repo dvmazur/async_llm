@@ -592,13 +592,17 @@ def report(directory, dataset, tokenizer, source_dir=None, historical=None):
         from .math500_import import session_provenance
 
         provenance = session_provenance(directory, settings, environment, result["cases"])
+        provenance["measured_source_bytes_verified_at_report"] = source_dir is not None
         result["session_provenance"] = provenance
         result["by_session"] = {}
-        for session in (provenance["origin_session"], provenance["destination_session"]):
+        for session in provenance["sessions"]:
             cohort = [case for case in result["cases"] if case["session"] == session]
             result["by_session"][session] = {
                 a: summaries([data[c["rank"]][a] for c in cohort if c["arm"] == a]) for a in ARMS
             }
+        result["timing"] += (
+            " The imported cohort spans multiple hardware sessions. Per-session times are reported separately."
+        )
     return result
 
 
@@ -608,9 +612,18 @@ def main():
         cli.add_argument("--" + name, required=True, type=Path)
     cli.add_argument("--source-dir", type=Path)
     cli.add_argument("--historical", type=Path)
+    cli.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="Require the terminal receipt and every row in the bound target schedule.",
+    )
     args = cli.parse_args()
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, local_files_only=True)
     result = report(args.eval_dir, args.dataset, tokenizer, args.source_dir, args.historical)
+    if args.require_complete:
+        require(
+            result["status"] == "complete", "The target schedule has no verified terminal receipt"
+        )
     save(
         args.output,
         json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False).encode() + b"\n",

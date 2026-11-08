@@ -1,4 +1,19 @@
-"""Import verified MATH-500 rows and bind their continuation to a new GPU session."""
+"""Import verified MATH-500 rows and bind their continuation to a new GPU session.
+
+Run `prepare` against the last archived evaluation and its measured source files.
+Supply `--expect-rows N` to assert a known prefix length. Use a new directory and
+keep the prior evaluation intact. Copy the complete prepared directory to the new
+host, including its origin receipts. A GPU UUID in CUDA_VISIBLE_DEVICES identifies
+the physical device across sessions. With that variable set, run `bind`
+with a unique session ID and the installed measured source directory. Then launch
+the unchanged math500 evaluator with --paired N --limit N and the original budget,
+context, model revision and memory ratio. Its normal resume path skips the imported
+rows. math500_report checks both sessions and groups timings by acquisition session.
+
+If a continuation stops early, repeat `prepare` with that continuation as --origin
+and its bound session ID as --origin-session. Retain each evaluation as an audit
+artifact. Previously imported rows retain the session that first generated them.
+"""
 
 from __future__ import annotations
 
@@ -52,14 +67,10 @@ def target_settings(origin, paired, visible_devices, torch_version):
 
 
 def stems(settings):
-    from .math500 import ARMS
-
-    names = []
-    for rank, _ in enumerate(settings["ordered_ids"]):
-        rotation = rank % len(ARMS)
-        arms = ARMS[rotation:] + ARMS[:rotation] if rank < settings["paired"] else ("native-chat",)
-        names.extend(f"{rank:03d}.{a}" for a in arms)
-    return names
+    return [
+        f"{rank:03d}.{arm}"
+        for rank, _, arm in schedule(settings["ordered_ids"], settings["paired"], settings["limit"])
+    ]
 
 
 def prepare(
@@ -71,7 +82,7 @@ def prepare(
     origin_session,
     prior_report,
     paired=64,
-    expect_rows=34,
+    expect_rows=None,
 ):
     from .math500_report import report
 
@@ -85,7 +96,12 @@ def prepare(
     check_sources(sources, source)
     origin_rows = {p.stem: digest(p.read_bytes()) for p in (origin / "rows").glob("*.json")}
     verified = report(origin, dataset, tokenizer, sources)
-    require(not (origin / "imported.json").exists(), "Use an original single-session evaluation")
+    upstream = verified.get("session_provenance")
+    if upstream:
+        require(
+            upstream["destination_session"] == origin_session,
+            "Origin ID differs from its bound session",
+        )
     if prior_report:
         prior = read(prior_report)
         require(
@@ -100,7 +116,8 @@ def prepare(
     planned = [f"{r:03d}.{arm}" for r, _, arm in schedule(ranked, paired, paired)]
     cases = {f"{c['rank']:03d}.{c['arm']}": c for c in verified["cases"] if c["rank"] < paired}
     require(
-        len(cases) == expect_rows and set(cases) == set(planned[: len(cases)]),
+        (expect_rows is None or len(cases) == expect_rows)
+        and set(cases) == set(planned[: len(cases)]),
         "Imported cases must form the expected prefix of the new schedule",
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -116,6 +133,14 @@ def prepare(
             sha = digest((origin / name).read_bytes())
             checked_copy(origin / name, work / "origin" / name, sha)
             catalog[name] = sha
+        if upstream:
+            for name, src_name in (
+                ("prior_import.json", "imported.json"),
+                ("prior_session.json", "session.json"),
+            ):
+                sha = digest((origin / src_name).read_bytes())
+                checked_copy(origin / src_name, work / "origin" / name, sha)
+                catalog[name] = sha
         # Preserve the verified input snapshot even when the original report also contained
         # unrelated historical comparisons. The row records are checked against it above.
         save(work / "origin" / "report.json", encode_json(verified))
@@ -143,6 +168,8 @@ def prepare(
                     "trace_sha256": case["trace_sha256"],
                 }
             )
+            if upstream:
+                rows[-1]["acquired_session"] = case["session"]
         receipt = {
             "format_version": 1,
             "origin_session": origin_session,
@@ -165,10 +192,9 @@ def validate_import(directory):
     receipt = read(directory / "imported.json")
     require(receipt["format_version"] == 1 and receipt["origin_session"], "Invalid origin session")
     catalog = receipt["origin_catalog"]
-    require(
-        set(catalog) == {"manifest.json", "environment.json", "smoke.json", "report.json"},
-        "Invalid origin evidence catalog",
-    )
+    originals = {"manifest.json", "environment.json", "smoke.json", "report.json"}
+    prior_files = {"prior_import.json", "prior_session.json"}
+    require(set(catalog) in (originals, originals | prior_files), "Invalid origin evidence catalog")
     for name, sha in catalog.items():
         require(
             digest((directory / "origin" / name).read_bytes()) == sha,
@@ -176,6 +202,20 @@ def validate_import(directory):
         )
     origin = read(directory / "origin/manifest.json")
     proof = read(directory / "origin/report.json")
+    upstream = proof.get("session_provenance")
+    require(bool(upstream) == ("prior_import.json" in catalog), "Origin session lineage missing")
+    if upstream:
+        parent_binding = read(directory / "origin/prior_session.json")
+        require(
+            upstream["destination_session"]
+            == receipt["origin_session"]
+            == parent_binding["session"]
+            and upstream["import_receipt_sha256"]
+            == catalog["prior_import.json"]
+            == parent_binding["import_receipt_sha256"]
+            and parent_binding["target_settings_sha256"] == receipt["origin_settings_sha256"],
+            "Origin acquisition lineage mismatch",
+        )
     require(
         proof["settings_sha256"]
         == digest(encode_json(origin))
@@ -211,6 +251,11 @@ def validate_import(directory):
             all(row[key] == c[key] for key in ("unique_id", "rank", "arm", "trace_sha256")),
             "Wrong origin case",
         )
+        acquired = row.get("acquired_session", receipt["origin_session"])
+        require(
+            acquired == c.get("session", receipt["origin_session"]),
+            "Imported row was attributed to a different acquisition session",
+        )
         require(
             digest((directory / "rows" / (stem + ".json")).read_bytes()) == row["row_sha256"]
             and digest((directory / "traces" / (stem + ".json.gz")).read_bytes())
@@ -218,6 +263,36 @@ def validate_import(directory):
             f"Imported row changed: {stem}",
         )
     return receipt, origin
+
+
+def origin_sessions(directory, receipt, origin):
+    """Recover acquisition identities from the verified input report, including early v1 reports."""
+    upstream = read(directory / "origin/report.json").get("session_provenance")
+    latest = {
+        "environment": receipt["origin_environment"],
+        "torch": origin["torch"],
+        "visible_devices": origin["visible_devices"],
+        "manifest_sha256": receipt["origin_settings_sha256"],
+    }
+    if upstream is None:
+        return {receipt["origin_session"]: latest}
+    if "sessions" in upstream:
+        sessions = dict(upstream["sessions"])
+    else:
+        sessions = {
+            upstream[f"{role}_session"]: {
+                "environment": upstream[f"{role}_environment"],
+                "torch": upstream[f"{role}_torch"],
+                "visible_devices": upstream[f"{role}_visible_devices"],
+                "manifest_sha256": upstream[f"{role}_manifest_sha256"],
+            }
+            for role in ("origin", "destination")
+        }
+    require(
+        sessions.get(receipt["origin_session"]) == latest,
+        "Latest source session metadata disagrees with origin evidence",
+    )
+    return sessions
 
 
 def bind(directory, sources, session, visible_devices, torch_version, gpu, cuda, model=None):
@@ -233,7 +308,10 @@ def bind(directory, sources, session, visible_devices, torch_version, gpu, cuda,
     with (directory / ".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         receipt, origin = validate_import(directory)
-        require(session != receipt["origin_session"], "New and original sessions share the same ID")
+        require(
+            session not in origin_sessions(directory, receipt, origin),
+            "A prior session ID cannot be rebound",
+        )
         check_sources(sources, origin)
         if model:
             snapshot = model.resolve()
@@ -278,8 +356,9 @@ def bind(directory, sources, session, visible_devices, torch_version, gpu, cuda,
 def session_provenance(directory, settings, environment, cases):
     receipt, origin = validate_import(directory)
     info = read(directory / "session.json")
+    sessions = origin_sessions(directory, receipt, origin)
     require(
-        info["session"] != receipt["origin_session"]
+        info["session"] not in sessions
         and info["import_receipt_sha256"] == digest((directory / "imported.json").read_bytes()),
         "Destination session receipt mismatch",
     )
@@ -295,15 +374,26 @@ def session_provenance(directory, settings, environment, cases):
         and environment["eos_token_ids"] == receipt["origin_environment"]["eos_token_ids"],
         "Observed destination GPU, CUDA or EOS do not match the bound sessions",
     )
-    imported = {r["stem"] for r in receipt["rows"]}
+    imported = {
+        r["stem"]: r.get("acquired_session", receipt["origin_session"]) for r in receipt["rows"]
+    }
     keys = {f"{case['rank']:03d}.{case['arm']}" for case in cases}
     require(
-        len(keys) == len(cases) and imported.issubset(keys), "Combined report omitted imported rows"
+        len(keys) == len(cases)
+        and set(imported).issubset(keys)
+        and set(imported.values()).issubset(sessions),
+        "Combined report omitted imported rows or their acquisition session",
     )
     for case in cases:
-        imported_case = f"{case['rank']:03d}.{case['arm']}" in imported
-        case["imported"] = imported_case
-        case["session"] = receipt["origin_session"] if imported_case else info["session"]
+        stem = f"{case['rank']:03d}.{case['arm']}"
+        case["imported"] = stem in imported
+        case["session"] = imported.get(stem, info["session"])
+    sessions[info["session"]] = {
+        "environment": environment,
+        "torch": info["torch"],
+        "visible_devices": info["visible_devices"],
+        "manifest_sha256": info["target_settings_sha256"],
+    }
     return {
         "origin_session": receipt["origin_session"],
         "destination_session": info["session"],
@@ -316,13 +406,16 @@ def session_provenance(directory, settings, environment, cases):
         "origin_manifest_sha256": receipt["origin_settings_sha256"],
         "destination_manifest_sha256": info["target_settings_sha256"],
         "import_receipt_sha256": info["import_receipt_sha256"],
+        "sessions": sessions,
         "imported_rows": len(imported),
         "new_rows": len(cases) - len(imported),
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     prep = sub.add_parser("prepare")
     for arg in ("origin", "destination", "dataset", "tokenizer", "source-dir"):
@@ -330,7 +423,9 @@ def main():
     prep.add_argument("--origin-session", required=True)
     prep.add_argument("--prior-report", type=Path)
     prep.add_argument("--paired", type=int, default=64)
-    prep.add_argument("--expect-rows", type=int, default=34)
+    prep.add_argument(
+        "--expect-rows", type=int, help="Fail if the verified prefix has a different length."
+    )
     run = sub.add_parser("bind")
     for arg in ("eval-dir", "source-dir"):
         run.add_argument("--" + arg, type=Path, required=True)

@@ -119,3 +119,60 @@ def test_prepare_rejects_stale_report_or_non_prefix_without_partial_output(tmp_p
         imp.prepare(
             origin, out, Path("dataset"), None, sources, "pod-old", None, paired=1, expect_rows=1
         )
+
+
+def test_repeated_continuation_preserves_first_acquisition_and_hardware(tmp_path, monkeypatch):
+    first, sources, prior, old_case = fixture(tmp_path, monkeypatch)
+    second = tmp_path / "second"
+    imp.prepare(first, second, Path("dataset"), None, sources, "A", prior, paired=1)
+    imp.bind(second, sources, "B", "GPU-b", "T-B", "GPU-B", "12")
+    env_b = {"gpu": "GPU-B", "cuda": "12", "eos_token_ids": [9], "effective_context": 100}
+    (second / "environment.json").write_bytes(encode_json(env_b))
+    (second / "smoke.json").write_bytes((first / "smoke.json").read_bytes())
+    new_trace = b"new-b-trace"
+    new_case = {
+        "rank": 0,
+        "arm": "working-notes",
+        "unique_id": "a",
+        "trace_sha256": digest(new_trace),
+        "pure_exact": False,
+    }
+    (second / "traces/000.working-notes.json.gz").write_bytes(new_trace)
+    (second / "rows/000.working-notes.json").write_bytes(encode_json(new_case))
+    cases = [old_case.copy(), new_case.copy()]
+    manifest = imp.read(second / "manifest.json")
+    lineage = imp.session_provenance(second, manifest, env_b, cases)
+    proof = {
+        "settings_sha256": digest(encode_json(manifest)),
+        "environment": env_b,
+        "cases": cases,
+        "schedule": {"verified_rows": 2},
+        "session_provenance": lineage,
+    }
+    monkeypatch.setattr(math500_report, "report", lambda *a, **kw: proof)
+    third = tmp_path / "third"
+    with pytest.raises(ValueError, match="Origin ID"):
+        imp.prepare(second, third, Path("dataset"), None, sources, "wrong", None, paired=1)
+    receipt = imp.prepare(second, third, Path("dataset"), None, sources, "B", None, paired=1)
+    assert [r["acquired_session"] for r in receipt["rows"]] == ["A", "B"]
+    assert "prior_import.json" in receipt["origin_catalog"]
+    with pytest.raises(ValueError, match="prior session ID"):
+        imp.bind(third, sources, "A", "GPU-c", "T-C", "GPU-C", "13")
+    imp.bind(third, sources, "C", "GPU-c", "T-C", "GPU-C", "13")
+    env_c = {"gpu": "GPU-C", "cuda": "13", "eos_token_ids": [9]}
+    result_cases = [old_case.copy(), new_case.copy(), {"rank": 0, "arm": "native-chat"}]
+    result = imp.session_provenance(third, imp.read(third / "manifest.json"), env_c, result_cases)
+    assert [(r["session"], r["imported"]) for r in result_cases] == [
+        ("A", True),
+        ("B", True),
+        ("C", False),
+    ]
+    assert [result["sessions"][s]["environment"]["gpu"] for s in "ABC"] == [
+        "GPU-A",
+        "GPU-B",
+        "GPU-C",
+    ]
+    assert result["new_rows"] == 1 and result["imported_rows"] == 2
+    assert (third / "origin/prior_session.json").read_bytes() == (
+        second / "session.json"
+    ).read_bytes()
