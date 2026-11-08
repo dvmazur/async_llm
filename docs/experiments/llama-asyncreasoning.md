@@ -37,16 +37,24 @@ Replaying the short-draft rule over the archived original async and ordinary gen
 - On the first 64, generate fresh ordinary, working-notes and native-chat answers. Rotate arm order by rank. Record pure writer scores, retry-selected scores, paired gains and losses, output source, wall time, token use and concurrent decode witnesses. Use only complete same-ID pairs for comparisons. Continue native-chat in the same fixed order toward 500 as the rental permits.
 - MATH-500 had previously been inspected. The ordering and model decisions were frozen before the new GPU outputs. The cohort provides prospective rollouts on a previously analyzed benchmark; it is not an untouched test set.
 
-Run the evaluator with a pinned local snapshot and the byte-identical dataset from the repository root.
+Run the paired cohort with a pinned local snapshot and the byte-identical dataset from the repository root.
 
 ~~~bash
 python -m minisgl_examples.demos.async_thoughts.math500 \
   --model "$TULU_SNAPSHOT" --model-revision 666943798adbde0b1aff34626007e26986a3c107 \
   --dataset "$MATH500_TEST_JSONL" --output "$RESULTS" \
-  --paired 64 --limit 500 --budget 16384 --context 40960
+  --paired 64 --limit 64 --budget 16384 --context 40960
 ~~~
 
-The evaluator writes per-arm answers, selected sources, exact token sequences and compressed trace hashes. It resumes complete, checksummed rows only. Smoke-only output can be generated in a separate directory with --smoke-only.
+The evaluator writes per-arm answers, selected sources, exact token sequences and compressed trace hashes. It resumes complete, checksummed rows only. Smoke-only output can be generated in a separate directory with --smoke-only. Setting --limit 500 requests the native-chat extension on the remaining 436 items, as in the first rental's original plan.
+
+To reproduce the retrospective 500-case calculation, supply the original full and selective-retry phase directories and the parent directory of the matched ordinary comparison.
+
+~~~bash
+python -m minisgl_examples.demos.async_thoughts.short_retry_replay \
+  --async-full "$ORIGINAL_RUN/full" --async-retry "$WRITER_RETRY_RUN/retry" \
+  --comparison-run "$MATCHED_RUN" --tokenizer "$TULU_TOKENIZER" --output "$ARCHIVE_REPORT"
+~~~
 
 ## Validation log
 
