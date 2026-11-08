@@ -79,3 +79,9 @@ On the 64 prespecified study IDs, the historical archive has ordinary at 31/64, 
 **What the paper can report.** The A100 traces establish that an instruction-tuned Llama checkpoint performed concurrent reasoning and writing. The surviving paired prefix is small, and the native-chat pure score tied the current working-notes score there. A new 64-problem or 500-problem accuracy result requires another measured run. No accuracy improvement for pure AR over the full benchmark has been established.
 
 **Artifact handling for a repeat.** Put the benchmark output on storage that survives pod deletion, or have a separate always-on host pull and verify completed row/trace pairs while the pod is running. Verify the sink on an actual smoke result before starting the cohort. Retain the prompt, source and trace digests and report verified coverage independently of the pod exit code. The first trial used the Mac as the only persistent mirror; that choice lost the unaudited portion of the run.
+
+## Paired-cohort relaunch
+
+The next rental has a separate $2 ceiling. Its target is the original first 64 ranked IDs and the same three arms. The 34 verified arm records from the first rental are retained, including the native-chat output at rank 11. Finishing the paired cohort requires 158 additional arm records. Each imported row keeps its original generation time, trace digest and acquisition-session provenance.
+
+The relaunch uses the same four measured source modules from commit `7526585`, checkpoint, dataset bytes, token limits and grader. Smoke verification occurs before the new benchmark records. An independently running host reads and verifies row/trace pairs directly from the pod, including a smoke artifact before the main phase. No model, prompt, or routing decision is selected using the grades observed in the first rental.
