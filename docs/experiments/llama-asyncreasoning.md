@@ -59,3 +59,21 @@ python -m minisgl_examples.demos.async_thoughts.math500_report \
   --source-dir "$MEASURED_MODULE_DIR" --output "$REPORT"
 ~~~
 
+
+## Recovered A100 results
+
+The local artifact mirror stopped synchronizing when the controller Mac slept. Runpod terminated the pod before the missing records were imported. Of 628 scheduled arm records, 34 were recoverable. The first 11 ranks have all three arms. The next rank has only native-chat and is excluded from the paired table. The remaining ranks have no verified A100 results. The posted rental total was $5.026661, including disk.
+
+| Output on the same 11 problems | Strict correct | Median time to first draft content | Median pure generation wall time |
+| --- | ---: | ---: | ---: |
+| Ordinary | 4/11 | 0.047 s | 11.05 s |
+| Working-notes writer | 5/11 | 1.271 s | 4.22 s |
+| Native-chat writer | 5/11 | 1.158 s | 16.74 s |
+
+Both async protocols produced joint decode batches and the writer saw the thinker block grow on all 11 problems. Native-chat gained one correct answer and lost none against ordinary. Against working-notes it gained one and lost one. Ten of the 11 native thinkers shared at least eight initial tokens with ordinary generation. In one hard algebra question, native-chat exhausted both 16,384-token caps in 663 seconds. Ordinary also exhausted its output cap on that question. The ordinary first token is visible response text; the async measurement starts with the writer after admission.
+
+The short retry ran on three of the 11 working-notes drafts, raising that score from 5/11 to 6/11. It did not trigger on any of the 11 native-chat drafts. Across the full historical archive it raised the selected score from 128/500 to 177/500, compared with ordinary's 196/500. That archive result closes 49 of the original 68 net misses, at the cost of 196,850 extra sampled tokens. The threshold was developed on those earlier traces, and the archived compositions do not supply fresh latency measurements.
+
+**What the paper can report.** The A100 traces establish that an instruction-tuned Llama checkpoint performed concurrent reasoning and writing. The surviving paired prefix is small, and the native-chat pure score tied the current working-notes score there. A new 64-problem or 500-problem accuracy result requires another measured run. No accuracy improvement for pure AR over the full benchmark has been established.
+
+**Artifact handling for a repeat.** Put the benchmark output on storage that survives pod deletion, or have a separate always-on host pull and verify completed row/trace pairs while the pod is running. Verify the sink on an actual smoke result before starting the cohort. Retain the prompt, source and trace digests and report verified coverage independently of the pod exit code. The first trial used the Mac as the only persistent mirror; that choice lost the unaudited portion of the run.
