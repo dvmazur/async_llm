@@ -236,16 +236,23 @@ async def _run(config, llm):
 def run_short_retry(config) -> ShortRetryResult:
     """Run the opt-in buffered baseline in a CLI process with a dedicated Llama engine."""
     import torch
+    from transformers import GenerationConfig
 
     from minisgl_examples.demos.async_thoughts.engine import build_async_llm
 
     if not torch.cuda.is_available():
         raise RuntimeError("Short-answer retry requires CUDA")
+    try:
+        generation_config = GenerationConfig.from_pretrained(config.model)
+    except OSError:
+        generation_config = GenerationConfig()
+    generation_config.do_sample = False
     llm = build_async_llm(
         config.model,
         memory_ratio=config.memory_ratio,
         page_size=config.page_size,
         max_context_len=config.max_context_len,
+        generation_config=generation_config,
     )
     try:
         return asyncio.run(_run(config, llm))
