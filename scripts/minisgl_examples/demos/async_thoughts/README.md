@@ -74,6 +74,23 @@ a checkpoint EOS token or its token budget. The terminal shows both streams
 and prints the writer's final answer separately. The demo uses an ordinary
 instruction-tuned Llama checkpoint and needs no training.
 
+For a native Llama conversation, select `--llama-protocol native-chat`. The
+thinker starts from the ordinary assistant-generation prefix. When admitted,
+the writer reads the committed draft through a native follow-up turn and can
+continue while the thinker generates. The default is `working-notes`.
+
+```bash
+uv run --no-sync async-reasoning-llama --model "$TULU_SNAPSHOT" \
+  --llama-protocol native-chat --max-context-len 40960 \
+  --max-think-tokens 16384 --max-answer-tokens 16384
+```
+
+`--retry-short-answer` selects a separate hybrid baseline. A writer draft of
+up to 16 content tokens ending at EOS can spend the rest of its allowance on
+one ordinary generation. The CLI prints the source of the final answer and
+buffers provisional output. The MATH-500 evaluator reports pure writer and
+hybrid grades separately. See the [design record and benchmark command](../../../../docs/experiments/llama-asyncreasoning.md).
+
 ## Record a demo and train from it
 
 After installing the demo, record a short run from the repository root:

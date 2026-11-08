@@ -77,9 +77,21 @@ def parse_args(argv: list[str] | None = None, *, llama: bool = False) -> DemoCon
         type=Path,
         help="Save executed requests and sampled-token targets to a new training JSON file.",
     )
+    p.add_argument("--max-context-len", type=int, default=8192, help="Engine context capacity.")
+    p.add_argument(
+        "--llama-protocol",
+        choices=("working-notes", "native-chat"),
+        default="working-notes",
+        help="Use labeled working notes or encode the Llama roles with its native chat template.",
+    )
+    p.add_argument(
+        "--retry-short-answer",
+        action="store_true",
+        help="On Llama, spend remaining writer tokens on a native retry after a short EOS draft.",
+    )
     args = p.parse_args(argv)
-    if min(args.max_steps, args.max_answer_tokens, args.probe_period) < 1:
-        p.error("Token budgets and probe period must be positive")
+    if min(args.max_steps, args.max_answer_tokens, args.probe_period, args.max_context_len) < 1:
+        p.error("Token budgets, probe period and context capacity must be positive")
     return DemoConfig(
         model=args.model,
         problem=args.problem,
@@ -89,15 +101,27 @@ def parse_args(argv: list[str] | None = None, *, llama: bool = False) -> DemoCon
         memory_ratio=args.memory_ratio,
         page_size=args.page_size,
         trace_output=args.trace_output,
+        llama_protocol=args.llama_protocol,
+        retry_short_answer=args.retry_short_answer,
+        max_context_len=args.max_context_len,
     )
 
 
+def _run(config: DemoConfig) -> None:
+    if config.retry_short_answer:
+        from minisgl_examples.demos.async_thoughts.short_retry import run_short_retry
+
+        run_short_retry(config)
+    else:
+        run(config)
+
+
 def main(argv: list[str] | None = None) -> None:
-    run(parse_args(argv))
+    _run(parse_args(argv))
 
 
 def llama_main(argv: list[str] | None = None) -> None:
-    run(parse_args(argv, llama=True))
+    _run(parse_args(argv, llama=True))
 
 
 if __name__ == "__main__":

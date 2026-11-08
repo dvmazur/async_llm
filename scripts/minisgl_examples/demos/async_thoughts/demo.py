@@ -62,6 +62,17 @@ class DemoConfig:
     memory_ratio: float = DEFAULT_MEMORY_RATIO
     page_size: int = DEFAULT_PAGE_SIZE
     trace_output: Path | None = None
+    llama_protocol: str = "working-notes"
+    max_context_len: int = 8192
+    retry_short_answer: bool = False
+
+
+@dataclass(frozen=True)
+class NativeTurns:
+    """Token IDs on the two sides of the thinker's generated assistant message."""
+
+    prompt_ids: list[int]
+    writer_ids: list[int]
 
 
 class Prompting:
@@ -74,6 +85,7 @@ class Prompting:
     end_think_token: str | None = "</think>"
     writer_seed = "\n\n"
     probe_label_variants = False
+    native_turns: NativeTurns | None = None
 
     def __init__(self, problem: str) -> None:
         self.input_prompt = f"<|im_start|>user\n{problem}\n"
@@ -106,7 +118,7 @@ class LlamaPrompting(Prompting):
     writer_seed = "\n"
     probe_label_variants = True
 
-    def __init__(self, problem: str, tokenizer) -> None:
+    def __init__(self, problem: str, tokenizer, *, protocol: str = "working-notes") -> None:
         self.problem = problem
         self.tokenizer = tokenizer
 
@@ -115,15 +127,14 @@ class LlamaPrompting(Prompting):
                 messages, tokenize=False, add_generation_prompt=True
             )
 
-        self.input_prompt = render(
-            [
-                {
-                    "role": "user",
-                    "content": f"{problem}\n\nWork through the problem in your working notes. "
-                    "In the final answer, answer the original question directly.",
-                }
-            ]
-        )
+        if protocol not in ("working-notes", "native-chat"):
+            raise ValueError(f"Unknown Llama protocol: {protocol}")
+        user = {
+            "role": "user",
+            "content": f"{problem}\n\nWork through the problem in your working notes. "
+            "In the final answer, answer the original question directly.",
+        }
+        self.input_prompt = render([user])
         self.thinker_output_prefix = "\nWorking notes:"
         self.writer_output_prefix = "\nFinal answer:"
         self.yes_token, self.no_token = "yes", "no"
@@ -142,6 +153,41 @@ class LlamaPrompting(Prompting):
             ]
         )
         self.mode_switching_prompt, self.mode_switching_question = probe_chat.rsplit(marker, 1)
+
+        if protocol == "native-chat":
+            followup = {
+                "role": "user",
+                "content": "The preceding response is a partial draft. Complete the original "
+                "task, checking the draft's reasoning and following the original instructions.",
+            }
+            full = render([user, {"role": "assistant", "content": marker}, followup])
+            prefix, separator, bridge = full.rpartition(marker)
+            if not separator or prefix != self.input_prompt:
+                raise ValueError("The native chat template must preserve the assistant prefix")
+
+            def ids(text):
+                return tokenizer.encode(text, add_special_tokens=False)
+
+            prompt_ids, bridge_ids = ids(prefix), ids(bridge)
+            if (
+                len(prompt_ids) < 2
+                or not bridge_ids
+                or ids(prefix + marker) + bridge_ids != ids(full)
+            ):
+                raise ValueError("The native chat template needs a stable assistant turn boundary")
+            self.native_turns = NativeTurns(prompt_ids, bridge_ids)
+            self.thinker_output_prefix = ""
+
+            # Display fragments describe the IDs actually submitted. Generation uses
+            # the IDs directly because a decoded boundary token may re-tokenize.
+            def literal(ids):
+                return tokenizer.decode(
+                    ids, skip_special_tokens=False, clean_up_tokenization_spaces=False
+                )
+
+            self.writer_output_prefix = literal(bridge_ids[:-1])
+            self.writer_seed = literal(bridge_ids[-1:])
+            self.mode_switching_prompt = literal(prompt_ids[:-1])
 
     def start_question_ids(self, notes: str) -> list[int]:
         """Ask whether these committed notes establish a step the writer can explain."""
@@ -224,10 +270,11 @@ async def _run_loop(
     if end_think is not None:
         thinker_stops.add(end_think)
     writer_forbidden = forbidden + ([end_think] if end_think is not None else [])
+    native = prompting.native_turns
     probe = ModeSwitchProbe(
         llm,
         tokenizer,
-        prompting.mode_switching_prompt,
+        native.prompt_ids[:-1] if native else prompting.mode_switching_prompt,
         prompting.mode_switching_question,
         prompting.yes_token,
         prompting.no_token,
@@ -248,6 +295,10 @@ async def _run_loop(
             for _ in range(3):
                 blocks.append(await llm.create_block())
             prompt_blk, thinker_blk, writer_blk = blocks
+            if native:
+                # The last native prompt token predicts the thinker's first sample.
+                await llm.forward(native.prompt_ids[:-1], [prompt_blk], return_logits=False)
+                return
             for text, view in (
                 (prompting.input_prompt, [prompt_blk]),
                 (prompting.thinker_output_prefix, [prompt_blk, thinker_blk]),
@@ -258,15 +309,18 @@ async def _run_loop(
         tasks = [asyncio.create_task(prefill())]
         await asyncio.shield(tasks[0])
         prompt_blk, thinker_blk, writer_blk = blocks
-        # Generated notes follow the thinker header and its newline seed.
+        # The seed is a committed input before the first generated thought.
         notes_start = len(thinker_blk.token_ids) + 1
         # Feed the header newline once; extra blank lines can end Qwen3.5's thoughts early.
         thinker_ctx = AsyncContext(
-            cache_view=[prompt_blk, thinker_blk], next_input_id=single_token_id("\n", tokenizer)
+            cache_view=[prompt_blk, thinker_blk],
+            next_input_id=native.prompt_ids[-1] if native else single_token_id("\n", tokenizer),
         )
         writer_ctx = AsyncContext(
             cache_view=[prompt_blk, thinker_blk, writer_blk],
-            next_input_id=single_token_id(prompting.writer_seed, tokenizer),
+            next_input_id=native.writer_ids[-1]
+            if native
+            else single_token_id(prompting.writer_seed, tokenizer),
         )
 
         async def thinker_coro() -> None:
@@ -324,6 +378,13 @@ async def _run_loop(
                             # A probe may have revoked permission while we waited for the lock.
                             if not writer_may_run.is_set():
                                 continue
+                            if native and not writer_blk.token_ids and len(native.writer_ids) > 1:
+                                # Encode this turn against the notes actually present at admission.
+                                await llm.forward(
+                                    native.writer_ids[:-1],
+                                    writer_ctx.cache_view,
+                                    return_logits=False,
+                                )
                             token = await anext(stream, None)
                             if token is None or done.is_set():
                                 break
@@ -438,11 +499,14 @@ async def _run_demo(
     tokenizer = llm.tokenizer
     try:
         if prompting is None:
-            prompting = (
-                LlamaPrompting(config.problem, tokenizer)
-                if llm.config.model_config.model_type == "llama"
-                else Prompting(config.problem)
-            )
+            if llm.config.model_config.model_type == "llama":
+                prompting = LlamaPrompting(
+                    config.problem, tokenizer, protocol=config.llama_protocol
+                )
+            elif config.llama_protocol != "working-notes":
+                raise ValueError("The native-chat protocol requires a Llama checkpoint")
+            else:
+                prompting = Prompting(config.problem)
         if config.trace_output is None:
             return await _run_loop(config, llm, tokenizer, prompting)
 
@@ -479,7 +543,10 @@ def run(config: DemoConfig) -> None:
 
     print("\nLoading tokenizer & engine...")
     llm = build_async_llm(
-        config.model, memory_ratio=config.memory_ratio, page_size=config.page_size
+        config.model,
+        memory_ratio=config.memory_ratio,
+        page_size=config.page_size,
+        max_context_len=config.max_context_len,
     )
     try:
         asyncio.run(_run_demo(config, llm))

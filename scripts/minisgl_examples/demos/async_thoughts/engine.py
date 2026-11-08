@@ -7,13 +7,16 @@ from typing import List, Tuple
 import torch
 from minisgl.llm import AsyncLLM
 from minisgl.shared_cache import CacheBlock
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, GenerationConfig
 
 
 def build_async_llm(
     model_path: str,
     memory_ratio: float,
     page_size: int = 1,
+    *,
+    max_context_len: int = 8192,
+    generation_config: GenerationConfig | None = None,
 ) -> AsyncLLM:
     """Build a single-GPU engine for two decode streams and a four-block probe."""
     return AsyncLLM(
@@ -26,7 +29,8 @@ def build_async_llm(
         shared_cuda_graph_prefill_rows=[32, 256],
         max_prefill_rows=256,
         memory_ratio=memory_ratio,
-        max_seq_len_override=8192,
+        max_seq_len_override=max_context_len,
+        **({"generation_config": generation_config} if generation_config is not None else {}),
         page_size=page_size,
         distributed_addr="tcp://127.0.0.1:0",
     )
@@ -86,7 +90,7 @@ class ModeSwitchProbe:
         self,
         llm: AsyncLLM,
         tokenizer: AutoTokenizer,
-        mode_switching_prompt: str,
+        mode_switching_prompt: str | List[int],
         mode_switching_question: str,
         yes_token: str,
         no_token: str,
@@ -106,7 +110,11 @@ class ModeSwitchProbe:
         else:
             self.yes_id = single_token_id(yes_token, tokenizer)
             self.no_id = single_token_id(no_token, tokenizer)
-        self._prompt_ids = encode(mode_switching_prompt, tokenizer)
+        self._prompt_ids = (
+            encode(mode_switching_prompt, tokenizer)
+            if isinstance(mode_switching_prompt, str)
+            else torch.tensor(mode_switching_prompt, dtype=torch.int32)
+        )
         self._question_ids = encode(mode_switching_question, tokenizer)
         self._prompt_block: CacheBlock | None = None
 

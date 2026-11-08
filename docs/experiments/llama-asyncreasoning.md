@@ -4,6 +4,8 @@
 
 Can a concurrent thinker and writer produce accurate answers on an ordinary instruction-tuned Llama checkpoint? The primary score grades the writer's own answer. A second, separately reported experiment allows an ordinary generation to replace a short draft. This distinction matters when reporting support for models beyond Qwen.
 
+The original AsyncReasoning work studies concurrent thought and answer generation, including the delay to the first output token. Here the benchmark records both elapsed time to the first generated writer content and end-to-end time. A retry policy that buffers its draft exposes its selected answer later. [Asynchronous Reasoning](https://arxiv.org/abs/2512.10931)
+
 The model is allenai/Llama-3.1-Tulu-3-8B at revision 666943798adbde0b1aff34626007e26986a3c107. MATH-500 is HuggingFaceH4/MATH-500 at revision 6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be. The test.jsonl SHA-256 is 35dc41080a3680858b27fa7e0533d2d547825316fc5dafe5d316f4ccc5a06132. The ordinary and async models receive the same user message, including the request for a boxed answer and the working-notes instruction. The grader extracts the final literal balanced box, strips outer whitespace, and compares it to the gold string. Mathematically equivalent expressions can receive different grades.
 
 ## Decisions before the new GPU measurements
