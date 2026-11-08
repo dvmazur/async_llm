@@ -176,3 +176,15 @@ def test_repeated_continuation_preserves_first_acquisition_and_hardware(tmp_path
     assert (third / "origin/prior_session.json").read_bytes() == (
         second / "session.json"
     ).read_bytes()
+
+
+def test_complete_cross_session_triples_are_explicit():
+    cases = [
+        {"rank": rank, "arm": arm, "session": session}
+        for rank, pods in enumerate(("AAA", "BBA", "BBB"))
+        for arm, session in zip(("ordinary", "working-notes", "native-chat"), pods)
+    ]
+    singles, mixed = math500_report.paired_session_counts(cases, [0, 1])
+    assert singles == {"A": 1} and mixed == [
+        {"rank": 1, "arm_sessions": {"ordinary": "B", "working-notes": "B", "native-chat": "A"}}
+    ]

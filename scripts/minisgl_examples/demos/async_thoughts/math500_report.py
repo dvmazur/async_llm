@@ -593,6 +593,10 @@ def report(directory, dataset, tokenizer, source_dir=None, historical=None):
 
         provenance = session_provenance(directory, settings, environment, result["cases"])
         provenance["measured_source_bytes_verified_at_report"] = source_dir is not None
+        (
+            provenance["complete_triples_by_session"],
+            provenance["complete_triples_spanning_sessions"],
+        ) = paired_session_counts(result["cases"], matched)
         result["session_provenance"] = provenance
         result["by_session"] = {}
         for session in provenance["sessions"]:
@@ -604,6 +608,23 @@ def report(directory, dataset, tokenizer, source_dir=None, historical=None):
             " The imported cohort spans multiple hardware sessions. Per-session times are reported separately."
         )
     return result
+
+
+def paired_session_counts(cases, complete_ranks):
+    """Expose pairs that used more than one acquisition session for the same problem."""
+    groups = defaultdict(dict)
+    for case in cases:
+        groups[case["rank"]][case["arm"]] = case["session"]
+    singles, mixed = Counter(), []
+    for rank in complete_ranks:
+        arms = groups[rank]
+        require(set(arms) == set(ARMS), "Complete paired rank lacks an arm")
+        sessions = set(arms.values())
+        if len(sessions) == 1:
+            singles[next(iter(sessions))] += 1
+        else:
+            mixed.append({"rank": rank, "arm_sessions": arms})
+    return dict(singles), mixed
 
 
 def main():
