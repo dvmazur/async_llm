@@ -70,7 +70,7 @@ def manifest(directory, tasks):
     return m, digest(encode_json(m))
 
 
-def verify_physical(batches, roles, prompt, row):
+def verify_physical(batches, roles, prompt, row, thinker_budget=16384):
     arm = row["arm"]
     if arm != "evidence-turns":
         blocks = {req["write_to"] for b in batches for req in b["requests"]}
@@ -105,22 +105,24 @@ def verify_physical(batches, roles, prompt, row):
             "Serial answer decode chain differs",
         )
         return
-    blocks = {}
     views = {}
+    pending_flush = []
     for b in batches:
         if b["kind"] != "decode":
             continue
         group = roles.get(b["step"], {})
-        seen = set()
+        physical_roles = set()
         for req in b["requests"]:
             view = [x[0] for x in req["cache_view"]]
             require(len(view) in (2, 3), "Unexpected async actor")
             role = "thinker" if len(view) == 2 else "writer"
-            require(role in group and role not in seen, "Wrong actor charged for physical decode")
+            require(role not in physical_roles, "Actor decoded twice in one batch")
             require(views.setdefault(role, view) == view, "Actor cache changed")
-            blocks[role] = req["write_to"]
-            seen.add(role)
-        require(seen == set(group), "Sample did not produce a decode")
+            physical_roles.add(role)
+            if role not in group:
+                require(role == "thinker", "Writer decode has no sample")
+                pending_flush.append((b["step"], req))
+        require(set(group) <= physical_roles, "Sample did not produce a decode")
     require(
         "writer" in views and "thinker" in views and views["writer"][:-1] == views["thinker"],
         "Writer does not share the live thinker cache",
@@ -131,23 +133,39 @@ def verify_physical(batches, roles, prompt, row):
         and token_inputs(batches, "prefill", writer) == prompt.bridge[:-1],
         "Async prompt/bridge differs",
     )
+    thinker_steps = [(step, g["thinker"]) for step, g in sorted(roles.items()) if "thinker" in g]
+    decode_flush = bool(pending_flush)
+    pending_flush.extend(
+        (b["step"], q)
+        for b in batches
+        if b["kind"] == "prefill"
+        for q in b["requests"]
+        if q["write_to"] == thinker
+    )
+    if pending_flush:
+        # After the last sample at the hard thinker cap, the runtime can commit its still-pending
+        # token via one physical forward (often a decode) without sampling another token.
+        step, req = pending_flush[0]
+        require(
+            len(pending_flush) == 1
+            and len(thinker_steps) == row["thinker_samples"] == thinker_budget
+            and row["thinker_stop_id"] is None
+            and len(row["thinker_ids"]) == thinker_budget
+            and step > thinker_steps[-1][0]
+            and req["write_start"] == thinker_budget
+            and [x[0] for x in req["cache_view"]] == views["thinker"]
+            and req["input_ids"] == [thinker_steps[-1][1]] == row["thinker_ids"][-1:],
+            "Unexpected terminal thinker flush",
+        )
     for role, block, seed in (
         ("thinker", thinker, prompt.initial[-1]),
         ("writer", writer, prompt.bridge[-1]),
     ):
-        sampled = [group[role] for _, group in sorted(roles.items()) if role in group]
-        require(
-            token_inputs(batches, "decode", block) == [seed] + sampled[:-1],
-            "Async decode inputs differ",
-        )
-    flush = token_inputs(batches, "prefill", thinker)
-    require(
-        not flush
-        or (
-            len(flush) == 1 and row["thinker_samples"] == 16384 and flush == row["thinker_ids"][-1:]
-        ),
-        "Unexpected thinker flush",
-    )
+        sampled = [g[role] for _, g in sorted(roles.items()) if role in g]
+        expected = [seed] + sampled[:-1]
+        if role == "thinker" and decode_flush:
+            expected.append(sampled[-1])
+        require(token_inputs(batches, "decode", block) == expected, "Async decode inputs differ")
 
 
 def verify_row(path, tokenizer, tasks, archive, settings, settings_sha):
@@ -211,7 +229,7 @@ def verify_row(path, tokenizer, tasks, archive, settings, settings_sha):
         group = groups.setdefault(step, {})
         require(role not in group, "Role sampled twice in one batch")
         group[role] = token
-    verify_physical(batches, groups, prompt, row)
+    verify_physical(batches, groups, prompt, row, settings["budget"])
     writer_prefix = []
     spent = 0
     for step in sorted(groups):
@@ -250,7 +268,9 @@ def verify_row(path, tokenizer, tasks, archive, settings, settings_sha):
         row[phase + "_applied"] = len(applied)
         row[phase + "_yes"] = sum(v["vote_write"] for v in applied)
     if arm == "evidence-turns":
-        last_thought = max(step for step, group in groups.items() if "thinker" in group)
+        last_thought = max(
+            b["step"] for b in decodes if any(len(q["cache_view"]) == 2 for q in b["requests"])
+        )
         row["writer_tokens_after_last_thinker_decode"] = sum(
             step > last_thought and g.get("writer") not in (None, eos) for step, g in groups.items()
         )
@@ -270,7 +290,11 @@ def verify_row(path, tokenizer, tasks, archive, settings, settings_sha):
         )
     else:
         row["writer_tokens_after_last_thinker_decode"] = None
-    row["joint_decode_verified"] = sum(len(groups[step]) == 2 for step in groups)
+    # A joint forward may commit the last thinker token and sample only the writer.
+    row["joint_sampled_steps"] = sum(len(g) == 2 for g in groups.values())
+    row["joint_decode_verified"] = sum(
+        {len(q["cache_view"]) for q in b["requests"]}.issuperset({2, 3}) for b in decodes
+    )
     require(row["joint_decode_verified"] == row["joint_decode_batches"], "Joint step count differs")
     nt, nw = len(role_ids["thinker"]), len(role_ids["writer"])
     require(

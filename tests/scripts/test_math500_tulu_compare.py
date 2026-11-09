@@ -246,3 +246,95 @@ def test_rejects_changed_manifest_and_conflicting_duplicate(tmp_path, tokenizer,
     save_record(second, {**row, "elapsed_seconds": 2.0}, trace)
     with pytest.raises(ValueError, match="Duplicate predictions differ"):
         compare.comparison([tmp_path, second], [task], ref, tokenizer, 1)
+
+
+def terminal_flush_record(tok, task, sha, mode):
+    row, trace = make_record("evidence-turns", tok, task, sha)
+    physical = trace["trace"]
+    last = physical["batches"][-1]
+    ts, ws = last["requests"]
+    trace["samples"] = [
+        e
+        for e in trace["samples"]
+        if not (e["batch_step"] == last["step"] and e["role"] == "thinker")
+    ]
+    row["thinker_samples"] -= 1
+    if mode != "joint":
+        last["requests"] = [ts]
+        last["kind"] = mode
+        ws["cache_view"][1][1] += 1
+        physical["batches"].append(
+            {"step": len(physical["batches"]), "kind": "decode", "requests": [ws]}
+        )
+        physical["steps"] += 1
+        trace["samples"][-1]["batch_step"] += 1
+        row["joint_decode_batches"] -= 1
+    row["forward_batches"] = len(physical["batches"])
+    row["decode_batches"] = sum(b["kind"] == "decode" for b in physical["batches"])
+    return row, trace
+
+
+@pytest.mark.parametrize("mode", ["joint", "decode", "prefill"])
+def test_budget_terminal_thinker_forward_counts_work_without_a_new_sample(
+    tmp_path, tokenizer, journal, mode
+):
+    task, ref, m, sha = journal
+    m = {**m, "budget": 2}
+    sha = digest(encode_json(m))
+    row, trace = terminal_flush_record(tokenizer, task, sha, mode)
+    out = compare.verify_row(save_record(tmp_path, row, trace), tokenizer, [task], ref, m, sha)
+    assert out["thinker_samples"] == out["writer_samples"] == 2
+    assert out["joint_sampled_steps"] == 1
+    assert out["joint_decode_verified"] == (2 if mode == "joint" else 1)
+    assert out["forward_batches"] == (5 if mode == "joint" else 6)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "wrong_token",
+        "duplicate",
+        "early",
+        "stopped",
+        "wrong_position",
+        "fake_budget",
+        "unbacked_writer",
+    ],
+)
+def test_terminal_flush_must_match_last_earned_thought(tmp_path, tokenizer, journal, fault):
+    task, ref, m, _ = journal
+    m = {**m, "budget": 2}
+    sha = digest(encode_json(m))
+    row, trace = terminal_flush_record(tokenizer, task, sha, "joint")
+    b = trace["trace"]["batches"]
+    terminal = b[-1]["requests"][0]
+    if fault == "wrong_token":
+        terminal["input_ids"][0] += 1
+    elif fault == "duplicate":
+        duplicate = deepcopy(terminal)
+        duplicate["write_start"] += 1
+        duplicate["cache_view"][1][1] += 1
+        b.append({"step": len(b), "kind": "decode", "requests": [duplicate]})
+        trace["trace"]["steps"] += 1
+        row["decode_batches"] += 1
+        row["forward_batches"] += 1
+    elif fault == "early":
+        next(e for e in trace["samples"] if e["role"] == "thinker" and e["batch_step"] == 3)[
+            "batch_step"
+        ] = 4
+    elif fault == "stopped":
+        row["thinker_stop_id"] = tokenizer.eos_token_id
+    elif fault == "wrong_position":
+        terminal["write_start"] -= 1
+    elif fault == "fake_budget":
+        m = {**m, "budget": 3}
+        sha = digest(encode_json(m))
+        row["settings_sha256"] = sha
+    else:
+        trace["samples"] = [
+            e for e in trace["samples"] if not (e["role"] == "writer" and e["batch_step"] == 4)
+        ]
+    with pytest.raises(
+        ValueError, match="terminal thinker flush|Invalid block write|Writer decode has no sample"
+    ):
+        compare.verify_row(save_record(tmp_path, row, trace), tokenizer, [task], ref, m, sha)
