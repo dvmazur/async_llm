@@ -1,5 +1,7 @@
 # Tülu native-chat on MATH-500: an adaptation of AsyncReasoning
 
+The completed 500-problem comparison found 209 strict matches for the native-chat writer (41.8%) and 196 for ordinary Tülu (39.2%). No ordinary retry fired. [Full results and public case ledger](llama-math500-native500.md).
+
 ## What was tested
 
 The `native-chat` arm is a Tülu adaptation of AsyncReasoning. It preserves concurrent decoding and the default cache views: the thinker reads its own work, and the writer reads the growing thoughts as it answers. The [published default (Appendices A–B)](https://arxiv.org/html/2512.10931v3#A2) starts from a shared user instruction with fixed stream prefixes and uses the same live yes/no probe for writer admission and subsequent switches.
@@ -93,7 +95,7 @@ The short retry ran on three of the 11 working-notes drafts, raising that score 
 
 On the 64 prespecified study IDs, the historical archive has ordinary at 31/64, original async at 23/64 and the short retry at 28/64. The retry routed 23 cases, gaining eight and losing three. These are grades of earlier archived outputs. The fresh A100 arm records and their trace hashes are in the [pilot results](llama-math500-pilot.json).
 
-**What the paper can report.** The A100 traces establish that an instruction-tuned Llama checkpoint performed concurrent reasoning and writing. The surviving paired prefix is small, and the native-chat pure score tied the current working-notes score there. A new 64-problem or 500-problem accuracy result requires another measured run. No accuracy improvement for pure AR over the full benchmark has been established.
+**Eleven-case pilot.** The A100 traces established that this instruction-tuned Llama checkpoint performed concurrent reasoning and writing. The native-chat and working-notes writers tied on the surviving paired prefix. The subsequent 64-case and full 500-case experiments used the preserved pilot rows.
 
 **Artifact handling for a repeat.** Put the benchmark output on storage that survives pod deletion, or have a separate always-on host pull and verify completed row/trace pairs while the pod is running. Verify the sink on an actual smoke result before starting the cohort. Retain the prompt, source and trace digests and report verified coverage independently of the pod exit code. The first trial used the Mac as the only persistent mirror; that choice lost the unaudited portion of the run.
 
@@ -115,7 +117,7 @@ All **64 fixed problems** have three verified A100 runs, for **192 arm records**
 | Working-notes AR | 24/64 (37.5%) | 30/64 (46.9%) | 18 | 1.416 s | 6.86 s |
 | Tülu native-chat adaptation | **33/64 (51.6%)** | **33/64 (51.6%)** | **0** | 1.761 s | 12.74 s |
 
-The native-chat writer gained 14 correct answers and lost five against working-notes, a net increase of nine answers or 14.1 percentage points. The unadjusted two-sided exact paired sign test gives p = 0.0636. Against ordinary generation it gained four and lost two, a net increase of two answers or 3.1 points (p = 0.6875). All 33 correct native-chat answers came from the concurrent writer. These estimates describe Tülu 3 8B on the 64 ranked problems. The patched native-chat protocol has no fresh 500-problem accuracy measurement.
+The native-chat writer gained 14 correct answers and lost five against working-notes, a net increase of nine answers or 14.1 percentage points. The unadjusted two-sided exact paired sign test gives p = 0.0636. Against ordinary generation it gained four and lost two, a net increase of two answers or 3.1 points (p = 0.6875). All 33 correct native-chat answers came from the concurrent writer. These estimates describe Tülu 3 8B on the 64 ranked problems. The [full comparison](llama-math500-native500.md) retains those 64 answers and adds the other 436.
 
 Both async protocols had joint decode batches and growing writer-visible thinker state on **64/64** problems. The native thinker matched at least eight initial ordinary tokens on 63/64 and at least 32 on 61/64. Its median shared prefix was 213.5 tokens. Across the cohort, native-chat generated 61,535 thinker content tokens and 51,747 writer content tokens. Ordinary generation produced 78,907 content tokens. The median wall times above exclude model load, smoke tests and artifact I/O. The buffered working-notes hybrid's median time to selected output was 9.04 seconds.
 
