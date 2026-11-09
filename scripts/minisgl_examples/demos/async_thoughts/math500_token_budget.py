@@ -63,7 +63,7 @@ def checked_bytes(path, expected):
     return raw
 
 
-def read_cases(eval_dir, ordinary_results, comparison, tokenizer):
+def read_cases(eval_dir, ordinary_results, comparison, tokenizer, *, ranks=None):
     summary = json.loads((comparison / "full_comparison.json").read_bytes())
     if summary["status"] != "verified_500" or summary["matched_prompt_hashes"] != 500:
         raise ValueError("Expected a verified full matched comparison")
@@ -71,6 +71,8 @@ def read_cases(eval_dir, ordinary_results, comparison, tokenizer):
     ordinary = {row["unique_id"]: row for row in map(json.loads, records.splitlines())}
     pairs = checked_bytes(comparison / "paired_cases.jsonl", summary["paired_cases_sha256"])
     for pair in map(json.loads, pairs.splitlines()):
+        if ranks is not None and pair["rank"] not in ranks:
+            continue
         stem = f"{pair['rank']:03}.native-chat"
         native = json.loads((eval_dir / "rows" / f"{stem}.json").read_bytes())
         other = ordinary[pair["unique_id"]]
