@@ -22,6 +22,8 @@ Median per-problem inference time was 9.23 s for ordinary, 12.22 s for the pure 
 
 [Per-problem strict grades, timings, token counts, and trace digests](llama-math500-native500.jsonl).
 
+[Accuracy, mean and median writer tokens, inference steps, and token-budget replay](llama-math500-efficiency.md).
+
 ## Comparison with the earlier Tülu port
 
 The earlier working-notes port scored 128/500 (25.6%) with a 16,384-token limit per role. Native-chat gained 81 net correct answers on the same problems. Of the 106 problems ordinary solved and the earlier port missed, native-chat recovered 93. Of the 90 both earlier methods solved, native-chat retained 82 and missed eight. Among the 304 that ordinary missed, native-chat retained 13 of the earlier port’s 38 exclusive solves and added 21 that both earlier methods missed. These comparisons use the same 500 ordinary trace hashes. The earlier traces informed the adaptation, so the 93/106 recovery rate describes a development cohort.
