@@ -65,6 +65,7 @@ class DemoConfig:
     llama_protocol: str = "working-notes"
     max_context_len: int = 8192
     retry_short_answer: bool = False
+    probe_log: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -271,6 +272,16 @@ async def _run_loop(
         thinker_stops.add(end_think)
     writer_forbidden = forbidden + ([end_think] if end_think is not None else [])
     native = prompting.native_turns
+    diagnostics = None
+    if config.probe_log is not None:
+        from minisgl_examples.demos.async_thoughts.probe_log import ProbeLog
+
+        if (
+            config.trace_output is not None
+            and config.trace_output.resolve() == config.probe_log.resolve()
+        ):
+            raise ValueError("The training trace and probe log need distinct output paths")
+        diagnostics = ProbeLog(config.probe_log)
     probe = ModeSwitchProbe(
         llm,
         tokenizer,
@@ -279,6 +290,7 @@ async def _run_loop(
         prompting.yes_token,
         prompting.no_token,
         label_variants=prompting.probe_label_variants,
+        on_live_view=diagnostics.observe_view if diagnostics is not None else None,
     )
     done, thinking_done = asyncio.Event(), asyncio.Event()
     writer_may_run, probe_due = asyncio.Event(), asyncio.Event()
@@ -311,6 +323,7 @@ async def _run_loop(
         prompt_blk, thinker_blk, writer_blk = blocks
         # The seed is a committed input before the first generated thought.
         notes_start = len(thinker_blk.token_ids) + 1
+        writer_start = len(native.writer_ids) if native else len(writer_blk.token_ids) + 1
         # Feed the header newline once; extra blank lines can end Qwen3.5's thoughts early.
         thinker_ctx = AsyncContext(
             cache_view=[prompt_blk, thinker_blk],
@@ -402,6 +415,8 @@ async def _run_loop(
                                 _print_state_change("writer end-of-step -> thinker leads")
                                 # Leave the sampled token pending until the next permitted step.
                                 writer_may_run.clear()
+                                if diagnostics is not None:
+                                    diagnostics.paused_at_paragraph = True
             finally:
                 done.set()
                 writer_may_run.set()
@@ -416,6 +431,8 @@ async def _run_loop(
                     async with writer_gate:
                         if done.is_set() or thinking_done.is_set():
                             return
+                        if diagnostics is not None:
+                            allowed_before = writer_may_run.is_set()
                         start_ids = None
                         if start_question is not None:
                             notes = tokenizer.decode(
@@ -432,6 +449,12 @@ async def _run_loop(
                                 )
                                 start_question = None
                         if start_ids is not None:
+                            if diagnostics is not None:
+                                diagnostics.observe_view(
+                                    len(thinker_blk.token_ids),
+                                    len(writer_blk.token_ids),
+                                    len(start_ids),
+                                )
                             should_write, yes_logit, no_logit = await probe.check_start_writing(
                                 start_ids
                             )
@@ -440,6 +463,24 @@ async def _run_loop(
                                 thinker_blk, writer_blk
                             )
                         # A result requested before thinking ended must not park the writer now.
+                        if diagnostics is not None:
+                            discarded = (
+                                "generation_done"
+                                if done.is_set()
+                                else ("thinker_done" if thinking_done.is_set() else None)
+                            )
+                            diagnostics.record(
+                                source="standalone" if start_ids is not None else "live_cache",
+                                yes=yes_logit,
+                                no=no_logit,
+                                vote=should_write,
+                                before=allowed_before,
+                                after=writer_may_run.is_set() if discarded else should_write,
+                                discarded=discarded,
+                                thinker_start=notes_start,
+                                writer_start=writer_start,
+                                writer_ids=writer_tokens,
+                            )
                         if done.is_set() or thinking_done.is_set():
                             return
                         changed = should_write != writer_may_run.is_set()
@@ -479,6 +520,14 @@ async def _run_loop(
         for block in reversed(blocks):
             await llm.free_block(block)
 
+    if diagnostics is not None:
+        protocol = "native-chat" if native else "working-notes"
+        diagnostics.save(
+            model=config.model,
+            problem=config.problem,
+            prompting=type(prompting).__name__,
+            protocol=protocol if isinstance(prompting, LlamaPrompting) else None,
+        )
     _print_header("Final")
     for label, tokens, role in (
         ("Thinker", thinker_tokens, "thinker"),

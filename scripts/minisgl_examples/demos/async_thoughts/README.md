@@ -82,8 +82,17 @@ continue while the thinker generates. The default is `working-notes`.
 ```bash
 uv run --no-sync async-reasoning-llama --model "$TULU_SNAPSHOT" \
   --llama-protocol native-chat --max-context-len 40960 \
-  --max-think-tokens 16384 --max-answer-tokens 16384
+  --max-think-tokens 16384 --max-answer-tokens 16384 \
+  --probe-log training_runs/async_thoughts/tulu-votes.json
 ```
+
+The optional `--probe-log` writes one completed demo run to a new JSON file.
+Its `events` array identifies admission and continuation probes, their yes/no
+logits, the vote and the writer permission before and after the check. Each
+event includes committed thinker and writer token counts, any pending answer
+token, and whether the vote was applied or discarded. `scored_input_tokens`
+counts rows in the scored forward and excludes the cached prefix. Use a new
+path for each run.
 
 `--retry-short-answer` selects a separate hybrid baseline. A writer draft of
 up to 16 content tokens ending at EOS can spend the rest of its allowance on

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import List, Tuple
 
 import torch
@@ -96,8 +97,10 @@ class ModeSwitchProbe:
         no_token: str,
         *,
         label_variants: bool = False,
+        on_live_view: Callable[[int, int, int], None] | None = None,
     ) -> None:
         self.llm = llm
+        self.on_live_view = on_live_view
         self._label_indices = None
         if label_variants:
             yes_ids = _single_token_spellings(yes_token, tokenizer)
@@ -150,6 +153,10 @@ class ModeSwitchProbe:
 
         question = await self.llm.create_block()
         try:
+            if self.on_live_view is not None:
+                self.on_live_view(
+                    len(thinker.token_ids), len(writer.token_ids), self._question_ids.numel()
+                )
             out = await self.llm.forward(
                 self._question_ids, [self._prompt_block, thinker, writer, question]
             )

@@ -79,6 +79,11 @@ def parse_args(argv: list[str] | None = None, *, llama: bool = False) -> DemoCon
     )
     p.add_argument("--max-context-len", type=int, default=8192, help="Engine context capacity.")
     p.add_argument(
+        "--probe-log",
+        type=Path,
+        help="Write every scored readiness vote, observed cache lengths and gate transition to a new JSON file.",
+    )
+    p.add_argument(
         "--llama-protocol",
         choices=("working-notes", "native-chat"),
         default="working-notes",
@@ -101,6 +106,7 @@ def parse_args(argv: list[str] | None = None, *, llama: bool = False) -> DemoCon
         memory_ratio=args.memory_ratio,
         page_size=args.page_size,
         trace_output=args.trace_output,
+        probe_log=args.probe_log,
         llama_protocol=args.llama_protocol,
         retry_short_answer=args.retry_short_answer,
         max_context_len=args.max_context_len,
