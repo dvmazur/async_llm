@@ -1,4 +1,10 @@
-# Llama AsyncReasoning on MATH-500
+# Tülu native-chat on MATH-500: an adaptation of AsyncReasoning
+
+## What was tested
+
+The `native-chat` arm is a Tülu adaptation of AsyncReasoning. It preserves concurrent decoding and the default cache views: the thinker reads its own work, and the writer reads the growing thoughts as it answers. The [published default (Appendices A–B)](https://arxiv.org/html/2512.10931v3#A2) starts from a shared user instruction with fixed stream prefixes and uses the same live yes/no probe for writer admission and subsequent switches.
+
+In this arm, the thinker starts an ordinary Tülu assistant reply. Before the writer starts, a separate chat judges whether the committed notes contain a useful step. At admission the writer receives a new user turn directing it to check the partial draft and finish the task. Later switches still use the live probe. “Pure writer” means the adaptation’s own answer without an ordinary retry; it does not mean the published protocol was reproduced. The MATH-500 comparison measures these changes together and cannot establish the accuracy of the published default on Tülu or isolate the effect of its probe.
 
 ## Question and comparison
 
@@ -25,7 +31,7 @@ The model is allenai/Llama-3.1-Tulu-3-8B at revision 666943798adbde0b1aff3462600
 | Short-answer retry | The opt-in hybrid retries only an EOS-terminated async writer draft with at most 16 content tokens. The threshold came from the earlier 106-loss analysis. It uses no label at inference time. The retry starts from the original ordinary prompt on an independent KV block. Draft, EOS and retry all consume the same writer token allowance. The selected output and both phase costs are recorded. |
 | Scope | The working-notes protocol remains available for reproduction. The native-chat variant bundles native thinker seeding, a different writer turn, and deferred writer prefill. A score difference between these variants cannot identify an individual component's causal effect. |
 
-The historical original async run scored 128/500, ordinary scored 196/500. Of the 106 ordinary-only losses, 63 had writers of at most 16 tokens and 105 reached EOS. All 38 async-only wins also began writing after at most 20 visible thinker tokens, so first-writer timing alone did not distinguish wins from losses. Four ordinary-only loss traces contained the correct thinker box eventually. In three the literal correct box was already visible to the writer by the wrong box.
+The historical Llama working-notes implementation scored 128/500, ordinary scored 196/500. Of the 106 ordinary-only losses, 63 had writers of at most 16 tokens and 105 reached EOS. All 38 async-only wins also began writing after at most 20 visible thinker tokens, so first-writer timing alone did not distinguish wins from losses. Four ordinary-only loss traces contained the correct thinker box eventually. In three the literal correct box was already visible to the writer by the wrong box.
 
 Replaying the short-draft rule over the archived original async and ordinary generations yields 177/500. It routes 188 cases, gains 63 and loses 14 relative to the historical async outputs. Five archived ordinary outputs are clipped to the remaining writer allowance with no strict grade changes. This is an exploratory retrospective hybrid estimate, derived on a dataset already examined during development.
 
@@ -107,7 +113,7 @@ All **64 fixed problems** have three verified A100 runs, for **192 arm records**
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Ordinary Tülu | 31/64 (48.4%) | — | — | 0.047 s | 9.11 s |
 | Working-notes AR | 24/64 (37.5%) | 30/64 (46.9%) | 18 | 1.416 s | 6.86 s |
-| Native-chat AR | **33/64 (51.6%)** | **33/64 (51.6%)** | **0** | 1.761 s | 12.74 s |
+| Tülu native-chat adaptation | **33/64 (51.6%)** | **33/64 (51.6%)** | **0** | 1.761 s | 12.74 s |
 
 The native-chat writer gained 14 correct answers and lost five against working-notes, a net increase of nine answers or 14.1 percentage points. The unadjusted two-sided exact paired sign test gives p = 0.0636. Against ordinary generation it gained four and lost two, a net increase of two answers or 3.1 points (p = 0.6875). All 33 correct native-chat answers came from the concurrent writer. These estimates describe Tülu 3 8B on the 64 ranked problems. The patched native-chat protocol has no fresh 500-problem accuracy measurement.
 
