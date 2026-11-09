@@ -66,6 +66,8 @@ class DemoConfig:
     max_context_len: int = 8192
     retry_short_answer: bool = False
     probe_log: Path | None = None
+    llama_gate: str = "periodic"
+    probe_include_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -142,18 +144,10 @@ class LlamaPrompting(Prompting):
 
         # Split where the two live KV blocks will appear in the probe's chat history.
         marker = "MINISGL_LIVE_NOTES_AND_ANSWER"
-        probe_chat = render(
-            [
-                {"role": "user", "content": f"Work on this problem:\n{problem}"},
-                {"role": "assistant", "content": marker},
-                {
-                    "role": "user",
-                    "content": "Do the working notes contain enough information "
-                    "to continue writing the final answer? Respond with just yes or no.",
-                },
-            ]
+        self.mode_switching_prompt, self.mode_switching_question = self._probe_chat(
+            "Do the working notes contain enough information "
+            "to continue writing the final answer? Respond with just yes or no."
         )
-        self.mode_switching_prompt, self.mode_switching_question = probe_chat.rsplit(marker, 1)
 
         if protocol == "native-chat":
             followup = {
@@ -189,6 +183,27 @@ class LlamaPrompting(Prompting):
             self.writer_output_prefix = literal(bridge_ids[:-1])
             self.writer_seed = literal(bridge_ids[-1:])
             self.mode_switching_prompt = literal(prompt_ids[:-1])
+
+    def _probe_chat(self, question: str) -> tuple[str, str]:
+        marker = "MINISGL_LIVE_NOTES_AND_ANSWER"
+        chat = self.tokenizer.apply_chat_template(
+            [
+                {"role": "user", "content": f"Work on this problem:\n{self.problem}"},
+                {"role": "assistant", "content": marker},
+                {"role": "user", "content": question},
+            ],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        prefix, suffix = chat.rsplit(marker, 1)
+        return prefix, suffix
+
+    def next_step_question(self) -> str:
+        return self._probe_chat(
+            "Do the working notes justify a concrete next step that the response has not "
+            "explained? Answer no if the step is unresolved or just repeats the response. "
+            "Reply with just yes or no."
+        )[1]
 
     def start_question_ids(self, notes: str) -> list[int]:
         """Ask whether these committed notes establish a step the writer can explain."""
@@ -272,6 +287,13 @@ async def _run_loop(
         thinker_stops.add(end_think)
     writer_forbidden = forbidden + ([end_think] if end_think is not None else [])
     native = prompting.native_turns
+    if config.llama_gate not in ("periodic", "evidence-turns"):
+        raise ValueError(f"Unknown Llama gate: {config.llama_gate}")
+    evidence_turns = config.llama_gate == "evidence-turns"
+    if (evidence_turns or config.probe_include_pending) and native is None:
+        raise ValueError(
+            "The writer-turn and pending-token probe options require Llama native-chat"
+        )
     diagnostics = None
     if config.probe_log is not None:
         from minisgl_examples.demos.async_thoughts.probe_log import ProbeLog
@@ -282,15 +304,24 @@ async def _run_loop(
         ):
             raise ValueError("The training trace and probe log need distinct output paths")
         diagnostics = ProbeLog(config.probe_log)
+    last_checked_thinker = -1
+    writer_tokens_at_grant = 0
+
+    def observe_query(thinker_length: int, writer_length: int, scored_rows: int) -> None:
+        nonlocal last_checked_thinker
+        last_checked_thinker = thinker_length
+        if diagnostics is not None:
+            diagnostics.observe_view(thinker_length, writer_length, scored_rows)
+
     probe = ModeSwitchProbe(
         llm,
         tokenizer,
         native.prompt_ids[:-1] if native else prompting.mode_switching_prompt,
-        prompting.mode_switching_question,
+        prompting.next_step_question() if evidence_turns else prompting.mode_switching_question,
         prompting.yes_token,
         prompting.no_token,
         label_variants=prompting.probe_label_variants,
-        on_live_view=diagnostics.observe_view if diagnostics is not None else None,
+        on_live_view=observe_query if evidence_turns or diagnostics is not None else None,
     )
     done, thinking_done = asyncio.Event(), asyncio.Event()
     writer_may_run, probe_due = asyncio.Event(), asyncio.Event()
@@ -409,20 +440,27 @@ async def _run_loop(
                             if len(writer_tokens) >= config.max_answer_tokens:
                                 _print_state_change("writer hit token limit -- finished")
                                 break
-                            if not thinking_done.is_set() and ends_with_double_newline(
-                                writer_tokens, tokenizer
-                            ):
-                                _print_state_change("writer end-of-step -> thinker leads")
-                                # Leave the sampled token pending until the next permitted step.
-                                writer_may_run.clear()
-                                if diagnostics is not None:
-                                    diagnostics.paused_at_paragraph = True
+                            if not thinking_done.is_set():
+                                paragraph_end = ends_with_double_newline(writer_tokens, tokenizer)
+                                turn_end = evidence_turns and (
+                                    len(writer_tokens) - writer_tokens_at_grant
+                                    >= config.probe_period
+                                )
+                                if paragraph_end or turn_end:
+                                    reason = "end-of-step" if paragraph_end else "turn limit"
+                                    _print_state_change(f"writer {reason} -> thinker leads")
+                                    writer_may_run.clear()
+                                    if diagnostics is not None:
+                                        diagnostics.paused_at_paragraph = paragraph_end
+                                    if evidence_turns:
+                                        probe_due.set()
             finally:
                 done.set()
                 writer_may_run.set()
                 probe_due.set()
 
         async def probe_coro() -> None:
+            nonlocal writer_tokens_at_grant
             start_question = getattr(prompting, "start_question_ids", None)
             try:
                 while True:
@@ -431,6 +469,11 @@ async def _run_loop(
                     async with writer_gate:
                         if done.is_set() or thinking_done.is_set():
                             return
+                        if evidence_turns and (
+                            writer_may_run.is_set()
+                            or len(thinker_blk.token_ids) <= last_checked_thinker
+                        ):
+                            continue
                         if diagnostics is not None:
                             allowed_before = writer_may_run.is_set()
                         start_ids = None
@@ -448,15 +491,23 @@ async def _run_loop(
                                     "readiness chat exceeds available cache -> using live probe"
                                 )
                                 start_question = None
+                        pending_writer_id = None
                         if start_ids is not None:
-                            if diagnostics is not None:
-                                diagnostics.observe_view(
+                            if evidence_turns or diagnostics is not None:
+                                observe_query(
                                     len(thinker_blk.token_ids),
                                     len(writer_blk.token_ids),
                                     len(start_ids),
                                 )
                             should_write, yes_logit, no_logit = await probe.check_start_writing(
                                 start_ids
+                            )
+                        elif config.probe_include_pending and len(writer_tokens) > max(
+                            0, len(writer_blk.token_ids) - writer_start
+                        ):
+                            pending_writer_id = writer_tokens[-1]
+                            should_write, yes_logit, no_logit = await probe.check_continue_writing(
+                                thinker_blk, writer_blk, pending_writer_id=pending_writer_id
                             )
                         else:
                             should_write, yes_logit, no_logit = await probe.check_continue_writing(
@@ -480,12 +531,15 @@ async def _run_loop(
                                 thinker_start=notes_start,
                                 writer_start=writer_start,
                                 writer_ids=writer_tokens,
+                                query_pending_id=pending_writer_id,
                             )
                         if done.is_set() or thinking_done.is_set():
                             return
                         changed = should_write != writer_may_run.is_set()
                         if should_write:
                             start_question = None
+                            if evidence_turns:
+                                writer_tokens_at_grant = len(writer_tokens)
                             writer_may_run.set()
                         else:
                             writer_may_run.clear()
@@ -527,6 +581,9 @@ async def _run_loop(
             problem=config.problem,
             prompting=type(prompting).__name__,
             protocol=protocol if isinstance(prompting, LlamaPrompting) else None,
+            gate=config.llama_gate,
+            include_pending=config.probe_include_pending,
+            probe_period=config.probe_period,
         )
     _print_header("Final")
     for label, tokens, role in (

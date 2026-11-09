@@ -94,7 +94,25 @@ def parse_args(argv: list[str] | None = None, *, llama: bool = False) -> DemoCon
         action="store_true",
         help="On Llama, spend remaining writer tokens on a native retry after a short EOS draft.",
     )
+    p.add_argument(
+        "--llama-gate",
+        choices=("periodic", "evidence-turns"),
+        default="periodic",
+        help="In native-chat, evidence-turns checks parked writers for a supported next step. "
+        "Each grant covers up to one paragraph or --probe-period writer tokens while thinking continues.",
+    )
+    p.add_argument(
+        "--probe-include-pending",
+        action="store_true",
+        help="In native-chat, include the writer's pending emitted token in the private live-probe input.",
+    )
     args = p.parse_args(argv)
+    if (
+        args.llama_gate != "periodic" or args.probe_include_pending
+    ) and args.llama_protocol != "native-chat":
+        p.error(
+            "--llama-gate evidence-turns and --probe-include-pending require --llama-protocol native-chat"
+        )
     if min(args.max_steps, args.max_answer_tokens, args.probe_period, args.max_context_len) < 1:
         p.error("Token budgets, probe period and context capacity must be positive")
     return DemoConfig(
@@ -108,6 +126,8 @@ def parse_args(argv: list[str] | None = None, *, llama: bool = False) -> DemoCon
         trace_output=args.trace_output,
         probe_log=args.probe_log,
         llama_protocol=args.llama_protocol,
+        llama_gate=args.llama_gate,
+        probe_include_pending=args.probe_include_pending,
         retry_short_answer=args.retry_short_answer,
         max_context_len=args.max_context_len,
     )

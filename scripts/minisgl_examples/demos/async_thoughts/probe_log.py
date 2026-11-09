@@ -30,6 +30,7 @@ class ProbeLog:
         thinker_start: int,
         writer_start: int,
         writer_ids: list[int],
+        query_pending_id: int | None,
     ) -> None:
         if self.read_lengths is None:
             raise RuntimeError("A scored probe is missing its observed block lengths")
@@ -50,6 +51,7 @@ class ProbeLog:
                 "thinker_block_tokens": thinker_length,
                 "writer_block_tokens": writer_length,
                 "scored_input_tokens": scored_rows,
+                "query_pending_answer_token_id": query_pending_id,
                 "committed_thought_tokens": max(0, thinker_length - thinker_start),
                 "committed_answer_tokens": committed_writer,
                 "sampled_answer_tokens": len(writer_ids),
@@ -63,13 +65,26 @@ class ProbeLog:
             self.admitted = True
             self.paused_at_paragraph = False
 
-    def save(self, *, model: str, problem: str, prompting: str, protocol: str | None) -> None:
+    def save(
+        self,
+        *,
+        model: str,
+        problem: str,
+        prompting: str,
+        protocol: str | None,
+        gate: str,
+        include_pending: bool,
+        probe_period: int,
+    ) -> None:
         data = {
             "format_version": 1,
             "model": str(model),
             "problem": problem,
             "prompting": prompting,
             "llama_protocol": protocol,
+            "llama_gate": gate if protocol is not None else None,
+            "probe_include_pending": include_pending,
+            "probe_period": probe_period,
             "events": self.events,
         }
         text = json.dumps(data, ensure_ascii=False, allow_nan=False)

@@ -139,7 +139,7 @@ class ModeSwitchProbe:
             await self.llm.free_block(scratch)
 
     async def check_continue_writing(
-        self, thinker: CacheBlock, writer: CacheBlock
+        self, thinker: CacheBlock, writer: CacheBlock, *, pending_writer_id: int | None = None
     ) -> Tuple[bool, float, float]:
         """Return the vote and the best logit for each of the two probe labels."""
         if self._prompt_block is None:
@@ -153,12 +153,17 @@ class ModeSwitchProbe:
 
         question = await self.llm.create_block()
         try:
+            question_ids = self._question_ids
+            if pending_writer_id is not None:
+                question_ids = torch.cat(
+                    (question_ids.new_tensor([pending_writer_id]), question_ids)
+                )
             if self.on_live_view is not None:
                 self.on_live_view(
-                    len(thinker.token_ids), len(writer.token_ids), self._question_ids.numel()
+                    len(thinker.token_ids), len(writer.token_ids), question_ids.numel()
                 )
             out = await self.llm.forward(
-                self._question_ids, [self._prompt_block, thinker, writer, question]
+                question_ids, [self._prompt_block, thinker, writer, question]
             )
             return self._vote(out.logits)
         finally:
