@@ -275,6 +275,11 @@ def _decode(session, blocks, first: int, steps: int = 8) -> List[int]:
 
 @requires_e2e
 class TestChunkedEquivalence:
+    logit_atol = None  # None preserves the original hybrid/text thresholds.
+
+    def _logit_atol(self, session):
+        return _atol(session) if self.logit_atol is None else self.logit_atol
+
     @pytest.mark.parametrize("rows", [1, 3, 8, 64, 10_000])
     def test_plain_prefill(self, session, rows):
         ids = _seq(10, 33)
@@ -290,7 +295,7 @@ class TestChunkedEquivalence:
 
         assert chunked.token_ids == ids.tolist()
         assert chunked.num_tokens == whole.num_tokens
-        _assert_same_choice(got[0], ref[0], _atol(session), f"rows={rows}")
+        _assert_same_choice(got[0], ref[0], self._logit_atol(session), f"rows={rows}")
         for blk in (whole, chunked):
             session.free_block(blk)
 
@@ -313,7 +318,7 @@ class TestChunkedEquivalence:
             session.max_prefill_rows = None
 
         assert chunked.token_ids == tail_ids.tolist()
-        _assert_same_choice(got[0], ref[0], _atol(session), f"rows={rows}")
+        _assert_same_choice(got[0], ref[0], self._logit_atol(session), f"rows={rows}")
         for blk in (prompt, whole, chunked):
             session.free_block(blk)
 
@@ -364,7 +369,7 @@ class TestChunkedEquivalence:
 
         for i, (ids, blk, row) in enumerate(zip(specs, blocks, got)):
             assert blk.token_ids == ids.tolist()
-            _assert_same_choice(row[0], refs[i][1][0], _atol(session), f"request {i}")
+            _assert_same_choice(row[0], refs[i][1][0], self._logit_atol(session), f"request {i}")
         for blk, _ in refs:
             session.free_block(blk)
         for blk in blocks:
@@ -387,7 +392,7 @@ class TestChunkedEquivalence:
             session.max_prefill_rows = None
 
         assert chunked.token_ids == head.tolist() + tail.tolist()
-        _assert_same_choice(got[0], ref[0], _atol(session), "chunked extension")
+        _assert_same_choice(got[0], ref[0], self._logit_atol(session), "chunked extension")
         for blk in (whole, chunked):
             session.free_block(blk)
 

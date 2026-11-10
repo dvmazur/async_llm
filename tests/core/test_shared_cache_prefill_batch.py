@@ -74,7 +74,7 @@ def _assert_exact(batched: torch.Tensor, single: torch.Tensor, what: str) -> Non
     torch.testing.assert_close(b, s, rtol=0, atol=0, msg=lambda m: f"{what}: {m}")
 
 
-def _assert_close(batched: torch.Tensor, serial: torch.Tensor, what: str) -> None:
+def _assert_close(batched: torch.Tensor, serial: torch.Tensor, what: str, *, atol=2e-1) -> None:
     """Batched vs the established single-request ``prefill_block``.
 
     Exact for an in-context prefill (same shared-cache op).  A *plain* prefill
@@ -86,15 +86,16 @@ def _assert_close(batched: torch.Tensor, serial: torch.Tensor, what: str) -> Non
     b, s = batched.float().cpu(), serial.float().cpu()
     assert b.shape == s.shape, what
     assert int(b.argmax()) == int(s.argmax()), f"{what}: argmax differs"
-    torch.testing.assert_close(b, s, rtol=5e-2, atol=2e-1, msg=lambda m: f"{what}: {m}")
+    torch.testing.assert_close(b, s, rtol=5e-2, atol=atol, msg=lambda m: f"{what}: {m}")
 
 
 class _Run:
     """Runs the same set of prefills three ways on one session — as one batch,
     as one fused forward each, and via ``prefill_block`` — onto fresh blocks."""
 
-    def __init__(self, session: SharedCacheSession):
+    def __init__(self, session: SharedCacheSession, *, logit_atol=0):
         self.session = session
+        self.logit_atol = logit_atol
         self.blocks: List = []
 
     def compare(self, jobs: Sequence[dict]) -> None:
@@ -104,8 +105,9 @@ class _Run:
         fused = self._materialize(jobs, mode="fused_single")
         serial = self._materialize(jobs, mode="serial")
         for i, (b, f, s) in enumerate(zip(batched, fused, serial)):
-            _assert_exact(b, f, f"request {i}")
-            _assert_close(b, s, f"request {i}")
+            torch.testing.assert_close(b, f, rtol=0, atol=self.logit_atol,
+                                       msg=lambda m: f"request {i}: {m}")
+            _assert_close(b, s, f"request {i}", atol=max(2e-1, self.logit_atol))
 
     def _materialize(self, jobs: Sequence[dict], mode: str) -> List[torch.Tensor]:
         blocks: dict = {}
@@ -153,9 +155,11 @@ class _Run:
 
 @requires_e2e
 class TestPrefillBatchEquivalence:
+    logit_atol = 0
+
     def test_plain_prefills(self, engine_and_session):
         _, session = engine_and_session
-        _Run(session).compare([{"ids": _seq(10, 6)}, {"ids": _seq(40, 4)}, {"ids": _seq(70, 9)}])
+        _Run(session, logit_atol=self.logit_atol).compare([{"ids": _seq(10, 6)}, {"ids": _seq(40, 4)}, {"ids": _seq(70, 9)}])
 
     def test_single_job_delegates_to_prefill_block(self, engine_and_session):
         """A group of one keeps the established single-request path untouched."""
@@ -167,13 +171,13 @@ class TestPrefillBatchEquivalence:
 
     def test_shared_context(self, engine_and_session):
         _, session = engine_and_session
-        _Run(session).compare(
+        _Run(session, logit_atol=self.logit_atol).compare(
             [{"ids": _seq(10, 5), "context": [0]}, {"ids": _seq(60, 3), "context": [0]}]
         )
 
     def test_different_context_depths(self, engine_and_session):
         _, session = engine_and_session
-        _Run(session).compare(
+        _Run(session, logit_atol=self.logit_atol).compare(
             [
                 {"ids": _seq(10, 4), "context": [0]},
                 {"ids": _seq(30, 6), "context": [0, 1]},
@@ -185,7 +189,7 @@ class TestPrefillBatchEquivalence:
         """A no-context request in a batch whose other requests have context:
         its rows must merge only their own (single) self segment."""
         _, session = engine_and_session
-        _Run(session).compare(
+        _Run(session, logit_atol=self.logit_atol).compare(
             [
                 {"ids": _seq(10, 5)},
                 {"ids": _seq(30, 4), "context": [0, 1]},
@@ -195,7 +199,7 @@ class TestPrefillBatchEquivalence:
 
     def test_extension_of_non_empty_blocks(self, engine_and_session):
         _, session = engine_and_session
-        _Run(session).compare(
+        _Run(session, logit_atol=self.logit_atol).compare(
             [
                 {"ids": _seq(10, 4), "write_to": 0},
                 {"ids": _seq(30, 5), "write_to": 1, "context": [0]},
@@ -205,7 +209,7 @@ class TestPrefillBatchEquivalence:
 
     def test_single_token_requests(self, engine_and_session):
         _, session = engine_and_session
-        _Run(session).compare(
+        _Run(session, logit_atol=self.logit_atol).compare(
             [{"ids": _ids(11)}, {"ids": _ids(12), "context": [0]}, {"ids": _ids(13)}]
         )
 
@@ -244,6 +248,8 @@ class TestPrefillBatchRejects:
 
 @requires_e2e
 class TestPrefillBatchThenDecode:
+    logit_atol = 2e-1
+
     def test_decode_after_batched_prefill(self, engine_and_session):
         """Blocks filled by one batched forward must decode exactly like blocks
         filled one at a time — the KV, and for hybrid models the GDN state, are
@@ -274,4 +280,4 @@ class TestPrefillBatchThenDecode:
 
         batched, serial = run(True), run(False)
         for w in range(2):
-            _assert_close(batched[w], serial[w], f"worker {w} decode")
+            _assert_close(batched[w], serial[w], f"worker {w} decode", atol=self.logit_atol)

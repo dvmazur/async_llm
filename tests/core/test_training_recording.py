@@ -251,7 +251,9 @@ def test_concurrent_recording_to_live_replay_and_accumulated_backward(
     factory, reference_logits, monkeypatch
 ):
     """Record through the real scheduler; validate replay with independent Torch math."""
-    monkeypatch.setattr(modeling_qwen3_5, "FusedRMSNormGated", None)
+    # Transformers 5.19 uses a Torch norm with optional hub dispatch instead of
+    # this older constructor hook. Keep the older-version guard when present.
+    monkeypatch.setattr(modeling_qwen3_5, "FusedRMSNormGated", None, raising=False)
 
     async def run():
         reference = factory()

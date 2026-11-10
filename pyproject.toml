@@ -25,9 +25,12 @@ dependencies = [
     "accelerate",
     "msgpack",
     "modelscope",
-    "torch==2.13.0+cu130",
-    "torchvision==0.28.0+cu130",
-    "transformers>=5.12.0,<=6",
+    # Keep the tested Torch/CUDA ABI shared with sglang-kernel.
+    "torch==2.14.1+cu130",
+    "torchvision==0.29.1+cu130",
+    "triton==3.8.0; sys_platform == 'linux'",
+    # Gemma's thin adapter and independent reference use the same model definitions.
+    "transformers==5.19.0",
     "flashinfer-python==0.6.17",
     # GDN graph adapters call internal FLA JIT bodies; upgrade only with adapter tests.
     # This release also pins its kernel package, fla-core, to exactly 0.5.2.
@@ -40,7 +43,8 @@ dependencies = [
     "openai",
     "apache-tvm-ffi>=0.1.4",
     # Distribution name differs from the Python import: sgl_kernel.
-    "sglang-kernel==0.4.6.post1+cu130",
+    # 0.4.6.post1 targets Torch 2.13's C++ ABI; 0.4.10 targets Torch 2.14.1.
+    "sglang-kernel==0.4.10+cu130",
     "quack-kernels",
 ]
 

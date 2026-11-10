@@ -110,6 +110,39 @@ def test_shared_cache_profile_keeps_original_image_and_token_coverage(tmp_path):
     assert result["passed"]
 
 
+def test_gemma_shares_references_without_reducing_coverage(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINISGL_FP8_EMULATE", "1")
+    calls = []
+    artifacts = _collect(tmp_path, calls, "gemma-shared")
+    for command, env in calls:
+        engine = command[command.index("--engine") + 1]
+        if engine == "mini":
+            mode = command[command.index("--mini-scheduling") + 1]
+            assert (env.get("MINISGL_FP8_EMULATE") == "1") == mode.endswith("-software")
+    for mode in artifacts.profile.modes:
+        result = compare(artifacts.mini(mode), artifacts.root / "sglang", artifacts.root / "transformers")
+        assert result["metrics"]["mini"]["prefill"]["positions"] == 48
+        assert result["metrics"]["mini"]["decode"]["positions"] == 496
+
+
+@pytest.mark.parametrize("missing", [None, "prefill_batch", "decode_batch", "forward"])
+def test_gemma_eager_coverage_requires_real_batch_execution(missing):
+    from tests.e2e.fp8.shared_batch import check_coverage
+    coverage = dict(gemma_eager=True, model_forward_calls=2, prefill_replays=0, decode_replays=0,
+                    forwards=[dict(phase="prefill", workers=4), dict(phase="decode", workers=4)])
+    if missing == "prefill_batch":
+        coverage["forwards"][0]["workers"] = 1
+    elif missing == "decode_batch":
+        coverage["forwards"][1]["workers"] = 1
+    elif missing == "forward":
+        coverage["model_forward_calls"] = 0
+    if missing:
+        with pytest.raises(AssertionError):
+            check_coverage(coverage)
+    else:
+        check_coverage(coverage)
+
+
 def test_completed_results_cannot_be_reused_or_overwritten(tmp_path):
     calls = []
     artifacts = _collect(tmp_path, calls)
@@ -246,6 +279,25 @@ def test_full_graph_coverage_requires_both_replays_without_host_model_calls(brok
         check_coverage(coverage)
 
 
+@pytest.mark.parametrize('broken', [None, 'replay', 'missing_forward', 'single_decode'])
+def test_explicit_eager_coverage_requires_real_batched_execution(broken):
+    from tests.e2e.fp8.shared_batch import check_coverage
+    coverage = dict(explicit_eager=True,
+                    forwards=[dict(phase='prefill', workers=4), dict(phase='decode', workers=4)],
+                    model_forward_calls=2, prefill_replays=0, decode_replays=0)
+    if broken == 'replay':
+        coverage['decode_replays'] = 1
+    elif broken == 'missing_forward':
+        coverage['model_forward_calls'] = 1
+    elif broken == 'single_decode':
+        coverage['forwards'][1]['workers'] = 1
+    if broken:
+        with pytest.raises(AssertionError):
+            check_coverage(coverage)
+    else:
+        check_coverage(coverage)
+
+
 def test_chains_share_one_load_per_engine_but_never_past_predictions(tmp_path):
     calls = []
     artifacts = _collect(tmp_path, calls, "shared-chains")
@@ -260,6 +312,23 @@ def test_chains_share_one_load_per_engine_but_never_past_predictions(tmp_path):
         assert result["passed"] and result["relative_tolerance_percent"] == 100
     _collect(tmp_path/"next", calls, "shared-chains")
     assert len(calls) == 8
+
+
+@pytest.mark.parametrize('has_token_types', [False, True])
+def test_image_inputs_token_types_are_optional_but_extended_if_present(tmp_path, has_token_types):
+    from tests.e2e.fp8.worker import image_inputs
+    pixels = torch.randn(3, 4)
+    data = dict(pixel_values=pixels, image_grid_thw=torch.tensor([[1, 2, 2]]))
+    if has_token_types:
+        data['mm_token_type_ids'] = torch.tensor([[0, 1, 1]])
+    path = tmp_path/'pixels.pt'
+    torch.save(data, path)
+    case = dict(image_tensors=str(path), image_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    actual = image_inputs(case, extra=2, flatten=True)
+    torch.testing.assert_close(actual['pixel_values'], pixels)
+    assert ('mm_token_type_ids' in actual) == has_token_types
+    if has_token_types:
+        assert actual['mm_token_type_ids'].tolist() == [0, 1, 1, 0, 0]
 
 
 def test_bf16_control_cannot_masquerade_as_fp8(tmp_path):

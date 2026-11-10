@@ -52,10 +52,10 @@ def runtime(tmp_path_factory):
         asyncio.set_event_loop(None)
 
 
-def assert_same_distribution(left: torch.Tensor, right: torch.Tensor) -> None:
+def assert_same_distribution(left: torch.Tensor, right: torch.Tensor, *, atol=2.5e-3) -> None:
     left = left.float().softmax(-1)
     right = right.float().softmax(-1)
-    torch.testing.assert_close(left, right, rtol=0, atol=2.5e-3)
+    torch.testing.assert_close(left, right, rtol=0, atol=atol)
     assert left.argmax().item() == right.argmax().item()
 
 

@@ -14,13 +14,11 @@ import time
 from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import TYPE_CHECKING, List
 
-import torch
-from minisgl.llm import AsyncLLM
-from minisgl.shared_cache import AsyncContext
-from minisgl.training import RecordedAsyncLLM
-from transformers import AutoTokenizer
+if TYPE_CHECKING:
+    from minisgl.llm import AsyncLLM
+    from transformers import AutoTokenizer
 
 from minisgl_examples.demos.async_thoughts.engine import (
     ModeSwitchProbe,
@@ -88,6 +86,9 @@ class Prompting:
         )
         self.yes_token = "yes"
         self.no_token = "no"
+        self.forbidden_tokens = ("<|im_start|>", "<|endoftext|>")
+        self.end_think_token = "</think>"
+        self.stop_ids = None  # Preserve the original CLI's tokenizer EOS.
 
 
 # ANSI colours keyed by role.
@@ -126,16 +127,25 @@ async def _run_loop(
     tokenizer: AutoTokenizer,
     prompting: Prompting,
     samples: Samples | None = None,
+    *,
+    sampling_params=None,
+    metrics=None,
+    on_progress=None,
+    verbose=True,
+    context_factory=None,
 ) -> tuple[List[int], List[int]]:
+    if context_factory is None:
+        from minisgl.shared_cache import AsyncContext
+        context_factory = AsyncContext
     if min(config.max_steps, config.max_answer_tokens, config.probe_period) < 1:
         raise ValueError("Token budgets and probe period must be positive")
     forbidden = [
         i
-        for i in (vocab_id_or_none(tokenizer, t) for t in ("<|im_start|>", "<|endoftext|>"))
+        for i in (vocab_id_or_none(tokenizer, t) for t in prompting.forbidden_tokens)
         if i is not None
     ]
-    end_think = vocab_id_or_none(tokenizer, "</think>")
-    eos = tokenizer.eos_token_id
+    end_think = vocab_id_or_none(tokenizer, prompting.end_think_token)
+    stop_ids = set(prompting.stop_ids if prompting.stop_ids is not None else [tokenizer.eos_token_id])
     writer_forbidden = forbidden + ([end_think] if end_think is not None else [])
     probe = ModeSwitchProbe(
         llm,
@@ -150,10 +160,26 @@ async def _run_loop(
     thinker_tokens, writer_tokens = [], []
     blocks, tasks = [], []
     start = time.perf_counter()
+    stats = metrics if metrics is not None else {}
+    stats.update(sampled={"thinker": 0, "writer": 0}, discarded={"thinker": 0, "writer": 0},
+                 prefix_tokens=0, flush_tokens=0, probe_calls=0, events=[])
+
+    def state(text):
+        stats["events"].append(dict(event="state", text=text,
+                                    thinker=len(thinker_tokens), writer=len(writer_tokens)))
+        if verbose:
+            _print_state_change(text)
+
+    def sampled(role):
+        stats["sampled"][role] += 1
+        n = sum(stats["sampled"].values())
+        if on_progress and (n == 1 or n % 128 == 0):
+            on_progress(n)
     try:
 
         async def prefill() -> None:
-            print("Prefilling blocks...")
+            if verbose:
+                print("Prefilling blocks...")
             for _ in range(3):
                 blocks.append(await llm.create_block())
             prompt_blk, thinker_blk, writer_blk = blocks
@@ -162,16 +188,18 @@ async def _run_loop(
                 (prompting.thinker_output_prefix, [prompt_blk, thinker_blk]),
                 (prompting.writer_output_prefix, [prompt_blk, thinker_blk, writer_blk]),
             ):
-                await llm.forward(encode(text, tokenizer), view, return_logits=False)
+                ids = encode(text, tokenizer)
+                await llm.forward(ids, view, return_logits=False)
+                stats["prefix_tokens"] += len(ids)
 
         tasks = [asyncio.create_task(prefill())]
         await asyncio.shield(tasks[0])
         prompt_blk, thinker_blk, writer_blk = blocks
         # Feed the header newline once; extra blank lines can end Qwen3.5's thoughts early.
-        thinker_ctx = AsyncContext(
+        thinker_ctx = context_factory(
             cache_view=[prompt_blk, thinker_blk], next_input_id=single_token_id("\n", tokenizer)
         )
-        writer_ctx = AsyncContext(
+        writer_ctx = context_factory(
             cache_view=[prompt_blk, thinker_blk, writer_blk],
             next_input_id=single_token_id("\n\n", tokenizer),
         )
@@ -181,29 +209,36 @@ async def _run_loop(
             try:
                 async with aclosing(
                     generate_with_targets(
-                        llm, thinker_ctx, samples, forbid_ids=forbidden, max_steps=config.max_steps
+                        llm, thinker_ctx, samples, forbid_ids=forbidden, max_steps=config.max_steps,
+                        sampling_params=sampling_params,
                     )
                 ) as stream:
                     async for token in stream:
+                        sampled("thinker")
                         if done.is_set():
+                            stats["discarded"]["thinker"] += 1
+                            reason = "writer finished"
                             break
-                        if token in (end_think, eos):
+                        if token == end_think or token in stop_ids:
                             reason = "thinker finished"
                             break
                         thinker_tokens.append(token)
-                        _stream_token(tokenizer.decode([token]), "thinker")
+                        if verbose:
+                            _stream_token(tokenizer.decode([token]), "thinker")
                         period_elapsed = len(thinker_tokens) % config.probe_period == 0
                         if period_elapsed or ends_with_double_newline(thinker_tokens, tokenizer):
                             probe_due.set()
                 # Commit the final budget-limited thought before releasing the writer.
-                if not done.is_set() and thinker_ctx.next_input_id not in (None, end_think, eos):
+                if not done.is_set() and thinker_ctx.next_input_id not in ({None, end_think} | stop_ids):
                     await llm.forward(cache_view=thinker_ctx, return_logits=False)
+                    stats["flush_tokens"] += 1
                 if not done.is_set():
-                    _print_state_change(f"{reason} -> writer continues")
+                    state(f"{reason} -> writer continues")
             except BaseException:
                 done.set()
                 raise
             finally:
+                stats["thinker_stop_reason"] = reason
                 thinking_done.set()
                 writer_may_run.set()
                 probe_due.set()
@@ -220,22 +255,28 @@ async def _run_loop(
                         samples,
                         forbid_ids=writer_forbidden,
                         max_steps=config.max_answer_tokens,
+                        sampling_params=sampling_params,
                     )
                 ) as stream:
                     async for token in stream:
+                        sampled("writer")
                         if done.is_set():
+                            stats["discarded"]["writer"] += 1
                             break
-                        if token == eos:
-                            _print_state_change("writer hit EOS -- finished")
+                        if token in stop_ids:
+                            stats["writer_stop_reason"] = "eos"
+                            state("writer hit EOS -- finished")
                             break
                         writer_tokens.append(token)
-                        _stream_token(tokenizer.decode([token]), "writer")
+                        if verbose:
+                            _stream_token(tokenizer.decode([token]), "writer")
                         if len(writer_tokens) >= config.max_answer_tokens:
-                            _print_state_change("writer hit token limit -- finished")
+                            stats["writer_stop_reason"] = "length"
+                            state("writer hit token limit -- finished")
                             break
                         if not thinking_done.is_set():
                             if ends_with_double_newline(writer_tokens, tokenizer):
-                                _print_state_change("writer end-of-step -> thinker leads")
+                                state("writer end-of-step -> thinker leads")
                                 writer_may_run.clear()
                             # The sampled token stays pending while the writer is paused.
                             await writer_may_run.wait()
@@ -256,6 +297,10 @@ async def _run_loop(
                     should_write, yes_logit, no_logit = await probe.check_continue_writing(
                         thinker_blk, writer_blk
                     )
+                    stats["probe_calls"] += 1
+                    stats["events"].append(dict(event="probe", yes=yes_logit, no=no_logit,
+                        thinker=len(thinker_tokens), writer=len(writer_tokens),
+                        ignored=done.is_set() or thinking_done.is_set()))
                     # A result requested before thinking ended must not park the writer now.
                     if done.is_set() or thinking_done.is_set():
                         return
@@ -265,17 +310,18 @@ async def _run_loop(
                     else:
                         writer_may_run.clear()
                     if changed:
-                        state = "thinker_and_writer" if should_write else "thinker_only"
-                        _print_state_change(
-                            f"probe yes={yes_logit:.2f} no={no_logit:.2f} -> {state}"
+                        next_state = "thinker_and_writer" if should_write else "thinker_only"
+                        state(
+                            f"probe yes={yes_logit:.2f} no={no_logit:.2f} -> {next_state}"
                         )
             except BaseException:
                 done.set()
                 writer_may_run.set()
                 raise
 
-        _print_header("Generation")
-        print(_ansi("  thinker (dim cyan) | writer (bold green)\n", "dim"))
+        if verbose:
+            _print_header("Generation")
+            print(_ansi("  thinker (dim cyan) | writer (bold green)\n", "dim"))
         tasks = [asyncio.create_task(coro()) for coro in (thinker_coro, writer_coro, probe_coro)]
         # Keep cancellation from reaching an engine request before its GPU work has drained.
         results = await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
@@ -288,26 +334,30 @@ async def _run_loop(
         probe_due.set()
         await asyncio.gather(*tasks, return_exceptions=True)
         await probe.close()
+        stats["probe_tokens"] = probe.prefill_tokens
         for block in reversed(blocks):
             await llm.free_block(block)
 
-    _print_header("Final")
-    for label, tokens, role in (
-        ("Thinker", thinker_tokens, "thinker"),
-        ("Writer", writer_tokens, "writer"),
-    ):
-        print(_ansi(f"  {label}:", role))
-        print(_ansi(tokenizer.decode(tokens, skip_special_tokens=True), role))
-    _print_state_change(
-        f"{len(thinker_tokens)} thought tokens; {len(writer_tokens)} answer tokens; "
-        f"{time.perf_counter() - start:.1f}s"
-    )
+    if verbose:
+        _print_header("Final")
+        for label, tokens, role in (
+            ("Thinker", thinker_tokens, "thinker"),
+            ("Writer", writer_tokens, "writer"),
+        ):
+            print(_ansi(f"  {label}:", role))
+            print(_ansi(tokenizer.decode(tokens, skip_special_tokens=True), role))
+        _print_state_change(
+            f"{len(thinker_tokens)} thought tokens; {len(writer_tokens)} answer tokens; "
+            f"{time.perf_counter() - start:.1f}s"
+        )
     return thinker_tokens, writer_tokens
 
 
 async def _run_demo(
     config: DemoConfig, llm: AsyncLLM, prompting: Prompting
 ) -> tuple[List[int], List[int]]:
+    from minisgl.training import RecordedAsyncLLM
+
     tokenizer = llm.tokenizer
     try:
         if config.trace_output is None:
@@ -335,6 +385,7 @@ async def _run_demo(
 
 def run(config: DemoConfig) -> None:
     """Run the demo end-to-end against a freshly-built AsyncLLM."""
+    import torch
     if not torch.cuda.is_available():
         print("CUDA required.", file=sys.stderr)
         sys.exit(2)

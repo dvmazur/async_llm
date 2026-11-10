@@ -62,6 +62,8 @@ class PrefillJob:
     context: List[CacheBlock] = field(default_factory=list)
     pixel_values: Optional[torch.Tensor] = None
     image_grid_thw: Optional[torch.Tensor] = None
+    # New Gemma payload must not shift the existing positional Qwen arguments.
+    image_position_ids: Optional[torch.Tensor] = field(default=None, kw_only=True)
     mm_token_type_ids: Optional[torch.Tensor] = None
     # Set by the chunked-prefill driver only (see ``_chunk_job``).
     image_embeds: Optional[torch.Tensor] = None  # tower output for this chunk
@@ -110,6 +112,7 @@ def _chunk_job(job: PrefillJob, plan: PrefillPlan, start: int, stop: int) -> Pre
         input_ids=ids,
         pixel_values=None,
         image_grid_thw=None,
+        image_position_ids=None,
         mm_token_type_ids=types,
         image_embeds=plan.embeds[n_before : n_before + n_here],
         mrope_rel=plan.rel_pos[:, start:stop] - shift,
@@ -209,10 +212,18 @@ class SharedCacheSession:
             device=self.device,
         )
 
-        self._is_hybrid = _is_hybrid_model(engine)
+        self._is_hybrid = False if engine.config.model_config.is_gemma4 else _is_hybrid_model(engine)
         # ModelConfig of the loaded model (Qwen3.5 exposes it on the inner module);
         # only used for the vision tower's spatial_merge_size.
         self._model_config = getattr(engine.model.model, "config", None)
+
+        if engine.config.model_config.is_gemma4:
+            self._model_config = engine.config.model_config
+            self._cos_sin_cache = None
+            self.sc_attn = engine.attn_backend
+            self.sc_gdn = None
+            self.graph_runner = self.graph_io = None
+            return
 
         # Query-rotation attention op for decode (arXiv:2512.10931).  Hybrid
         # (Qwen3.5) models use partial RoPE and a custom full-attention module;
@@ -515,6 +526,10 @@ class SharedCacheSession:
         position_shift: int,
     ) -> None:
         """Move stored keys into the left block's position frame."""
+        if self.engine.config.model_config.is_gemma4:
+            slots = block.token_slots_tensor()[start : start + num_tokens].to(torch.int64)
+            self.sc_attn.shift_keys(slots, position_shift)
+            return
         slots = block.token_slots_tensor()[start : start + num_tokens].to(torch.int64)
         corrections = torch.full(
             (num_tokens,), position_shift, dtype=torch.int64, device=self.device
@@ -535,6 +550,7 @@ class SharedCacheSession:
         context: Optional[List[CacheBlock]] = None,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
+        image_position_ids: Optional[torch.Tensor] = None,
         mm_token_type_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
@@ -587,9 +603,12 @@ class SharedCacheSession:
             context=context,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
+            image_position_ids=image_position_ids,
             mm_token_type_ids=mm_token_type_ids,
             mrope_rel=mrope_rel,
         )
+        if self.engine.config.model_config.is_gemma4 and pixel_values is not None:
+            return self._prefill_waves([job], self.max_prefill_rows or _job_rows(job))[0]
         if self.max_prefill_rows is not None and _job_rows(job) > self.max_prefill_rows:
             return self._prefill_waves([job], self.max_prefill_rows)[0]
         if context or (self.graph_io is not None and self.graph_io.prefill_rows):
@@ -677,6 +696,8 @@ class SharedCacheSession:
             for context_block in job.context:
                 self._validate_block(context_block)
         budget = self.max_prefill_rows
+        if self.engine.config.model_config.is_gemma4 and any(j.pixel_values is not None for j in jobs):
+            return self._prefill_waves(jobs, budget or sum(_job_rows(j) for j in jobs))
         if budget is not None and sum(_job_rows(j) for j in jobs) > budget:
             return self._prefill_waves(jobs, budget)
         if len(jobs) == 1:
@@ -688,6 +709,7 @@ class SharedCacheSession:
                     context=list(job.context) or None,
                     pixel_values=job.pixel_values,
                     image_grid_thw=job.image_grid_thw,
+                    image_position_ids=job.image_position_ids,
                     mm_token_type_ids=job.mm_token_type_ids,
                 )
             ]
@@ -718,6 +740,7 @@ class SharedCacheSession:
         mrope_parts: List[torch.Tensor] = []
         new_spans: List[int] = []
         mm_type_parts: List[torch.Tensor] = []
+        gemma_types_cpu: List[torch.Tensor] = []
         pixel_parts: List[torch.Tensor] = []
         grid_parts: List[torch.Tensor] = []
         embed_parts: List[torch.Tensor] = []
@@ -808,6 +831,9 @@ class SharedCacheSession:
                 )
             else:
                 mm_type_parts.append(torch.zeros(seq_len, dtype=torch.int64, device=self.device))
+            if self.engine.config.model_config.is_gemma4:
+                gemma_types_cpu.append(job.mm_token_type_ids.flatten().to(device='cpu', dtype=torch.int64)
+                    if job.mm_token_type_ids is not None else torch.zeros(seq_len, dtype=torch.int64))
 
         # Reqs are bookkeeping only (batch size for the LM head); the page table
         # is bypassed, so they point at the engine's dummy row.
@@ -843,6 +869,9 @@ class SharedCacheSession:
             if embed_parts:
                 batch.image_embeds = torch.cat(embed_parts)
 
+        if self.engine.config.model_config.is_gemma4:
+            self.sc_attn.prepare_inputs(batch, torch.cat(ids_list), torch.cat(gemma_types_cpu))
+
         logits = self._forward(
             batch,
             cache_structure=chains,
@@ -870,10 +899,13 @@ class SharedCacheSession:
             return PrefillPlan(ids=ids)
         types = job.mm_token_type_ids.flatten().to(dtype=torch.int64).cpu()
         rel_pos = self._mrope_rel(ids, types, job.image_grid_thw)
-        visual = self.engine.model.model.visual
-        embeds = visual.forward(
-            job.pixel_values.to(self.device), job.image_grid_thw.to(self.device)
-        )
+        if self.engine.config.model_config.is_gemma4:
+            embeds = self.engine.model.encode_images(
+                job.pixel_values.to(self.device), job.image_position_ids.to(self.device))
+        else:
+            visual = self.engine.model.model.visual
+            embeds = visual.forward(
+                job.pixel_values.to(self.device), job.image_grid_thw.to(self.device))
         assert embeds.shape[0] == int((types == 1).sum()), (
             f"tower produced {embeds.shape[0]} embeddings for "
             f"{int((types == 1).sum())} image tokens"
@@ -899,6 +931,18 @@ class SharedCacheSession:
         # A multimodal job is always planned, even unsplit: a batch cannot mix jobs
         # carrying pixels with jobs carrying tower output.
         plan = self._plan_job(job)
+        if self.engine.config.model_config.is_gemma4 and plan.types is not None:
+            # Gemma image attention is bidirectional: splitting an image in the
+            # token dimension would irreversibly cache states without its future
+            # patches. Treat a vision group as atomic, even above the soft budget.
+            chunks, start = [], 0
+            while start < total:
+                stop = min(start + size, total)
+                while stop < total and plan.types[stop] == 1 and plan.types[stop - 1] == 1:
+                    stop += 1
+                chunks.append(_chunk_job(job, plan, start, stop))
+                start = stop
+            return chunks
         return [_chunk_job(job, plan, s, min(s + size, total)) for s in range(0, total, size)]
 
     @torch.inference_mode()
@@ -940,6 +984,8 @@ class SharedCacheSession:
         Kept on the CPU: the values feed both the query-rotation plan and the
         key-rotation positions, and the sequence is short.
         """
+        if self.engine.config.model_config.is_gemma4:
+            return torch.arange(input_ids.numel(), dtype=torch.int64).expand(3, -1)
         from minisgl.models.qwen3_5_mrope import get_rope_index
 
         assert mm_token_type_ids is not None and image_grid_thw is not None

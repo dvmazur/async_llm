@@ -130,7 +130,10 @@ class _LiveModel(torch.nn.Module):
             for module in list(self.model.modules()):
                 rotary = getattr(module, "rotary_emb", None)
                 if rotary is not None:
-                    module.rotary_emb = type(rotary)(rotary.config, device=first.device)
+                    # HF 5.19 Qwen3 removed the device keyword; the default
+                    # device context also supports Qwen3.5's older constructor.
+                    with torch.device(first.device):
+                        module.rotary_emb = type(rotary)(rotary.config)
                 rotary = getattr(module, "rotary_pos_emb", None)
                 if rotary is not None:
                     with torch.device(first.device):

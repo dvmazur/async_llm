@@ -19,6 +19,14 @@ class BackendCreator(Protocol):
 SUPPORTED_ATTENTION_BACKENDS = Registry[BackendCreator]("Attention Backend")
 
 
+@SUPPORTED_ATTENTION_BACKENDS.register("gemma4")
+def create_gemma4_backend(config: ModelConfig):
+    if not config.is_gemma4:
+        raise ValueError("The gemma4 eager backend requires a Gemma 4 model")
+    from .gemma4 import Gemma4AttentionBackend
+    return Gemma4AttentionBackend(config)
+
+
 @SUPPORTED_ATTENTION_BACKENDS.register("trtllm")
 def create_trtllm_backend(config: ModelConfig):
     from .trtllm import TensorRTLLMBackend

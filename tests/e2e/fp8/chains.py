@@ -190,14 +190,17 @@ def mini_chains(args, cases):
     from minisgl.distributed import DistributedInfo
     from minisgl.shared_cache import SharedCacheSession, PrefillJob, WorkerGroup
     from transformers import GenerationConfig
+    from .worker import gemma_engine_options
 
     assert args.quantization in (None, "fp8") and all("image_tensors" not in c for c in cases)
     source = args.mini_repo or ROOT
     assert Path(sys.modules[Engine.__module__].__file__).resolve().is_relative_to(source)
+    options = dict(num_page_override=4096, attention_backend="fi", cuda_graph_bs=[], cuda_graph_max_bs=0)
+    options.update(gemma_engine_options(args.model))
     engine = Engine(EngineConfig(model_path=args.model, tp_info=DistributedInfo(0, 1),
         dtype=torch.bfloat16, quantization=args.quantization, max_running_req=4,
-        num_page_override=4096, max_seq_len_override=1024, attention_backend="fi",
-        use_pynccl=False, cuda_graph_bs=[], cuda_graph_max_bs=0, distributed_addr=f"tcp://127.0.0.1:{args.port}",
+        max_seq_len_override=1024, **options,
+        use_pynccl=False, distributed_addr=f"tcp://127.0.0.1:{args.port}",
         generation_config=GenerationConfig(do_sample=False, temperature=None, top_k=None, top_p=None)))
     import minisgl.models.qwen3_5_delta as gdn
     original_fla = gdn._fla_chunk, gdn._fla_recurrent
@@ -210,7 +213,7 @@ def mini_chains(args, cases):
             weights = engine.model.state_dict()
             storage = dict(source=str(source), fp8_tensors=sum(w.dtype == torch.float8_e4m3fn for w in weights.values()),
                            bf16_tensors=sum(w.dtype == torch.bfloat16 for w in weights.values()),
-                           num_experts=engine.model.model.config.num_experts,
+                           num_experts=engine.config.model_config.num_experts,
                            fp8_expert_tensors=sum(w.ndim == 3 and w.dtype == torch.float8_e4m3fn for w in weights.values()),
                            execution="eager", fla_recurrent=gdn._fla_recurrent is not None)
             if args.quantization == "fp8":

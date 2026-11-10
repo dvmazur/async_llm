@@ -44,6 +44,7 @@ def create_kvcache_pool(
         head_dim=model_config.head_dim,
         device=device,
         dtype=dtype,
+        layer_shapes=model_config.kv_layer_shapes,
     )
 
 

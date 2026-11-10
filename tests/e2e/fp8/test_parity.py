@@ -13,17 +13,18 @@ from .serving import check_schedule
 pytestmark = pytest.mark.fp8_e2e
 
 
-def _external_result(artifacts, mode, *, quantization="fp8"):
+def _external_result(artifacts, mode, *, quantization="fp8", strict=False, reference="sglang", error_factor=None):
     mini = artifacts.mini(mode)
     validate_current_mini(mini, mode, quantization=quantization)
-    result = compare(mini, artifacts.root / "sglang", artifacts.root / "transformers")
-    artifacts.report(f"{mode}_vs_sglang.json", result)
+    result = compare(mini, artifacts.root / "sglang", artifacts.root / "transformers",
+                     strict=strict, reference=reference, error_factor=error_factor)
+    artifacts.report(f"{mode}_vs_{reference}.json", result)
     assert not result["quant_output_ablation"], "Reference-output ablation cannot validate production"
     assert not result["sglang_native_mrope_override"], "Parity requires the default SGLang reference"
     return result
 
 
-def _check_chain(artifacts, mode, *, quantization="fp8", require_moe=False):
+def _check_chain(artifacts, mode, *, quantization="fp8", require_moe=False, strict=False, reference="sglang", error_factor=None):
     from .chains import check_coverage, check_moe_execution
     fixtures = json.loads((artifacts.root / "fixtures/fixtures.json").read_text())
     directory = artifacts.mini(mode)
@@ -32,7 +33,8 @@ def _check_chain(artifacts, mode, *, quantization="fp8", require_moe=False):
     assert storage["execution"] == "eager"
     if require_moe:
         check_moe_execution(storage)
-    result = _external_result(artifacts, mode, quantization=quantization)
+    result = _external_result(artifacts, mode, quantization=quantization, strict=strict,
+                              reference=reference, error_factor=error_factor)
     assert result["metrics"]["mini"]["decode"]["positions"] == 21
     assert result["metrics"]["mini"]["prefill"]["positions"] == 9
     assert result["passed"], result["metrics"]
@@ -99,12 +101,13 @@ def test_moe_serving_external_parity(moe_serving_artifacts, mode):
     _check_serving(moe_serving_artifacts, mode, require_moe=True)
 
 
-def _check_serving(serving_artifacts, mode, *, require_moe=False):
+def _check_serving(serving_artifacts, mode, *, require_moe=False, strict=False, reference="sglang", error_factor=None):
     if require_moe:
         from .chains import check_moe_execution
         storage = json.loads((serving_artifacts.mini(mode)/"storage.json").read_text())
         check_moe_execution(storage, require_mixed=mode == "mixed")
-    result = _external_result(serving_artifacts, mode)
+    result = _external_result(serving_artifacts, mode, strict=strict, reference=reference,
+                              error_factor=error_factor)
     assert result["mini_scheduling"] == mode
     schedule = result["mixed_schedule"]
     check_schedule(schedule["forwards"], mode)

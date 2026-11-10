@@ -114,12 +114,8 @@ def load_weight(model_path: str, device: torch.device, *,
     if quant_config and quantization is None:
         raise ValueError("Quantized checkpoint requires explicit quantization='fp8'")
     if quantization == "fp8":
-        if (not isinstance(quant_config, dict)
-                or quant_config.get("quant_method") != "fp8"
-                or quant_config.get("fmt", "e4m3") != "e4m3"
-                or quant_config.get("activation_scheme") != "dynamic"
-                or quant_config.get("weight_block_size") != [128, 128]):
-            raise ValueError("Expected serialized dynamic E4M3 weights with 128x128 block scales")
+        from .fp8_config import validate_fp8_config
+        validate_fp8_config(quant_config)
     files = glob.glob(f"{model_folder}/*.safetensors")
     files = [f for f in files if not f.endswith("consolidated.safetensors")] or files
     tp_info = get_tp_info()
@@ -142,6 +138,11 @@ def load_weight(model_path: str, device: torch.device, *,
                     if name.startswith("model.visual.") and not config.is_multimodal:
                         continue
                 raw = f.get_tensor(name)
+                # CT block scales multiply FP8 values, just like our historical
+                # Qwen name weight_scale_inv. Rename only; never take a reciprocal.
+                if (quant_config or {}).get("quant_method") == "compressed-tensors":
+                    if name.endswith(".weight_scale"):
+                        name += "_inv"
                 if raw.dtype == torch.float8_e4m3fn and quantization != "fp8":
                     raise ValueError(f"FP8 weight requires quantization='fp8': {name}")
                 if config.is_hybrid:
@@ -149,6 +150,11 @@ def load_weight(model_path: str, device: torch.device, *,
                 name = name.removeprefix("language_model.")
                 tensor = _shard_tensor(name, raw, tp_info.rank, tp_info.size, config.num_kv_heads)
                 del raw
+                if config.is_gemma4:
+                    # HF Gemma modules keep separate projections, including
+                    # full-attention layers with no distinct V projection.
+                    yield name, tensor
+                    continue
                 if (info := _get_merge_info(name)) is None:
                     out = (name, tensor)
                 else:

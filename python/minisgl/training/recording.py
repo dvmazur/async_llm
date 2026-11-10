@@ -152,7 +152,9 @@ class _TraceRecorder:
         from minisgl.shared_cache.session import PrefillJob
 
         job = PrefillJob(
-            block, input_ids, list(context or ()), pixel_values, image_grid_thw, mm_token_type_ids
+            block=block, input_ids=input_ids, context=list(context or ()),
+            pixel_values=pixel_values, image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
         )
         return self.prefill_batch([job])[0]
 

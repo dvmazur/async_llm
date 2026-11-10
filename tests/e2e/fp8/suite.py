@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 from .common import ROOT, save_json
+from .gemma_images import CASES as IMAGE_WINDOW_CASES, LAYOUTS as IMAGE_WINDOW_LAYOUTS
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,12 @@ class Profile:
 
 
 PROFILES = {
+    "gemma-image-window": Profile("gemma-image-window", IMAGE_WINDOW_CASES, 32, IMAGE_WINDOW_LAYOUTS),
+    "gemma-edges": Profile("gemma-edges", ("window_before", "window_at", "window_after", "image_0"),
+                           32, ("shared-cache",)),
+    "gemma-shared": Profile("gemma-shared", tuple(f"{kind}_{i}" for i in range(8)
+                                                  for kind in ("text", "image")), 32,
+                            ("shared-cache", "shared-batched", "shared-batched-software")),
     "shared-chains": Profile("shared-chains", tuple(f"chain_{i}" for i in range(3)), 8,
                             ("chain-flat", "chain-split", "chain-shared")),
     "serving": Profile("serving", tuple(f"text_{i}" for i in range(8)), 12, ("mixed", "sequential")),
@@ -159,6 +166,8 @@ def collect_profile(config, name, *, command_runner=run_command):
             command += ["--fixture-set", "chains"]
             if config.quantization is None:
                 command += ["--bf16-control"]
+        elif name in ("gemma-edges", "gemma-image-window"):
+            command += ["--fixture-set", name]
         if config.require_moe:
             command += ["--require-moe"]
         if engine == "sglang":
@@ -174,8 +183,10 @@ def collect_profile(config, name, *, command_runner=run_command):
         env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(ROOT / "python"), str(ROOT), env.get("PYTHONPATH"))))
         env["TOKENIZERS_PARALLELISM"] = "false"
         env["MINISGL_DISABLE_OVERLAP_SCHEDULING"] = "0"
-        if mode == 'shared-full-graph-software':
+        if mode in ('shared-full-graph-software', 'shared-batched-software'):
             env['MINISGL_FP8_EMULATE'] = '1'
+        elif engine == 'mini':
+            env.pop('MINISGL_FP8_EMULATE', None)
         log = artifacts.root / f"{label}.log"
         print(f"FP8 {profile.name}: {label}; log: {log}", flush=True)
         command_runner(command, log, env, config.timeout)

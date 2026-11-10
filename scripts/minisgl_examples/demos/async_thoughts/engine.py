@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import TYPE_CHECKING, List, Tuple
 
-import torch
-from minisgl.llm import AsyncLLM
-from minisgl.shared_cache import CacheBlock
-from transformers import AutoTokenizer
+if TYPE_CHECKING:
+    import torch
+    from minisgl.llm import AsyncLLM
+    from minisgl.shared_cache import CacheBlock
+    from transformers import AutoTokenizer
 
 
 def build_async_llm(
@@ -16,6 +17,8 @@ def build_async_llm(
     page_size: int = 1,
 ) -> AsyncLLM:
     """Build a single-GPU engine for two decode streams and a four-block probe."""
+    import torch
+    from minisgl.llm import AsyncLLM
     return AsyncLLM(
         model_path,
         dtype=torch.bfloat16,
@@ -34,6 +37,7 @@ def build_async_llm(
 
 def encode(text: str, tokenizer: AutoTokenizer) -> torch.Tensor:
     """Encode literal prompt markers into a flat int32 CPU tensor."""
+    import torch
     return (
         tokenizer.encode(text, add_special_tokens=False, return_tensors="pt")
         .view(-1)
@@ -83,6 +87,7 @@ class ModeSwitchProbe:
         self._prompt_ids = encode(mode_switching_prompt, tokenizer)
         self._question_ids = encode(mode_switching_question, tokenizer)
         self._prompt_block: CacheBlock | None = None
+        self.prefill_tokens = 0
 
     async def check_continue_writing(
         self, thinker: CacheBlock, writer: CacheBlock
@@ -92,6 +97,7 @@ class ModeSwitchProbe:
             prompt = await self.llm.create_block()
             try:
                 await self.llm.forward(self._prompt_ids, write_to=prompt, return_logits=False)
+                self.prefill_tokens += len(self._prompt_ids)
             except BaseException:
                 await self.llm.free_block(prompt)
                 raise
@@ -102,6 +108,7 @@ class ModeSwitchProbe:
             out = await self.llm.forward(
                 self._question_ids, [self._prompt_block, thinker, writer, question]
             )
+            self.prefill_tokens += len(self._question_ids)
             yes_logit, no_logit = out.logits[[self.yes_id, self.no_id]].float().cpu().tolist()
             return yes_logit > no_logit, yes_logit, no_logit
         finally:

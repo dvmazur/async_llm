@@ -642,7 +642,8 @@ def _subprocess_main(mode: str) -> None:
     from minisgl.models.config import ModelConfig
     from transformers import AutoConfig
 
-    hybrid = ModelConfig.from_hf(AutoConfig.from_pretrained(E2E_MODEL_PATH)).is_hybrid
+    model_config = ModelConfig.from_hf(AutoConfig.from_pretrained(E2E_MODEL_PATH))
+    hybrid = model_config.is_hybrid
 
     class CountingLLM(LLM):
         mixed_batches = 0
@@ -671,14 +672,16 @@ def _subprocess_main(mode: str) -> None:
                     assert all(r.cached_len == 0 for r in batch.reqs[:batch.num_prefill])
             return forward_input
 
+    options = dict(cuda_graph_bs=[2, 4, 8], cuda_graph_max_bs=8, memory_ratio=0.3)
+    if model_config.is_gemma4:
+        options.update(cuda_graph_bs=[], cuda_graph_max_bs=0, attention_backend="gemma4",
+                       quantization="fp8", page_size=16, num_page_override=256, memory_ratio=0.6)
     llm = CountingLLM(
         E2E_MODEL_PATH,
         cache_type="naive" if hybrid else "radix",
         max_extend_tokens=E2E_EXTEND_BUDGET,
         max_running_req=8,
-        cuda_graph_bs=[2, 4, 8],
-        cuda_graph_max_bs=8,
-        memory_ratio=0.3,
+        **options,
         max_seq_len_override=1024,
     )
     sampling_params = SamplingParams(temperature=0.0, ignore_eos=True, max_tokens=E2E_MAX_TOKENS)

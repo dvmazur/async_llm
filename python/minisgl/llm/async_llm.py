@@ -52,6 +52,19 @@ logger = init_logger(__name__)
 TokenIds = Union[torch.Tensor, Sequence[int]]
 
 
+def _validate_images(pixel_values, image_grid_thw, image_position_ids, types):
+    assert image_grid_thw is None or image_position_ids is None, "pass one image geometry format"
+    geometry = image_grid_thw if image_position_ids is None else image_position_ids
+    assert (pixel_values is None) == (geometry is None) == (types is None), "pass all or none"
+    if pixel_values is not None:
+        assert isinstance(pixel_values, torch.Tensor)
+        assert pixel_values.ndim == (2 if image_position_ids is None else 3)
+    if image_grid_thw is not None:
+        assert image_grid_thw.shape == (len(image_grid_thw), 3)
+    if image_position_ids is not None:
+        assert image_position_ids.shape == (*pixel_values.shape[:2], 2)
+
+
 @dataclass
 class CausalLMOutput:
     """Result of one forward pass (``forward`` / ``prefill_block``) — and
@@ -148,6 +161,7 @@ class AsyncLLM:
         *,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
+        image_position_ids: Optional[torch.Tensor] = None,
         mm_token_type_ids: Optional[torch.Tensor] = None,
         cache_view: Optional[CacheView] = None,
         write_to: Optional[CacheBlock] = None,
@@ -159,7 +173,7 @@ class AsyncLLM:
         extended: the tokens are appended to what it already holds and attend to
         it causally.  Pass ``pixel_values`` / ``image_grid_thw`` for a multimodal (image) block."""
         self._ensure_loop()
-        assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None), "pass all or none"
+        _validate_images(pixel_values, image_grid_thw, image_position_ids, mm_token_type_ids)
         block = write_to if write_to is not None else self.async_engine.create_block()
         future = self.async_engine.submit_prefill(
             torch.as_tensor(input_ids).flatten(),
@@ -168,6 +182,7 @@ class AsyncLLM:
             return_logits=return_logits,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
+            image_position_ids=image_position_ids,
             mm_token_type_ids=mm_token_type_ids.flatten() if mm_token_type_ids is not None else None,
         )
         self._work_event.set()
@@ -185,6 +200,7 @@ class AsyncLLM:
         *,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
+        image_position_ids: Optional[torch.Tensor] = None,
         mm_token_type_ids: Optional[torch.Tensor] = None,
         write_to: Optional[CacheBlock] = None,
         attention_mask: Optional[torch.Tensor] = None,
@@ -227,7 +243,7 @@ class AsyncLLM:
                 write_to = view[-1]
 
         if input_ids is None:
-            assert pixel_values is None and image_grid_thw is None and mm_token_type_ids is None, "requires input_ids"
+            assert pixel_values is None and image_grid_thw is None and image_position_ids is None and mm_token_type_ids is None, "requires input_ids"
             # Decode mode: the input token is the context's pending one.
             if cache_view is None:
                 raise ValueError("forward needs input_ids and/or cache_view")
@@ -249,10 +265,8 @@ class AsyncLLM:
         if input_ids.numel() == 0:
             raise ValueError("empty input_ids")
         assert input_ids.ndim in (0, 1, 2) and input_ids.shape[-1] == input_ids.numel()
-        assert (pixel_values is None) == (image_grid_thw is None) == (mm_token_type_ids is None), "pass all or none"
+        _validate_images(pixel_values, image_grid_thw, image_position_ids, mm_token_type_ids)
         assert mm_token_type_ids is None or mm_token_type_ids.shape == input_ids.shape
-        assert pixel_values is None or (isinstance(pixel_values, torch.Tensor) and pixel_values.ndim == 2)
-        assert image_grid_thw is None or (image_grid_thw.shape == (len(image_grid_thw), 3))
         assert attention_mask is None or torch.all(torch.as_tensor(attention_mask)), "attention masking not supported"
         input_ids = input_ids.flatten()
         if mm_token_type_ids is not None:
@@ -290,6 +304,7 @@ class AsyncLLM:
             return_logits=return_logits,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
+            image_position_ids=image_position_ids,
             mm_token_type_ids=mm_token_type_ids,
         )
         self._work_event.set()

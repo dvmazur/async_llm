@@ -24,6 +24,10 @@ def _teacher_cases():
 def test_serving_accepts_arguments_without_research_flags(monkeypatch):
     from types import SimpleNamespace
     from minisgl.llm import LLM
+    from tests.e2e.fp8 import worker
+
+    # This is an argument-contract unit test, not a remote checkpoint lookup.
+    monkeypatch.setattr(worker, "is_gemma", lambda model: False)
 
     class ReachedEngineConstruction(Exception):
         pass

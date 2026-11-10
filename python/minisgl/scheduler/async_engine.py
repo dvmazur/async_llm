@@ -100,6 +100,7 @@ class PrefillRequest:
     # Multimodal inputs produced by huggingface.transformers.Processor
     pixel_values: Optional[torch.Tensor] = None
     image_grid_thw: Optional[torch.Tensor] = None
+    image_position_ids: Optional[torch.Tensor] = None
     mm_token_type_ids: Optional[torch.tensor] = None
 
 
@@ -185,6 +186,7 @@ class AsyncCacheEngine:
         return_logits: bool = False,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
+        image_position_ids: Optional[torch.Tensor] = None,
         mm_token_type_ids: Optional[torch.Tensor] = None,
     ) -> Any:
         """
@@ -202,6 +204,7 @@ class AsyncCacheEngine:
                 future=future,
                 pixel_values=pixel_values,
                 image_grid_thw=image_grid_thw,
+                image_position_ids=image_position_ids,
                 mm_token_type_ids=mm_token_type_ids,
             )
         )
@@ -288,6 +291,7 @@ class AsyncCacheEngine:
                 context=list(req.context),
                 pixel_values=req.pixel_values,
                 image_grid_thw=req.image_grid_thw,
+                image_position_ids=req.image_position_ids,
                 mm_token_type_ids=req.mm_token_type_ids,
             )
             for req in reqs

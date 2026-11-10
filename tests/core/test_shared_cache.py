@@ -315,6 +315,9 @@ def engine_and_session():
 
 @requires_e2e
 class TestSharedCacheE2E:
+    # Model-specific test subclasses may override logits only, not KV/state checks.
+    extension_logit_atol = 1e-2
+
     def test_prefill_then_decode_shape(self, engine_and_session):
         engine, session = engine_and_session
         prompt_ids = _encode("The capital of France is", E2E_MODEL_PATH)
@@ -322,7 +325,7 @@ class TestSharedCacheE2E:
         prompt = session.create_block()
         logits = session.prefill_block(prompt, prompt_ids)
 
-        vocab_size = engine.model.lm_head.num_embeddings
+        vocab_size = engine.config.model_config.vocab_size
         assert logits.shape == (1, vocab_size)
         assert prompt.num_tokens == len(prompt_ids)
 
@@ -489,7 +492,7 @@ class TestSharedCacheE2E:
 
         diff = (logits[0] - ref_logits[0]).abs().max().item()
         print(f"\n[extend prefill] max |logit diff| vs one-shot prefill = {diff}")
-        assert diff < 1e-2, f"extension logits differ from one-shot prefill: {diff}"
+        assert diff < self.extension_logit_atol, f"extension logits differ from one-shot prefill: {diff}"
 
         session.free_block(whole)
         session.free_block(split)
@@ -515,7 +518,7 @@ class TestSharedCacheE2E:
         assert split.num_tokens == len(tail_ids)
         diff = (logits[0] - ref_logits[0]).abs().max().item()
         print(f"\n[extend context prefill] max |logit diff| vs one-shot = {diff}")
-        assert diff < 1e-2, f"in-context extension differs from one-shot prefill: {diff}"
+        assert diff < self.extension_logit_atol, f"in-context extension differs from one-shot prefill: {diff}"
 
         for blk in (prompt, whole, split):
             session.free_block(blk)

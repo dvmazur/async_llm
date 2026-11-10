@@ -20,6 +20,11 @@ def check_coverage(coverage):
     decode = [f for f in forwards if f['phase'] == 'decode']
     assert prefill and decode, 'both model phases must actually execute'
     assert any(f['workers'] > 1 for f in prefill), 'missing batched prefill'
+    if coverage.get('gemma_eager', False) or coverage.get('explicit_eager', False):
+        assert coverage['model_forward_calls'] == len(forwards)
+        assert any(f['workers'] > 1 for f in decode), 'missing batched decode'
+        assert coverage['decode_replays'] == coverage['prefill_replays'] == 0
+        return
     if coverage.get('full_prefill_graph', False):
         assert coverage['prefill_replays'] == len(prefill), 'prefill fell back to eager'
         assert coverage['prefill_layer_calls'] == coverage['model_forward_calls'] == 0
@@ -38,15 +43,23 @@ def mini_shared_batch(args, cases):
     from minisgl.distributed import DistributedInfo
     from minisgl.shared_cache import SharedCacheSession, WorkerGroup, PrefillJob
     from transformers import GenerationConfig
-    from .worker import image_inputs
+    from .worker import image_inputs, gemma_engine_options, is_gemma
 
     assert args.quantization == 'fp8'
     full_graph = args.mini_scheduling.startswith('shared-full-graph')
+    eager = getattr(args, 'eager_shared', False)
+    assert not (eager and full_graph), 'explicit eager cannot validate a graph profile'
+    gemma = is_gemma(args.model)
+    assert not (gemma and full_graph), 'Gemma graph execution is not implemented'
+    options = dict(num_page_override=8192, attention_backend='fi',
+                   cuda_graph_bs=[1, 2, 4], cuda_graph_max_bs=4)
+    options.update(gemma_engine_options(args.model))
+    if eager:
+        options.update(cuda_graph_bs=[], cuda_graph_max_bs=0)
     assert Path(sys.modules[Engine.__module__].__file__).resolve().is_relative_to(source)
     engine = Engine(EngineConfig(model_path=args.model, tp_info=DistributedInfo(0, 1),
         dtype=torch.bfloat16, quantization=args.quantization, max_running_req=8,
-        num_page_override=8192, max_seq_len_override=2048, attention_backend='fi',
-        use_pynccl=False, cuda_graph_bs=[1, 2, 4], cuda_graph_max_bs=4,
+        max_seq_len_override=2048, **options, use_pynccl=False,
         shared_cuda_graph_prefill_rows=FULL_PREFILL_ROWS if full_graph else None,
         shared_cuda_graph_max_depth=8, distributed_addr=f'tcp://127.0.0.1:{args.port}',
         generation_config=GenerationConfig(do_sample=False, temperature=None, top_k=None, top_p=None)))
@@ -117,13 +130,15 @@ def mini_shared_batch(args, cases):
                     session.free_block(block)
                 live = []
             print('DONE batch', [c['name'] for c in group], flush=True)
-        coverage = dict(forwards=forwards, prefill_layer_calls=len(layer_calls),
+        runner = session.graph_runner
+        coverage = dict(forwards=forwards, prefill_layer_calls=len(layer_calls), gemma_eager=gemma,
+                        explicit_eager=eager,
                         linear_layers=session._model_config.num_linear_layers,
-                        decode_replays=session.graph_runner.replay_count,
-                        capture_profiles=session.graph_runner.graph_bs_list,
+                        decode_replays=runner.replay_count if runner else 0,
+                        capture_profiles=runner.graph_bs_list if runner else [],
                         full_prefill_graph=full_graph, model_forward_calls=len(model_calls),
-                        prefill_replays=session.graph_runner.prefill_replay_count,
-                        prefill_capture_profiles=session.graph_runner.prefill_graph_rows)
+                        prefill_replays=runner.prefill_replay_count if runner else 0,
+                        prefill_capture_profiles=runner.prefill_graph_rows if runner else [])
         check_coverage(coverage)
         save_json(args.output/'batch_coverage.json', coverage)
     finally:

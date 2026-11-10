@@ -37,7 +37,8 @@ def torch_reference_kernels():
             "fused_recurrent_gated_delta_rule",
             "FusedRMSNormGated",
         ):
-            patch.setattr(modeling_qwen3_5, name, None)
+            # Legacy optional hooks; current HF dispatch is unwrapped below.
+            patch.setattr(modeling_qwen3_5, name, None, raising=False)
         for name in (
             "torch_causal_conv1d_update",
             "torch_chunk_gated_delta_rule",

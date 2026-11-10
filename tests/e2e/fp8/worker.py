@@ -7,6 +7,7 @@ mixed. ``--mini-scheduling mixed`` instead tests ordinary serving on text fixtur
 """
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -21,7 +22,30 @@ from .common import ROOT, save_json, source_hashes
 AUDIT={'active':False}
 
 
+def is_gemma(model):
+    from transformers import AutoConfig
+    return AutoConfig.from_pretrained(model).model_type in ('gemma4', 'gemma4_text')
+
+
+def gemma_engine_options(model):
+    # Gemma's heterogeneous KV is ~880 KiB/token on 31B. The old Qwen
+    # 8192-page override is not a meaningful memory budget for this model.
+    return dict(attention_backend='gemma4', page_size=16, num_page_override=256,
+                cuda_graph_bs=[], cuda_graph_max_bs=0) if is_gemma(model) else {}
+
+
+def release_checkpoint_pages(model):
+    """Drop only clean weight-file cache, not host caches globally (GB10 RAM)."""
+    if hasattr(os, 'posix_fadvise'):
+        for path in Path(model).glob('*.safetensors'):
+            with path.open('rb') as handle:
+                os.posix_fadvise(handle.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+
+
 def install_sglang_observer():
+    if os.environ.get('FP8_PARITY_STACK_SECONDS'):
+        import faulthandler
+        faulthandler.dump_traceback_later(float(os.environ['FP8_PARITY_STACK_SECONDS']), repeat=True)
     from sglang.srt.model_executor.model_runner import ModelRunner
     from sglang.srt.managers.scheduler import Scheduler
     original=ModelRunner.forward
@@ -62,6 +86,9 @@ def fixtures(args):
     from transformers import AutoProcessor
     processor=AutoProcessor.from_pretrained(args.model)
     tokenizer=processor.tokenizer
+    edges = args.fixture_set in ('gemma-edges', 'gemma-image-window')
+    if edges:
+        assert is_gemma(args.model)
     cases=[]
     questions=[
         'Explain why repeating an unsuccessful action may not help.',
@@ -79,6 +106,8 @@ def fixtures(args):
             'the next step while uncertainty about hidden information remains explicit. ')*3
     teacher=tokenizer.encode(answer,add_special_tokens=False)[:args.tokens]
     assert len(teacher)==args.tokens
+    if edges:
+        questions = questions[:1]
     for i,question in enumerate(questions):
         question+=(' Previous observation: a wall and a side opening are visible.'*(i*3))
         prompt=tokenizer.apply_chat_template([dict(role='user',content=question)],
@@ -89,16 +118,37 @@ def fixtures(args):
         rng=np.random.default_rng(21800+i)
         pixels=rng.integers(0,256,(64+32*(i%3),96+32*(i%2),3),dtype=np.uint8)
         images=[Image.fromarray(pixels),Image.fromarray(np.roll(pixels,5+i,axis=1))]
+        if edges:
+            images = images[:1]
         inputs=processor.apply_chat_template([dict(role='user',content=[
             *[dict(type='image',image=image) for image in images],
             dict(type='text',text=questions[i])])],add_generation_prompt=True,
             enable_thinking=False,tokenize=True,return_dict=True,return_tensors='pt')
-        data={k:inputs[k].cpu() for k in ('pixel_values','image_grid_thw','mm_token_type_ids')}
+        data={k:inputs[k].cpu() for k in
+              ('pixel_values','image_grid_thw','image_position_ids','mm_token_type_ids') if k in inputs}
         path=args.output/f'pixels_{i}.pt'
         torch.save(data,path)
         cases.append(dict(name=f'image_{i}',prompt_ids=inputs['input_ids'][0].tolist(),
             teacher_tokens=teacher,cold_steps=[0,7,args.tokens-1],image_tensors=str(path),
             image_sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+    if args.fixture_set == 'gemma-image-window':
+        from transformers import AutoConfig
+        from .gemma_images import window_cases
+        window = AutoConfig.from_pretrained(args.model).text_config.sliding_window
+        base = next(case for case in cases if case['name'] == 'image_0')
+        filler = tokenizer.encode(' The camera observes a doorway and a wall.', add_special_tokens=False)
+        cases = window_cases(base, data, filler, window, args.output)
+    elif edges:
+        from transformers import AutoConfig
+        window = AutoConfig.from_pretrained(args.model).text_config.sliding_window
+        assert window + args.tokens + 1 <= 2048, 'edge profile needs a larger sequence capacity'
+        body = tokenizer.encode('A camera observes a doorway and a wall. ', add_special_tokens=False)
+        repeated = body * (window // len(body) + 2)
+        windows = [dict(name=name, prompt_ids=[tokenizer.bos_token_id]+repeated[:length-1],
+                        teacher_tokens=teacher, cold_steps=[0,7,args.tokens-1])
+                   for name,length in zip(('window_before','window_at','window_after'),
+                                          (window-1,window,window+1))]
+        cases = windows + [case for case in cases if case['name'] == 'image_0']
     save_json(args.output/'fixtures.json',dict(model=args.model,cases=cases))
 
 
@@ -107,9 +157,10 @@ def image_inputs(case,extra=0,flatten=False,device='cpu'):
     path=Path(case['image_tensors'])
     assert hashlib.sha256(path.read_bytes()).hexdigest()==case['image_sha256']
     data=torch.load(path,map_location='cpu',weights_only=True)
-    types=data['mm_token_type_ids']
-    data['mm_token_type_ids']=torch.cat([types,types.new_zeros((1,extra))],dim=1)
-    if flatten:data['mm_token_type_ids']=data['mm_token_type_ids'].flatten()
+    if 'mm_token_type_ids' in data:
+        types=data['mm_token_type_ids']
+        data['mm_token_type_ids']=torch.cat([types,types.new_zeros((1,extra))],dim=1)
+        if flatten:data['mm_token_type_ids']=data['mm_token_type_ids'].flatten()
     return {k:v.to(device) for k,v in data.items()}
 
 
@@ -123,9 +174,13 @@ def mini(args,cases):
     from transformers import GenerationConfig
     assert Path(sys.modules[Engine.__module__].__file__).resolve().is_relative_to(repo)
     extra={'quantization':args.quantization} if args.quantization else {}
+    options=dict(num_page_override=8192, attention_backend='fi')
+    options.update(gemma_engine_options(args.model))
+    if args.eager_shared:
+        options.update(cuda_graph_bs=[], cuda_graph_max_bs=0)
     engine=Engine(EngineConfig(model_path=args.model,tp_info=DistributedInfo(0,1),
-        dtype=torch.bfloat16,max_running_req=8,num_page_override=8192,
-        max_seq_len_override=2048,attention_backend='fi',use_pynccl=False,
+        dtype=torch.bfloat16,max_running_req=8,
+        max_seq_len_override=2048,use_pynccl=False, **options,
         distributed_addr=f'tcp://127.0.0.1:{args.port}',
         generation_config=GenerationConfig(do_sample=False,temperature=None,top_k=None,top_p=None),**extra))
     import minisgl.models.qwen3_5_delta as gdn
@@ -137,16 +192,27 @@ def mini(args,cases):
     assert not hasattr(session,'mixed_step')
     assert not hasattr(session.sc_gdn,'compose_state_cache')
     weights=engine.model.state_dict()
+    from minisgl.kernel.fp8_format import emulate_fp8
     save_json(args.output/'storage.json',dict(
         fp8_tensors=sum(v.dtype==torch.float8_e4m3fn for v in weights.values()),
+        fp8_emulated=emulate_fp8(engine.device),
         bytes=sum(v.numel()*v.element_size() for v in weights.values()),
         source=str(repo),fla_recurrent=gdn._fla_recurrent is not None))
+    coverage = []
+    def build(case, step):
+        ids = case['prompt_ids'] + case['teacher_tokens'][:step]
+        mm = image_inputs(case, step, flatten=True)
+        if 'image_window' in case:
+            from .gemma_images import materialize
+            logits, blocks, records = materialize(session, case, ids, mm, args.mini_scheduling)
+            coverage.append(dict(case=case['name'], step=step, **records))
+            return logits, blocks
+        block = session.create_block()
+        return session.prefill_block(block, torch.tensor(ids, dtype=torch.int32), **mm), [block]
     try:
         for case in cases:
-            block=session.create_block()
-            group=WorkerGroup(cache_structure=[[block]],write_to=[block])
-            logits=session.prefill_block(block,torch.tensor(case['prompt_ids'],dtype=torch.int32),
-                                        **image_inputs(case,flatten=True))
+            logits, blocks = build(case, 0)
+            group=WorkerGroup(cache_structure=[blocks],write_to=[blocks[-1]])
             values=[]
             for i,token in enumerate(case['teacher_tokens']):
                 # Keep the model's original dtype on disk, losslessly. The
@@ -155,15 +221,16 @@ def mini(args,cases):
                 if i+1<len(case['teacher_tokens']):
                     logits=session.decode_step(group,torch.tensor([token],dtype=torch.int32,device='cuda'))
             torch.save(torch.stack(values),args.output/f"{case['name']}_decode.pt")
-            session.free_block(block)
-            for step in case['cold_steps']:
-                block=session.create_block()
-                ids=case['prompt_ids']+case['teacher_tokens'][:step]
-                logits=session.prefill_block(block,torch.tensor(ids,dtype=torch.int32),
-                    **image_inputs(case,step,flatten=True))
-                torch.save(logits[0].cpu(),args.output/f"{case['name']}_cold{step}.pt")
+            for block in blocks:
                 session.free_block(block)
+            for step in case['cold_steps']:
+                logits, blocks = build(case, step)
+                torch.save(logits[0].cpu(),args.output/f"{case['name']}_cold{step}.pt")
+                for block in blocks:
+                    session.free_block(block)
             print('DONE',case['name'],flush=True)
+        if coverage:
+            save_json(args.output/'image_window_coverage.json', dict(layout=args.mini_scheduling, executions=coverage))
     finally:
         engine.shutdown()
 
@@ -172,8 +239,12 @@ def mini(args,cases):
 def transformers_run(args,cases):
     from transformers import AutoModelForImageTextToText,AutoConfig
     config=AutoConfig.from_pretrained(args.model)
+    if config.model_type in ('gemma4', 'gemma4_text'):
+        # Public loader option: bound in-flight weight copies on unified memory.
+        # This changes only loading, not quantization or inference math.
+        os.environ.setdefault('HF_DEACTIVATE_ASYNC_LOAD', '1')
     quant=getattr(config,'quantization_config',None)
-    if quant:
+    if quant and quant.get('quant_method') == 'fp8':
         # Community checkpoint has a tied BF16 lm_head, no output-head scale.
         # HF names that module "lm_head", not the config's "model.lm_head".
         quant['modules_to_not_convert']=list(quant.get('modules_to_not_convert',[]))+['lm_head']
@@ -183,6 +254,7 @@ def transformers_run(args,cases):
     save_json(args.output/'loading_info.json',info)
     assert not info.get('missing_keys') and not info.get('mismatched_keys'),info
     model.eval()
+    release_checkpoint_pages(args.model)
     for c in cases:
         output=model(input_ids=torch.tensor([c['prompt_ids']],device='cuda'),use_cache=True,
                      logits_to_keep=1,**image_inputs(c,device='cuda'))
@@ -204,10 +276,20 @@ def transformers_run(args,cases):
 
 def sglang_run(args,cases):
     import sglang
+    # Gemma image spans require bidirectional attention. SGLang explicitly
+    # falls back to causal when an image is split across prefill chunks.
+    options = (dict(attention_backend='triton', cuda_graph_backend_prefill='disabled',
+                    max_total_tokens=4096, chunked_prefill_size=-1, port=args.port,
+                    model_loader_extra_config={'enable_multithread_load': False})
+               if is_gemma(args.model) else dict(max_total_tokens=8192,
+                    max_mamba_cache_size=64, disable_prefill_cuda_graph=True, chunked_prefill_size=2048,
+                    model_loader_extra_config={'enable_multithread_load': False}))
+    if args.sglang_mm_attention_backend is not None:
+        options['mm_attention_backend'] = args.sglang_mm_attention_backend
     engine=sglang.Engine(model_path=args.model,dtype='bfloat16',context_length=2048,
-        max_running_requests=8,max_total_tokens=8192,max_mamba_cache_size=64,
-        mem_fraction_static=args.mem_fraction_static,disable_cuda_graph=True,disable_prefill_cuda_graph=True,
-        chunked_prefill_size=2048,random_seed=0,log_level='warning')
+        max_running_requests=8, **options,
+        mem_fraction_static=args.mem_fraction_static,disable_cuda_graph=True,
+        random_seed=0,log_level='warning')
     try:
         for c in cases:
             jobs=[('decode',0,c['teacher_tokens'])]+[(f'cold{s}',s,[c['teacher_tokens'][s]]) for s in c['cold_steps']]
@@ -230,20 +312,24 @@ def make_parser():
     p.add_argument('--model',required=True)
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--fixtures',type=Path)
-    p.add_argument('--fixture-set',choices=['standard','chains'],default='standard')
+    p.add_argument('--fixture-set',choices=['standard','chains','gemma-edges','gemma-image-window'],default='standard')
     p.add_argument('--bf16-control',action='store_true')
     p.add_argument('--require-moe',action='store_true',help='Reject dense checkpoints; chain worker verifies actual FP8 expert calls')
     p.add_argument('--tokens',type=int,default=32)
     p.add_argument('--limit',type=int)
     p.add_argument('--cases',nargs='+',help='Select named fixture cases without changing token/image data')
     p.add_argument('--disable-fla',action='store_true',help='Mini-only test of the unchanged Torch scan fallback')
+    p.add_argument('--eager-shared',action='store_true',
+                   help='Disable shared-cache graphs for matched eager accuracy comparisons')
     p.add_argument('--mini-repo',type=Path)
-    p.add_argument('--mini-scheduling',choices=['shared-cache','mixed','sequential','shared-chains',
-        'shared-batched','shared-full-graph','shared-full-graph-software'],default='shared-cache',
+    p.add_argument('--mini-scheduling',choices=['shared-cache','mixed','sequential','shared-chains','shared-batched-software',
+        'shared-batched','shared-full-graph','shared-full-graph-software','image-split','image-append','image-chunked'],default='shared-cache',
         help='Mini adapter: shared-cache (existing parity) or ordinary text-only serving with/without mixing')
     p.add_argument('--quantization',choices=['fp8'])
     p.add_argument('--mem-fraction-static',type=float,default=.15,help='SGLang reference memory limit; use e.g. 0.6 for 35B on GB10')
     p.add_argument('--port',type=int,default=25876)
+    p.add_argument('--sglang-mm-attention-backend', choices=['sdpa'],
+                   help='Explicit public vision backend for a separately qualified SGLang reference')
     return p
 
 
@@ -282,8 +368,8 @@ def main(args=None):
     hashes={}
     if args.engine=='mini':
         hashes=source_hashes(args.mini_repo or ROOT)
-        if args.mini_scheduling=='shared-cache':mini(args,cases)
-        elif args.mini_scheduling in ('shared-batched','shared-full-graph','shared-full-graph-software'):
+        if args.mini_scheduling in ('shared-cache','image-split','image-append','image-chunked'):mini(args,cases)
+        elif args.mini_scheduling in ('shared-batched','shared-batched-software','shared-full-graph','shared-full-graph-software'):
             from .shared_batch import mini_shared_batch
             mini_shared_batch(args,cases)
         elif args.mini_scheduling == 'shared-chains':
@@ -297,6 +383,12 @@ def main(args=None):
     assert all(hashlib.sha256(Path(path).read_bytes()).hexdigest()==sha for path,sha in hashes.items())
     manifest = dict(arguments=vars(args),torch=torch.__version__,source_hashes=hashes,
         cases=[c['name'] for c in cases],fixtures_sha256=hashlib.sha256(args.fixtures.read_bytes()).hexdigest())
+    manifest['packages'] = {}
+    for package in ('transformers', 'sglang', 'compressed-tensors', 'flashinfer-python', 'sgl-kernel', 'accelerate'):
+        try:
+            manifest['packages'][package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            pass
     save_json(args.output/'complete.json',manifest)
     if args.engine == 'mini' and args.mini_scheduling == 'shared-chains':
         from .chains import LAYOUTS

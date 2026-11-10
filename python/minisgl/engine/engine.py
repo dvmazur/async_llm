@@ -182,6 +182,11 @@ class Engine:
             * self.dtype.itemsize
             * config.model_config.num_kv_layers
         )
+        if config.model_config.kv_layer_shapes is not None:
+            cache_per_page = 2 * self.dtype.itemsize * config.page_size * sum(
+                div_even(h, config.tp_info.size, allow_replicate=True) * d
+                for h, d in config.model_config.kv_layer_shapes
+            )
         num_pages = config.num_page_override
         if num_pages is None:
             model_memory = old_free_memory - new_free_memory
@@ -248,6 +253,15 @@ def _align_up_32(num: int) -> int:
 def _adjust_config(config: EngineConfig):
     def override(attr: str, value: Any):  # this is dangerous, use with caution
         object.__setattr__(config, attr, value)
+
+    if config.model_config.is_gemma4:
+        if config.attention_backend not in ("auto", "gemma4"):
+            raise ValueError("Gemma 4 currently requires attention_backend='gemma4' (or 'auto')")
+        override("attention_backend", "gemma4")
+        logger.info_rank0("Gemma 4 uses eager shared-view attention; CUDA graphs are disabled.")
+        if config.cuda_graph_bs or (config.cuda_graph_max_bs or 0) > 0 or config.shared_cuda_graph_prefill_rows:
+            raise ValueError("Gemma 4 currently supports eager execution only; disable CUDA graphs")
+        override("cuda_graph_max_bs", 0)
 
     if config.attention_backend == "auto":
         # FlashInfer 0.6.17 TRTLLM accepts SM100/103/107, not every SM >= 100.

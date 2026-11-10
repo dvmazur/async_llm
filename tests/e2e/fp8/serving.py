@@ -98,6 +98,7 @@ def check_schedule(forwards, mode):
 def mini_serving(args, cases):
     from .common import ROOT, save_json
     from .chains import count_moe_calls, check_moe_execution
+    from .worker import gemma_engine_options, is_gemma
 
     assert args.quantization == "fp8", "serving parity must explicitly enable FP8"
     assert cases and all("image_tensors" not in case for case in cases), (
@@ -131,11 +132,13 @@ def mini_serving(args, cases):
     max_length = max(len(c["prompt_ids"]) + len(c["teacher_tokens"]) for c in cases)
     # No radix prefix reuse or chunking: ordinary upstream GDN supports neither.
     # This still uses each request's real KV and recurrent cache during decode.
+    options = dict(num_page_override=(max_length + 16) * (len(cases) + 1),
+                   attention_backend="fi", cuda_graph_bs=[], cuda_graph_max_bs=0)
+    options.update(gemma_engine_options(args.model))
     llm = ArrivingLLM(
         args.model, quantization="fp8", max_running_req=len(cases), cache_type="naive",
         max_extend_tokens=max_length + len(cases), max_seq_len_override=max_length + 16,
-        num_page_override=(max_length + 16) * (len(cases) + 1),
-        attention_backend="fi", use_pynccl=False, cuda_graph_bs=[], cuda_graph_max_bs=0,
+        use_pynccl=False, **options,
         distributed_addr=f"tcp://127.0.0.1:{args.port}",
     )
     # FLA import may initialize CUDA; Engine must own the first initialization.
@@ -146,7 +149,8 @@ def mini_serving(args, cases):
     forwards = []
     with count_moe_calls(args.require_moe) as moe_calls:
         try:
-            assert llm.engine.ctx.gdn_state is not None, "expected a hybrid Qwen GDN checkpoint"
+            if not is_gemma(args.model):
+                assert llm.engine.ctx.gdn_state is not None, "expected a hybrid Qwen GDN checkpoint"
             if args.disable_fla:
                 gdn._fla_chunk = gdn._fla_recurrent = None
             weights = llm.engine.model.state_dict()
@@ -154,7 +158,7 @@ def mini_serving(args, cases):
             assert fp8_count > 0, "test accidentally loaded unquantized weights"
             storage = dict(
                 fp8_tensors=fp8_count, bytes=sum(w.numel() * w.element_size() for w in weights.values()),
-                num_experts=llm.engine.model.model.config.num_experts,
+                num_experts=llm.engine.config.model_config.num_experts,
                 fp8_expert_tensors=sum(w.ndim == 3 and w.dtype == torch.float8_e4m3fn for w in weights.values()),
                 source=str(repo), fla_recurrent=gdn._fla_recurrent is not None)
 

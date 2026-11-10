@@ -22,10 +22,92 @@ def test_metrics_detect_change_and_invalid():
     with pytest.raises(AssertionError):metrics.distances(x*float('nan'),x)
 
 
+def test_transformers_reference_is_strict_and_uses_its_own_l2_denominator(tmp_path):
+    # Relative L2 is asymmetric: recompute both errors to TF, not to SG.
+    logits = {'mini': torch.tensor([0., 2., 4.]),
+              'transformers': torch.tensor([0., 1., 2.]),
+              'sglang': torch.tensor([0., 4., 8.])}
+    for engine, values in logits.items():
+        root = tmp_path / engine
+        root.mkdir()
+        (root / 'complete.json').write_text(json.dumps(dict(
+            fixtures_sha256='same', cases=['case'], arguments=dict(
+                model='same-checkpoint', tokens=3, mini_scheduling='shared-cache', quantization='fp8'))))
+        torch.save(values, root / 'case_cold0.pt')
+        torch.save(values.repeat(3, 1), root / 'case_decode.pt')
+    result = metrics.compare(*(tmp_path / name for name in ('mini', 'sglang', 'transformers')),
+                             reference='transformers')
+    assert result['reference'] == 'transformers' and result['baseline_engine'] == 'sglang'
+    assert result['relative_tolerance_percent'] == 0 and result['passed']
+    assert result['metrics']['mini']['prefill']['mean_centered_relative_l2'] == pytest.approx(1.)
+    assert result['metrics']['sglang']['prefill']['mean_centered_relative_l2'] == pytest.approx(3.)
+    assert result['metrics']['mini']['prefill']['positions'] == 1
+    assert result['metrics']['mini']['decode']['positions'] == 2
+    errors = result['metrics']
+    errors['mini']['decode']['p95_tv'] = math.nextafter(errors['sglang']['decode']['p95_tv'], math.inf)
+    assert not metrics.relative_error_summary(errors, reference='transformers')['passed']
+
+
 def _errors(actual, baseline):
     return {engine: {phase: dict.fromkeys(metrics.ERROR_METRICS, value)
                      for phase in ('prefill', 'decode')}
             for engine, value in (('mini', actual), ('transformers', baseline))}
+
+
+@pytest.mark.parametrize('reference', ['sglang', 'transformers'])
+@pytest.mark.parametrize('phase', ['prefill', 'decode'])
+@pytest.mark.parametrize('key', metrics.ERROR_METRICS)
+def test_gemma_factor_is_uniform_and_retains_strict_diagnostics(reference, phase, key):
+    factor = metrics.GEMMA_REFERENCE_ERROR_FACTOR
+    errors = _errors(.1, .1)
+    errors['sglang'] = errors['transformers']
+    errors['mini'][phase][key] = .1 * factor
+    result = metrics.relative_error_summary(errors, reference=reference,
+                                           bf16_control=True, error_factor=factor)
+    assert result['passed'] and not result['strict_passed']
+    assert not result['strict_gates'][phase][key]
+    assert result['relative_tolerance_percent'] == 50
+    assert all(v == factor for row in result['error_factors'].values() for v in row.values())
+    errors['mini'][phase][key] = math.nextafter(.1 * factor, math.inf)
+    assert not metrics.relative_error_summary(errors, reference=reference, error_factor=factor)['passed']
+
+
+@pytest.mark.parametrize('actual,baseline,passed', [
+    (0., 0., True), (1e-12, 0., False), (float('nan'), .1, False),
+    (.1, float('inf'), False), (float('inf'), .1, False), (-.1, .1, False),
+])
+def test_gemma_factor_does_not_hide_zero_or_invalid_errors(actual, baseline, passed):
+    result = metrics.relative_error_summary(_errors(actual, baseline),
+                                           error_factor=metrics.GEMMA_REFERENCE_ERROR_FACTOR)
+    assert result['passed'] is passed
+    json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize('factor', [0., .9, float('nan'), float('inf')])
+def test_invalid_explicit_factor_is_rejected(factor):
+    with pytest.raises(ValueError, match='error_factor'):
+        metrics.relative_error_summary(_errors(.1, .1), error_factor=factor)
+
+
+def test_explicit_factor_one_is_strict_and_conflicting_options_are_rejected():
+    result = metrics.relative_error_summary(_errors(.1, .1), error_factor=1.)
+    assert result['passed'] and result['strict_passed']
+    assert not result['acceptance_policy_fragile']
+    with pytest.raises(ValueError, match='strict=True'):
+        metrics.relative_error_summary(_errors(.1, .1), strict=True,
+                                       error_factor=metrics.GEMMA_REFERENCE_ERROR_FACTOR)
+
+
+@pytest.mark.parametrize('phase', ['prefill', 'decode'])
+@pytest.mark.parametrize('key', metrics.ERROR_METRICS)
+def test_strict_gate_rejects_any_regressed_metric(phase, key):
+    errors = _errors(.1, .1)
+    assert metrics.relative_error_summary(errors, strict=True)['passed']
+    errors['mini'][phase][key] = math.nextafter(.1, math.inf)
+    result = metrics.relative_error_summary(errors, strict=True, bf16_control=True)
+    assert not result['passed'] and not result['gates'][phase][key]
+    assert result['relative_tolerance_percent'] == 0
+    assert all(f == 1 for row in result['error_factors'].values() for f in row.values())
 
 
 @pytest.mark.parametrize('baseline', [1e-8, .02, .2, 10.0])

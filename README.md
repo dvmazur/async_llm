@@ -46,6 +46,15 @@ uv pip install -e ".[dev]"
 Some kernels are JIT-compiled, so make sure the CUDA Toolkit (`nvcc`) matches your driver.
 You can also use the provided [`Dockerfile`](./Dockerfile).
 
+### Gemma 4 (experimental)
+
+This branch adds eager text/image inference for the dense Gemma 4 31B configuration,
+including block-scaled FP8 checkpoints and shared cache views. CUDA graphs and TP
+are not supported for Gemma yet. The current test tolerances are provisional,
+not a claim of reference-equivalent accuracy. See [MATH-500 evaluation](./eval/README.md)
+for the `async_thoughts` demo with 8192 thinker + 8192 writer tokens,
+standard Gemma sampling and training traces.
+
 ## Example: think and speak at the same time
 
 A "thinker" coroutine reasons in the background. After each finished paragraph, a "writer" gives

@@ -80,3 +80,20 @@ def shared_batched_artifacts(fp8_config):
 @pytest.fixture(scope="session")
 def full_graph_artifacts(fp8_config):
     return collect_profile(fp8_config, "shared-full-graph")
+
+
+@pytest.fixture(scope="session")
+def gemma_shared_artifacts(fp8_config):
+    from .worker import is_gemma
+    assert is_gemma(fp8_config.model), "This suite requires the Gemma checkpoint"
+    return collect_profile(fp8_config, "gemma-shared")
+
+
+@pytest.fixture(scope="session")
+def gemma_edge_artifacts(fp8_config):
+    return collect_profile(fp8_config, "gemma-edges")
+
+
+@pytest.fixture(scope="session")
+def gemma_image_window_artifacts(fp8_config):
+    return collect_profile(fp8_config, "gemma-image-window")

@@ -100,6 +100,7 @@ class Batch:
     # vision tower; mm_token_type_ids [T] 0 - text, 1 - image, 2 - video. None for text-only.
     pixel_values: "torch.Tensor | None" = field(default=None, init=False)
     image_grid_thw: "torch.Tensor | None" = field(default=None, init=False)
+    image_position_ids: "torch.Tensor | None" = field(default=None, init=False)
     mm_token_type_ids: "torch.Tensor | None" = field(default=None, init=False)
     # Vision-tower output [n_img_tokens, hidden] in place of pixel_values, for callers
     # that ran the tower themselves (chunked prefill: run once, slice per chunk).

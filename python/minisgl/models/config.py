@@ -68,6 +68,14 @@ class ModelConfig:
     video_token_id: int = -1
     vision_start_token_id: int = -1
     vision_end_token_id: int = -1
+    # Gemma keeps its HF config for unchanged reference modules and has different
+    # KV head counts/dimensions in sliding and global attention layers.
+    hf_config: PreTrainedConfig | None = None
+    kv_layer_shapes: tuple[tuple[int, int], ...] | None = None
+
+    @property
+    def is_gemma4(self) -> bool:
+        return self.model_type == "gemma4_text"
 
     @property
     def is_multimodal(self) -> bool:
@@ -88,10 +96,10 @@ class ModelConfig:
 
     @property
     def num_kv_layers(self) -> int:
-        """Number of layers that own a real KV cache (full-attention layers)."""
+        """Number of layers that own a real KV cache (full or sliding attention)."""
         if self.layer_types is None:
             return self.num_layers
-        return sum(t == "full_attention" for t in self.layer_types)
+        return sum(t != "linear_attention" for t in self.layer_types)
 
     @property
     def num_linear_layers(self) -> int:
@@ -113,6 +121,9 @@ class ModelConfig:
 
     @classmethod
     def from_hf(cls, config: PreTrainedConfig) -> ModelConfig:
+        if getattr(config, "model_type", "") in ("gemma4", "gemma4_text"):
+            from .gemma4_config import from_gemma4
+            return from_gemma4(config)
         top = config  # original (multimodal) config, before swapping to text_config
         if hasattr(config, "text_config") and config.text_config is not None:
             config = config.text_config

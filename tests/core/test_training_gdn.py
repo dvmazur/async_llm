@@ -72,6 +72,7 @@ def tiny_hybrid():
 def torch_hybrid():
     with patch.multiple(
         modeling_qwen3_5,
+        create=True,  # Older optional FLA constructor hooks disappeared in HF 5.19.
         FusedRMSNormGated=None,
         chunk_gated_delta_rule=None,
         fused_recurrent_gated_delta_rule=None,
