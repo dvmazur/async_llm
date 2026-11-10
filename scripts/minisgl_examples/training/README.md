@@ -51,16 +51,18 @@ and `logprobs` (`null` for unsupervised rows). Sampled labels belong to the forw
 row whose logits produced them; a global next-token shift misaligns interleaved
 workers. The async-thoughts demo exports the same schema.
 
-For the SFT CLI below, replay checks the recorded target log-probabilities with a maximum
-absolute error of `0.1`. Each AdamW update accumulates all examples, normalized by
-their total supervised token count. Pixel traces select the full conditional
-generation model so the vision tower also receives gradients; checkpoints include
-its processor instead of a text-only tokenizer.
+For both SFT CLIs below, replay checks the recorded target log-probabilities with a
+maximum absolute error of `0.1` when the student and mining model are the same.
+Each default AdamW update accumulates all examples, normalized by their total
+supervised token count. Pixel traces select the full conditional generation model
+so the vision tower also receives gradients; checkpoints include its processor
+instead of a text-only tokenizer.
 
-Mining uses FP16; the training CLI uses FP32, including the GDN core. Evaluation
-runs every five updates and at the end. Training stops early when every example
-has 100% target accuracy and loss below `0.01`. It saves a standard HF checkpoint
-and tokenizer to `--output`, with `metrics.json` in its parent directory.
+Mining uses FP16; both training CLIs use FP32, including the GDN core. The original
+trainer evaluates every five updates and stops early when every example has 100%
+target accuracy and loss below `0.01`. The HF Trainer variant evaluates according
+to `--eval-steps` and always runs `--steps` updates. Both save a standard HF
+checkpoint and tokenizer to `--output`.
 
 ## Run
 
@@ -70,6 +72,37 @@ Run from the repository root. `uv` manages the environment:
 uv sync --extra dev
 uv pip install -e ./scripts
 ```
+
+### Hugging Face Trainer variant
+
+The side-by-side `sft_hf.py` workflow uses the same trace miner and replay loss,
+but delegates optimization, gradient accumulation, evaluation scheduling and
+checkpoint state to `transformers.Trainer`. It currently supports one process/GPU.
+The original `sft.py` remains available and unchanged.
+
+```bash
+uv run --no-sync python -m minisgl_examples.training.sft_hf mine \
+  --model Qwen/Qwen3-0.6B --max-tokens 8 \
+  --output training_runs/qwen3_sft_hf/trajectories.json
+
+uv run --no-sync python -m minisgl_examples.training.sft_hf train \
+  --data training_runs/qwen3_sft_hf/trajectories.json \
+  --output training_runs/qwen3_sft_hf/checkpoint \
+  --steps 80 --gradient-checkpointing
+```
+
+Trace targets are already aligned with the logits rows that sampled them; the
+custom collator and trainer preserve that alignment instead of applying the
+usual causal-LM label shift. Batches replay their variable execution graphs
+sequentially. By default, one optimizer update accumulates one complete pass over
+the trace dataset, matching the original SFT loop while keeping the per-device
+batch at one. Set `--gradient-accumulation-steps` explicitly to use a different
+number of microbatches per update.
+
+With the same model and default options, the two trainers use the same FP32
+weights, summed token loss, AdamW parameter group and gradient clipping. Their
+checkpoints are standard Hugging Face checkpoints; the HF variant additionally
+saves Trainer state and writes `metrics_hf.json`.
 
 The CLIs require exactly one visible GPU. Output paths must be new; use a
 separate run directory for each experiment's metrics.
@@ -154,6 +187,28 @@ The model comes from the data file. There is no separate training model flag.
 | `--gdn-cache-reused` / `--no-gdn-cache-reused` | on | Cache heavily reused dense GDN transforms within each forward: less reconstruction, more memory. Separate from metadata plan caching. |
 | `--gdn-read-backend` | `torch` | `torch` or `triton`. Triton fuses CUDA forward reads, reducing launches and intermediate IO; adds first-use JIT cost. Summary construction and backward remain Torch. |
 
+### `minisgl_examples.training.sft_hf train`
+
+This accepts all replay and checkpointing flags from the original trainer above,
+plus the Trainer-specific controls below. Unlike the original CLI, `--model` may
+select a different student model; recorded-logprob parity is then skipped because
+the logits are not expected to match the teacher.
+
+| Flag | Default | Meaning / tradeoff |
+| --- | --- | --- |
+| `--model` | model stored in data | Optional student model ID or local path. |
+| `--batch-size` | `1` | Traces replayed before each backward call. Trace graphs remain variable and are processed sequentially. |
+| `--gradient-accumulation-steps` | one dataset pass | Microbatches per optimizer update. The automatic default matches one original-SFT update. |
+| `--weight-decay` | `0.01` | AdamW weight decay. |
+| `--max-grad-norm` | `1.0` | Gradient clipping norm. |
+| `--eval-steps` | `5` | Trainer evaluation interval in optimizer updates. |
+| `--save-steps` | `0` | Intermediate checkpoint interval; `0` disables intermediate checkpoints. The final checkpoint is always saved. |
+| `--verify-reload` / `--no-verify-reload` | on | Reload the final checkpoint and require identical per-token NLL values. |
+
+The HF variant writes `metrics_hf.json` next to the checkpoint and saves
+`trainer_state.json`. It currently supports only one process/GPU; distributed
+Trainer modes are rejected explicitly.
+
 GDN flags affect only Qwen3.5 linear-attention layers. None of the optional
 tradeoffs is a universal speed or memory win; compare on the intended trace.
 Full attention can still require quadratic work in visible context. GDN avoids
@@ -163,12 +218,19 @@ model weights or optimizer state.
 
 ## Validation and limits
 
-The scripts require one visible GPU. This is a single-GPU overfitting harness,
-with no mixed precision, distributed training, or resume flag. Success measures
-learning the recorded targets, not answer quality. Tests cover mining and data
-alignment, chunked loss/gradients, replay options, image model loading, and
-checkpoint output:
+The scripts require one visible GPU. These are single-GPU overfitting harnesses,
+with no mixed precision, distributed training, or HF CLI resume flag. Success
+measures learning the recorded targets, not answer quality. Tests cover mining
+and data alignment, chunked loss/gradients, replay options, image model loading,
+and checkpoint output:
 
 ```bash
 uv run --no-sync pytest -o addopts='' tests/training
+uv run --no-sync pytest -o addopts='' tests/core/test_training_sft.py \
+  tests/scripts/test_sft_hf.py
 ```
+
+The HF suite mirrors the original trainer's validation, multimodal loading,
+checkpointing and cache-option tests. It also runs the original optimizer loop
+and `TraceSFTTrainer` concurrently from identical weights, then compares their
+token-normalized loss and every updated parameter.
