@@ -301,7 +301,7 @@ class Float64AttentionMath(TorchFunctionMode):
 
 @pytest.fixture
 def fp64_attention(monkeypatch):
-    from minisgl.training import attention as attention_module
+    from minisgl.training.attention import torch as attention_module
 
     monkeypatch.setattr(
         attention_module,

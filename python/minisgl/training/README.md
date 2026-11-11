@@ -48,6 +48,27 @@ format-v1 JSON, and `BlockUpdate.sources` are no longer supported. Record throug
 `refs`, including `refs=()` for a clear. `trace.tokens` is a derived view for
 replay and inspection, not a serialized field.
 
+## Full attention backends
+
+Select a backend with `trace.to(device, attention_backend=...)`:
+
+- `torch` (default): dense FP32 reference, returning the original V dtype.
+- `torch_optimized`: the same precision, sharing K/V preparation and K RoPE
+  across query chunks.
+- `fa4`: masked varlen attention with a differentiable LSE merge; requires
+  Hopper (SM90) and FP16/BF16 activations.
+
+For FA4, install the optional dependencies in the training environment:
+
+```bash
+pip install 'flash-attn-4[cu13]==4.0.0b37' \
+  'nvidia-cutlass-dsl[cu13]==4.6.2' 'quack-kernels==0.6.4'
+```
+
+FA4 and merge kernels compile on their first forward/backward. See the
+[methodology and measurements](../../../docs/efficient-attention-for-async-llm-training-task.pdf)
+for implementation details.
+
 ## Record and backpropagate
 
 This text example records a single causal prefill, then backpropagates a

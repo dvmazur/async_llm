@@ -9,7 +9,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 from minisgl.training import Trace, replay_trace, sft
-from minisgl.training import attention as attention_module
+from minisgl.training.attention import torch as attention_module
 from minisgl.training.gdn import GDNReplay
 from minisgl.training.trace import ForwardBatch, ForwardRequest, TensorData
 from test_training import mutation_trace, tiny_model
