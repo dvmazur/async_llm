@@ -10,6 +10,10 @@ from functools import lru_cache
 import torch
 from torch.autograd.function import once_differentiable
 
+_WARP_SIZE = 32
+_WARPS_PER_BLOCK = 4
+_THREADS_PER_BLOCK = _WARP_SIZE * _WARPS_PER_BLOCK
+
 
 @lru_cache(maxsize=1)
 def _kernel_types():
@@ -22,7 +26,7 @@ def _kernel_types():
     class MergeForward:
         def __init__(self, width):
             self.width = width
-            self.values_per_lane = (width + 31) // 32
+            self.values_per_lane = (width + _WARP_SIZE - 1) // _WARP_SIZE
 
         @cute.jit
         def __call__(
@@ -37,8 +41,8 @@ def _kernel_types():
             stream: cuda.CUstream,
         ):
             self.kernel(parts, lse, indptr, indices, output, output_fp32, total_lse).launch(
-                grid=[cute.ceil_div(output.shape[0] * output.shape[1], 4), 1, 1],
-                block=[128, 1, 1],
+                grid=[cute.ceil_div(output.shape[0] * output.shape[1], _WARPS_PER_BLOCK), 1, 1],
+                block=[_THREADS_PER_BLOCK, 1, 1],
                 stream=stream,
             )
 
@@ -55,8 +59,8 @@ def _kernel_types():
         ):
             thread, _, _ = cute.arch.thread_idx()
             block, _, _ = cute.arch.block_idx()
-            lane = thread % 32
-            row_head = block * 4 + thread // 32
+            lane = thread % _WARP_SIZE
+            row_head = block * _WARPS_PER_BLOCK + thread // _WARP_SIZE
             heads = output.shape[1]
             if row_head < output.shape[0] * heads:
                 row, head = row_head // heads, row_head % heads
@@ -75,7 +79,7 @@ def _kernel_types():
                         weight = cute.math.exp(lse[head, part] - maximum)
                         denominator += weight
                         for item in cutlass.range_constexpr(self.values_per_lane):
-                            dimension = lane + item * 32
+                            dimension = lane + item * _WARP_SIZE
                             if dimension < self.width:
                                 accum[item] += weight * Float32(parts[part, head, dimension])
 
@@ -85,7 +89,7 @@ def _kernel_types():
                 if lane == 0:
                     total_lse[row, head] = normalizer
                 for item in cutlass.range_constexpr(self.values_per_lane):
-                    dimension = lane + item * 32
+                    dimension = lane + item * _WARP_SIZE
                     if dimension < self.width:
                         value = Float32(0.0)
                         if denominator > 0.0:
@@ -96,7 +100,7 @@ def _kernel_types():
     class MergeBackward:
         def __init__(self, width):
             self.width = width
-            self.values_per_lane = (width + 31) // 32
+            self.values_per_lane = (width + _WARP_SIZE - 1) // _WARP_SIZE
 
         @cute.jit
         def __call__(
@@ -115,8 +119,12 @@ def _kernel_types():
             self.kernel(
                 parts, lse, indptr, indices, output_fp32, total_lse, grad, grad_parts, grad_lse
             ).launch(
-                grid=[cute.ceil_div(output_fp32.shape[0] * output_fp32.shape[1], 4), 1, 1],
-                block=[128, 1, 1],
+                grid=[
+                    cute.ceil_div(output_fp32.shape[0] * output_fp32.shape[1], _WARPS_PER_BLOCK),
+                    1,
+                    1,
+                ],
+                block=[_THREADS_PER_BLOCK, 1, 1],
                 stream=stream,
             )
 
@@ -135,8 +143,8 @@ def _kernel_types():
         ):
             thread, _, _ = cute.arch.thread_idx()
             block, _, _ = cute.arch.block_idx()
-            lane = thread % 32
-            row_head = block * 4 + thread // 32
+            lane = thread % _WARP_SIZE
+            row_head = block * _WARPS_PER_BLOCK + thread // _WARP_SIZE
             heads = output_fp32.shape[1]
             if row_head < output_fp32.shape[0] * heads:
                 row, head = row_head // heads, row_head % heads
@@ -149,7 +157,7 @@ def _kernel_types():
                         weight = cute.math.exp(lse[head, part] - normalizer)
                     dot = Float32(0.0)
                     for item in cutlass.range_constexpr(self.values_per_lane):
-                        dimension = lane + item * 32
+                        dimension = lane + item * _WARP_SIZE
                         if dimension < self.width:
                             upstream = Float32(grad[row, head, dimension])
                             difference = (
