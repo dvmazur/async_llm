@@ -674,7 +674,16 @@ class _Delta(torch.autograd.Function):
 
 class _Chunk(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, query, key, value, log_alpha, beta, replay, save):
+    def forward(
+        ctx: Any,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        alpha: torch.Tensor,
+        beta: torch.Tensor,
+        replay: GDNReplay,
+        save: bool,
+    ) -> torch.Tensor:
         from .gdn_kernel import chunk_read, chunk_states
 
         n, heads, dk = key.shape
@@ -682,54 +691,82 @@ class _Chunk(torch.autograd.Function):
         sources, _, bounds, levels = replay.chunk_plan
         query, key = (F.pad(x, (0, width - dk)) for x in (query, key))
         output = value.new_zeros(n, heads, value.shape[-1])
-        key, value, log_alpha, beta = (
+        key, value, beta = (
             torch.cat((x, x.new_zeros(1, *x.shape[1:])))[sources].contiguous()
-            for x in (key, value, log_alpha, beta)
+            for x in (key, value, beta)
         )
-        cum, w, inverse, state, new = chunk_states(key, value, log_alpha, beta, bounds)
-        r, queries, weights = query * dk**-0.5, [], []
+        alpha = torch.cat((alpha, alpha.new_ones(1, heads)))[sources].contiguous()
+        prefix, decay, w, inverse, state, new = chunk_states(key, value, alpha, beta, bounds)
+        r, queries, scores = query * dk**-0.5, [], []
         for rows, positions, _, _, tiles in levels:
             queries.append(r[rows].contiguous())
-            out, weight = chunk_read(queries[-1], positions, tiles, key, cum, state, new, save)
-            weights.append(weight)
+            out, score = chunk_read(
+                queries[-1], positions, tiles, key, prefix, decay, state, new, save
+            )
+            scores.append(score)
             output.index_add_(0, rows, out[..., width:])
             r = torch.zeros_like(r).index_copy_(0, rows, out[..., :width])
-        ctx.save_for_backward(key, value, beta, cum, w, inverse, state, new, *queries, *weights)
-        ctx.replay, ctx.dk = replay, dk
+        if save:
+            ctx.save_for_backward(
+                key, value, beta, prefix, decay, w, inverse, state, new, *queries, *scores
+            )
+            ctx.replay, ctx.dk = replay, dk
         return output
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(
+        ctx: Any, grad_output: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         if torch.is_grad_enabled():
             raise RuntimeError("GDN replay supports first-order gradients only")
+        with torch.autocast(grad_output.device.type, enabled=False):
+            return _Chunk._backward(ctx, grad_output)
+
+    @staticmethod
+    def _backward(
+        ctx: Any, grad_output: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         from .gdn_kernel import chunk_read_backward, chunk_states_backward
 
-        key, value, beta, cum, w, inverse, state, new, *tape = ctx.saved_tensors
+        key, value, beta, prefix, decay, w, inverse, state, new, *tape = ctx.saved_tensors
         _, gather, bounds, levels = ctx.replay.chunk_plan
-        queries, weights = tape[: len(levels)], tape[len(levels) :]
+        queries, scores = tape[: len(levels)], tape[len(levels) :]
         grad_output = grad_output.float()
         n, heads, width = len(grad_output), key.shape[1], key.shape[-1]
-        grads = tuple(map(torch.zeros_like, (state, new, key, cum)))
+        grads = tuple(map(torch.zeros_like, (state, new, key, prefix, decay)))
         grad_r = None
-        for (rows, positions, targets, offsets, _), query, weight in zip(
-            reversed(levels), reversed(queries), reversed(weights)
+        for (rows, positions, targets, offsets, _), query, score in zip(
+            reversed(levels), reversed(queries), reversed(scores)
         ):
             upper = query.new_zeros(query.shape) if grad_r is None else grad_r[rows]
             grad = torch.cat((upper, grad_output[rows]), -1)
             grad_query = chunk_read_backward(
-                query, weight, grad, positions, targets, offsets, key, cum, state, new, grads
+                query,
+                score,
+                grad,
+                positions,
+                targets,
+                offsets,
+                key,
+                prefix,
+                decay,
+                state,
+                new,
+                grads,
             )
             grad_r = query.new_zeros(n, heads, width).index_copy_(0, rows, grad_query)
-        grads = chunk_states_backward(key, value, beta, cum, w, inverse, state, new, bounds, grads)
-        grad_key, grad_value, grad_log_alpha, grad_beta = (
-            torch.cat((x, x.new_zeros(1, *x.shape[1:])))[gather].sum(1) for x in grads
+        grad_key, grad_value, grad_alpha, grad_beta = (
+            torch.cat((x, x.new_zeros(1, *x.shape[1:])))[gather].sum(1)
+            for x in chunk_states_backward(
+                key, value, beta, prefix, decay, w, inverse, state, new, bounds, grads
+            )
         )
         dk = ctx.dk
         return (
             grad_r[..., :dk] * dk**-0.5,
             grad_key[..., :dk],
             grad_value,
-            grad_log_alpha,
+            grad_alpha,
             grad_beta,
             None,
             None,
@@ -753,29 +790,30 @@ def delta(
         raise ValueError("Read backend must be torch, triton or chunk")
     if replay.read_backend == "triton" and not query.is_cuda:
         raise ValueError("Triton GDN reads require CUDA FP32 inputs")
-    if replay.read_backend == "chunk":
-        log_alpha = alpha.float().clamp_min(torch.finfo(torch.float32).tiny).log()
-        return chunk_delta(query, key, value, log_alpha, beta, replay)
+    if replay.read_backend == "chunk" and not query.is_cuda:
+        raise ValueError("Chunked GDN reads require CUDA FP32 inputs")
     with torch.autocast(query.device.type, enabled=False):
         inputs = tuple(x.float() for x in (query, key, value, alpha, beta))
         query, key, value, alpha, beta = inputs
         query = query * torch.rsqrt(query.square().sum(-1, keepdim=True) + 1e-6)
         key = key * torch.rsqrt(key.square().sum(-1, keepdim=True) + 1e-6)
         save = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
-        return _Delta.apply(query, key, value, alpha, beta, replay, save)
+        function = _Chunk if replay.read_backend == "chunk" else _Delta
+        return function.apply(query, key, value, alpha, beta, replay, save)
 
 
-def chunk_delta(query, key, value, log_alpha, beta, replay: GDNReplay):
-    """Chunked block-view replay with Triton kernels, taking log decay directly."""
+def chunk_delta(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    log_alpha: torch.Tensor,
+    beta: torch.Tensor,
+    replay: GDNReplay,
+) -> torch.Tensor:
+    """Chunked block-view replay with Triton kernels, taking log decay."""
     if replay.read_backend != "chunk" or not query.is_cuda:
         raise ValueError("Chunked GDN reads require a chunk replay and CUDA FP32 inputs")
-    with torch.autocast(query.device.type, enabled=False):
-        inputs = tuple(x.float() for x in (query, key, value, log_alpha, beta))
-        query, key, value, log_alpha, beta = inputs
-        query = query * torch.rsqrt(query.square().sum(-1, keepdim=True) + 1e-6)
-        key = key * torch.rsqrt(key.square().sum(-1, keepdim=True) + 1e-6)
-        save = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
-        return _Chunk.apply(query, key, value, log_alpha, beta, replay, save)
+    return delta(query, key, value, log_alpha.float().exp(), beta, replay)
 
 
 def gdn_forward(
@@ -802,11 +840,7 @@ def gdn_forward(
     g = -module.A_log.float().exp() * F.softplus(
         module.in_proj_a(x).float() + module.dt_bias.float()
     )
-    if replay.read_backend == "chunk":
-        core = chunk_delta(q, k, v, g, beta, replay)
-    else:
-        core = delta(q, k, v, g.exp(), beta, replay)
-    core = core.to(raw.dtype)
+    core = delta(q, k, v, g.exp(), beta, replay).to(raw.dtype)
     z = module.in_proj_z(x).view_as(core)
     core = module.norm(core, z).reshape(len(x), module.value_dim)
     return module.out_proj(core)[None]
