@@ -23,6 +23,7 @@ class ChunkLevel(NamedTuple):
     positions: torch.Tensor
     targets: torch.Tensor
     offsets: torch.Tensor
+    splits: torch.Tensor
     tiles: torch.Tensor
 
 
@@ -31,28 +32,37 @@ class ChunkPlan(NamedTuple):
     gather: torch.Tensor
     bounds: torch.Tensor
     segments: torch.Tensor
+    full: torch.Tensor
     leaves: torch.Tensor
     levels: list[ChunkLevel]
 
 
 def _chunk_level(
-    level: list[tuple[int, int, int]], starts: dict[int, int], device: torch.device
+    level: list[tuple[int, int, int, bool]], starts: dict[int, int], device: torch.device
 ) -> ChunkLevel:
     from .gdn_kernel import CHUNK, QUERIES
 
     reads = sorted(
-        ((starts[version] + length - 1) // CHUNK, (starts[version] + length - 1) % CHUNK + 1, row)
-        for version, length, row in level
+        (
+            (starts[version] + length - 1) // CHUNK,
+            terminal,
+            (starts[version] + length - 1) % CHUNK + 1,
+            row,
+        )
+        for version, length, row, terminal in level
     )
-    chunks, positions, rows = zip(*reads)
+    chunks, terminals, positions, rows = zip(*reads)
     targets: list[int] = []
     offsets: list[int] = [0]
-    tiles: list[tuple[int, int, int]] = []
-    for chunk, group in groupby(chunks):
+    splits: list[int] = []
+    tiles: list[tuple[int, int, int, int]] = []
+    for chunk, group in groupby(zip(chunks, terminals), key=lambda read: read[0]):
+        kinds = [terminal for _, terminal in group]
         targets.append(chunk)
-        offsets.append(offsets[-1] + len(list(group)))
+        splits.append(offsets[-1] + kinds.count(False))
+        offsets.append(offsets[-1] + len(kinds))
         tiles += [
-            (chunk, start, min(start + QUERIES, offsets[-1]))
+            (chunk, start, min(start + QUERIES, offsets[-1]), int(start >= splits[-1]))
             for start in range(offsets[-2], offsets[-1], QUERIES)
         ]
 
@@ -60,8 +70,28 @@ def _chunk_level(
         return torch.tensor(values, dtype=dtype, device=device)
 
     return ChunkLevel(
-        tensor(rows, torch.long), tensor(positions), tensor(targets), tensor(offsets), tensor(tiles)
+        tensor(rows, torch.long),
+        tensor(positions),
+        tensor(targets),
+        tensor(offsets),
+        tensor(splits),
+        tensor(tiles),
     )
+
+
+def _pack(items: list[tuple[int, int]]) -> list[list[tuple[int, int]]]:
+    from .gdn_kernel import CHUNK
+
+    bins: list[list[tuple[int, int]]] = []
+    rooms: list[int] = []
+    for version, length in items:
+        index = next((i for i, room in enumerate(rooms) if room >= length), len(bins))
+        if index == len(bins):
+            bins.append([])
+            rooms.append(CHUNK)
+        bins[index].append((version, length))
+        rooms[index] -= length
+    return bins
 
 
 @dataclass
@@ -86,36 +116,37 @@ class GDNReplay:
         if len(self.views) != n:
             raise ValueError("Triton GDN reads need block views from GDNReplay.from_trace")
         leaves: list[int] = []
-        levels: list[list[tuple[int, int, int]]] = [[]]
+        levels: list[list[tuple[int, int, int, bool]]] = [[]]
         for row, (entries, merged) in enumerate(self.views):
             if merged:
                 version, length = self.homes[row]
-                levels[0].append((version, length + 1, row))
+                levels[0].append((version, length + 1, row, not entries))
             else:
                 leaves.append(row)
             for level, (version, length) in enumerate(reversed(entries), 1):
                 if level == len(levels):
                     levels.append([])
-                levels[level].append((version, length, row))
+                levels[level].append((version, length, row, level == len(entries)))
         lengths: Counter[int] = Counter()
-        for version, length, _ in (read for level in levels for read in level):
+        for version, length, _, _ in (read for level in levels for read in level):
             lengths[version] = max(lengths[version], length)
+        needed = {version for level in levels for version, _, _, terminal in level if not terminal}
         long = [[item] for item in sorted(lengths.items()) if item[1] > CHUNK]
-        bins: list[list[tuple[int, int]]] = []
-        rooms: list[int] = []
-        for version, length in sorted(
+        short = sorted(
             ((version, length) for version, length in lengths.items() if length <= CHUNK),
             key=lambda item: (-item[1], item[0]),
-        ):
-            index = next((i for i, room in enumerate(rooms) if room >= length), len(bins))
-            if index == len(bins):
-                bins.append([])
-                rooms.append(CHUNK)
-            bins[index].append((version, length))
-            rooms[index] -= length
+        )
+        bins = _pack(short)
+        split = [
+            *_pack([item for item in short if item[0] in needed]),
+            *_pack([item for item in short if item[0] not in needed]),
+        ]
+        if len(split) <= len(bins):
+            bins = split
         starts: dict[int, int] = {}
         sources: list[int] = []
         segments: list[int] = []
+        full: list[int] = []
         bounds = [0]
         for group in (*long, *bins):
             for version, length in group:
@@ -125,6 +156,8 @@ class GDNReplay:
             segments += [len(sources) % CHUNK] * (-len(sources) % CHUNK)
             sources += [n] * (-len(sources) % CHUNK)
             bounds.append(len(sources) // CHUNK)
+            count = bounds[-1] - bounds[-2]
+            full += [int(any(version in needed for version, _ in group))] * count
         slots: list[list[int]] = [[] for _ in range(n)]
         for slot, source in enumerate(sources):
             if source < n:
@@ -136,6 +169,7 @@ class GDNReplay:
             torch.tensor(gather, dtype=torch.long, device=device),
             torch.tensor(bounds, dtype=torch.int32, device=device),
             torch.tensor(segments, dtype=torch.int32, device=device),
+            torch.tensor(full, dtype=torch.int32, device=device),
             torch.tensor(leaves, dtype=torch.long, device=device),
             [_chunk_level(level, starts, device) for level in levels if level],
         )
@@ -760,7 +794,7 @@ class _Chunk(torch.autograd.Function):
         )
         alpha = torch.cat((alpha, alpha.new_ones(1, heads)))[plan.sources].contiguous()
         prefix, decay, w, inverse, state, new = chunk_states(
-            key, value, alpha, beta, plan.bounds, plan.segments
+            key, value, alpha, beta, plan.bounds, plan.segments, plan.full
         )
         queries, scores = [], []
         for level in plan.levels:
@@ -826,6 +860,7 @@ class _Chunk(torch.autograd.Function):
                 level.positions,
                 level.targets,
                 level.offsets,
+                level.splits,
                 key,
                 prefix,
                 decay,
@@ -848,6 +883,7 @@ class _Chunk(torch.autograd.Function):
                 new,
                 plan.bounds,
                 plan.segments,
+                plan.full,
                 grads,
             )
         )

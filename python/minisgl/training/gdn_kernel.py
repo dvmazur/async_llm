@@ -276,6 +276,7 @@ def _chunk_states(
     W,
     U,
     Bounds,
+    Full,
     State,
     New,
     H: tl.constexpr,
@@ -293,8 +294,9 @@ def _chunk_states(
     columns = c[None, :] < DW
     begin = tl.load(Bounds + version).to(tl.int64)
     end = tl.load(Bounds + version + 1).to(tl.int64)
+    unused = ((tl.program_id(2) + 1) * BC <= BK) & (tl.load(Full + begin) == 0)
     state = tl.where(k[:, None] == c[None, :], 1.0, 0.0)
-    for chunk in range(begin, end):
+    for chunk in range(begin, tl.where(unused, begin, end)):
         slot = chunk * BT + t
         tl.store(_tile(State, chunk, head, c, H, DW, BK), state, columns)
         last = tl.load(Prefix + (chunk * BT + BT - 1) * H + head)
@@ -334,8 +336,9 @@ def _chunk_read(
     tile = tl.program_id(0)
     head = tl.program_id(1).to(tl.int64)
     t = tl.arange(0, BT)
-    chunk = tl.load(Tiles + tile * 3).to(tl.int64)
-    start, end = tl.load(Tiles + tile * 3 + 1), tl.load(Tiles + tile * 3 + 2)
+    chunk = tl.load(Tiles + tile * 4).to(tl.int64)
+    start, end = tl.load(Tiles + tile * 4 + 1), tl.load(Tiles + tile * 4 + 2)
+    first = tl.load(Tiles + tile * 4 + 3) * BK
     slot = chunk * BT + t
     read, valid, query, row, top, decay = _queries(
         Query, Positions, Prefix, Decay, start, end, chunk, head, H, BT, BK, BQ
@@ -346,7 +349,7 @@ def _chunk_read(
         tl.store(Scores + (read[:, None] * H + head) * BT + t[None, :], score, valid[:, None])
     weight = score * decay
     query *= top[:, None]
-    for offset in range(0, DW, BC):
+    for offset in range(first, DW, BC):
         c = offset + tl.arange(0, BC)
         columns = c[None, :] < DW
         state = tl.load(_tile(State, chunk, head, c, H, DW, BK), columns, other=0.0)
@@ -363,6 +366,7 @@ def _chunk_read_state(
     Positions,
     Targets,
     Offsets,
+    Splits,
     Prefix,
     Decay,
     DState,
@@ -382,10 +386,12 @@ def _chunk_read_state(
     columns = c[None, :] < DW
     chunk = tl.load(Targets + target).to(tl.int64)
     begin, end = tl.load(Offsets + target), tl.load(Offsets + target + 1)
+    passing = begin + (tl.load(Splits + target) - begin + BQ - 1) // BQ * BQ
+    stop = tl.where((tl.program_id(2) + 1) * BC <= BK, passing, end)
     slot = chunk * BT + t
     grad_state = tl.zeros((BK, BC), tl.float32)
     grad_new = tl.zeros((BT, BC), tl.float32)
-    for start in range(begin, end, BQ):
+    for start in range(begin, stop, BQ):
         read, valid, query, _, top, decay = _queries(
             Query, Positions, Prefix, Decay, start, end, chunk, head, H, BT, BK, BQ
         )
@@ -411,6 +417,7 @@ def _chunk_read_query(
     Positions,
     Targets,
     Offsets,
+    Splits,
     Key,
     Prefix,
     Decay,
@@ -433,6 +440,7 @@ def _chunk_read_query(
     t, k = tl.arange(0, BT), tl.arange(0, BK)
     chunk = tl.load(Targets + target).to(tl.int64)
     begin, end = tl.load(Offsets + target), tl.load(Offsets + target + 1)
+    split = tl.load(Splits + target)
     slot = chunk * BT + t
     key = _rows(Key, slot, head, H, BK, BK)
     grad_key = tl.zeros((BT, BK), tl.float32)
@@ -444,7 +452,7 @@ def _chunk_read_query(
         )
         grad_query = tl.zeros((BQ, BK), tl.float32)
         grad_score = tl.zeros((BQ, BT), tl.float32)
-        for offset in range(0, DW, BC):
+        for offset in range(tl.where(start >= split, BK, 0), DW, BC):
             c = offset + tl.arange(0, BC)
             columns = c[None, :] < DW
             grad = tl.load(
@@ -484,6 +492,7 @@ def _chunk_states_backward(
     Decay,
     W,
     Bounds,
+    Full,
     DState,
     DNew,
     H: tl.constexpr,
@@ -500,6 +509,8 @@ def _chunk_states_backward(
     columns = c[None, :] < DW
     begin = tl.load(Bounds + version).to(tl.int64)
     end = tl.load(Bounds + version + 1).to(tl.int64)
+    unused = ((tl.program_id(2) + 1) * BC <= BK) & (tl.load(Full + begin) == 0)
+    end = tl.where(unused, begin, end)
     grad = tl.zeros((BK, BC), tl.float32)
     for index in range(begin, end):
         chunk = end - 1 - index + begin
@@ -521,6 +532,7 @@ def _chunk_states_backward(
 def _chunk_columns_backward(
     Key,
     Decay,
+    Full,
     GradW,
     State,
     New,
@@ -545,7 +557,7 @@ def _chunk_columns_backward(
     grad_w = tl.zeros((BT, BK), tl.float32)
     grad_tail = tl.zeros((BT, BK), tl.float32)
     grad_last = tl.zeros((BK,), tl.float32)
-    for offset in range(0, DW, BC):
+    for offset in range((1 - tl.load(Full + chunk)) * BK, DW, BC):
         c = offset + tl.arange(0, BC)
         columns = c[None, :] < DW
         state = tl.load(_tile(State, chunk, head, c, H, DW, BK), columns, other=0.0)
@@ -669,9 +681,10 @@ def chunk_states(
     beta: torch.Tensor,
     bounds: torch.Tensor,
     segments: torch.Tensor,
+    full: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     _check(key, value, alpha, beta)
-    _check_index(bounds, segments)
+    _check_index(bounds, segments, full)
     slots, heads, width = key.shape
     dv = value.shape[-1]
     chunks, columns = slots // CHUNK, width + dv
@@ -705,6 +718,7 @@ def chunk_states(
             w,
             u,
             bounds,
+            full,
             state,
             new,
             heads,
@@ -766,6 +780,7 @@ def chunk_read_backward(
     positions: torch.Tensor,
     targets: torch.Tensor,
     offsets: torch.Tensor,
+    splits: torch.Tensor,
     key: torch.Tensor,
     prefix: torch.Tensor,
     decay: torch.Tensor,
@@ -774,7 +789,7 @@ def chunk_read_backward(
     grads: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> torch.Tensor:
     _check(query, scores, grad, key, prefix, decay, state, new, *grads)
-    _check_index(positions, targets, offsets)
+    _check_index(positions, targets, offsets, splits)
     grad_state, grad_new, grad_key, grad_prefix, grad_decay = grads
     reads, heads, width = query.shape
     columns = state.shape[-1]
@@ -787,6 +802,7 @@ def chunk_read_backward(
             positions,
             targets,
             offsets,
+            splits,
             prefix,
             decay,
             grad_state,
@@ -806,6 +822,7 @@ def chunk_read_backward(
             positions,
             targets,
             offsets,
+            splits,
             key,
             prefix,
             decay,
@@ -838,10 +855,11 @@ def chunk_states_backward(
     new: torch.Tensor,
     bounds: torch.Tensor,
     segments: torch.Tensor,
+    full: torch.Tensor,
     grads: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     _check(key, value, beta, prefix, decay, w, inverse, state, new, *grads)
-    _check_index(bounds, segments)
+    _check_index(bounds, segments, full)
     grad_state, grad_new, grad_key, grad_prefix, grad_decay = grads
     slots, heads, width = key.shape
     dv, columns = value.shape[-1], state.shape[-1]
@@ -854,6 +872,7 @@ def chunk_states_backward(
             decay,
             w,
             bounds,
+            full,
             grad_state,
             grad_new,
             heads,
@@ -866,6 +885,7 @@ def chunk_states_backward(
         _chunk_columns_backward[(slots // CHUNK, heads)](
             key,
             decay,
+            full,
             grad_w,
             state,
             new,
