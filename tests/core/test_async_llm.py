@@ -31,7 +31,8 @@ from minisgl.engine.sample import Sampler
 from minisgl.llm import AsyncLLM, CausalLMOutput
 from minisgl.scheduler import AsyncCacheEngine
 from minisgl.shared_cache import AsyncContext, SharedCacheSession, WorkerGroup
-from test_async_cache_engine import CPU, VOCAB, StubSession
+
+from tests.core.test_async_cache_engine import CPU, VOCAB, StubSession
 
 # =============================================================================
 # Unit tests — no model/GPU needed

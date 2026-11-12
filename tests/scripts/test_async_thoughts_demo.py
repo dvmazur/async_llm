@@ -8,21 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 import unittest
 from collections import Counter
 from types import SimpleNamespace
 
 import pytest
 import torch
-
-_SCRIPTS_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "async_thoughts")
-)
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
-
-from async_thoughts import demo
+from minisgl_examples.demos.async_thoughts import demo
 
 
 class Tokenizer:
@@ -137,7 +129,17 @@ class FakeLLM:
             if is_probe:
                 self.probe_finished.set()
 
-    async def async_generate(self, ctx, *, forbid_ids, max_steps):
+    async def async_generate(
+        self,
+        ctx,
+        *,
+        forbid_ids,
+        max_steps,
+        sampling_params=None,
+        first_token_id=None,
+        return_logits=False,
+    ):
+        assert sampling_params is None and first_token_id is None and not return_logits
         writer = ctx.output_block is self.blocks[2]
         role = "writer" if writer else "thinker"
         assert ctx.cache_view == (self.blocks[:3] if writer else self.blocks[:2])
@@ -383,7 +385,7 @@ E2E_MODEL_PATH = os.environ.get("MINISGL_E2E_MODEL", "")
     reason="Set MINISGL_E2E_MODEL to an HF model path and ensure CUDA is available",
 )
 def test_demo_smoke():
-    from async_thoughts.engine import build_async_llm, vocab_id_or_none
+    from minisgl_examples.demos.async_thoughts.engine import build_async_llm, vocab_id_or_none
     from transformers import AutoTokenizer
 
     config = demo.DemoConfig(

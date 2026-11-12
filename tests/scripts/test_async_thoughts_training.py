@@ -3,93 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import sys
 from contextlib import aclosing, nullcontext
-from pathlib import Path
 
 import pytest
 import torch
-import torch.nn.functional as F
 from minisgl.shared_cache import AsyncContext
-from minisgl.training import Trace, replay_trace
-from minisgl.training.sft import compute_supervised_loss
-from test_async_llm import _make_llm
-from test_training_gdn import tiny_hybrid
-from test_training_logits import torch_reference_kernels as torch_reference_kernels
+from minisgl.training import RecordedAsyncLLM, Trace
+from minisgl_examples.demos.async_thoughts import demo
+from minisgl_examples.training.recording import generate_with_targets
 
-_SCRIPTS_DIR = str(Path(__file__).resolve().parents[2] / "scripts" / "async_thoughts")
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
-
-from async_thoughts import demo
-from async_thoughts.training import DemoRecorder
+from tests.core.test_async_llm import _make_llm
+from tests.scripts.training_helpers import exported_example as exported_example
 
 
 @pytest.fixture(autouse=True)
 def cpu_stub_profiling(monkeypatch):
     monkeypatch.setattr(torch.cuda.nvtx, "range", lambda *args, **kwargs: nullcontext())
-
-
-@pytest.fixture
-def exported_example(monkeypatch, tmp_path):
-    path = tmp_path / "new" / "nested" / "demo.json"
-    state = {}
-
-    async def run_loop(config, llm, tokenizer, prompting):
-        assert isinstance(llm, DemoRecorder)
-        state["recorder"] = llm
-        prompt, a, b, probe = [await llm.create_block() for _ in range(4)]
-        state["writers"] = (a.block_id, b.block_id)
-        await llm.forward([1, 2], write_to=prompt, return_logits=False)
-        await asyncio.gather(
-            llm.forward([3, 4], [prompt, a], return_logits=False),
-            llm.forward([9, 10], [prompt, b], return_logits=False),
-        )
-        ca = AsyncContext(cache_view=[prompt, b, a])
-        cb = AsyncContext(cache_view=[prompt, a, b], next_input_id=11)
-        async with (
-            aclosing(
-                llm.async_generate(
-                    ca, first_token_id=5, forbid_ids=[7], max_steps=2, return_logits=True
-                )
-            ) as ga,
-            aclosing(llm.async_generate(cb, max_steps=2)) as gb,
-        ):
-            # Prefills run before decodes: both generators' row cursors must skip
-            # this probe's input rows as well as distinguish their batched peer.
-            first_a, first_b, _ = await asyncio.gather(
-                anext(ga),
-                anext(gb),
-                llm.forward([20, 21], [prompt, a, b, probe], return_logits=True),
-            )
-            second_a, second_b = await asyncio.gather(anext(ga), anext(gb))
-            assert first_a[0] == 6 and int(first_a[1].argmax()) == 7
-            assert (second_a[0], first_b, second_b) == (8, 13, 15)
-        # A budget flush consumes 8 but does not select another supervised target.
-        await llm.forward(cache_view=ca, return_logits=False)
-        assert ca.next_input_id is None and cb.next_input_id == 15
-        assert a.token_ids == [3, 4, 5, 6, 8]
-        assert b.token_ids == [9, 10, 11, 13]
-        state["decode_calls"] = len(state["session"].decode_calls)
-        for block in (probe, a, b, prompt):
-            await llm.free_block(block)
-        # Treat 15 as a terminal: excluded from displayed output, still a target.
-        return [6, 8], [13]
-
-    monkeypatch.setattr(demo, "_run_loop", run_loop)
-
-    async def run():
-        llm, state["session"] = _make_llm()
-        config = demo.DemoConfig(model="stub-model", problem="test", trace_output=path)
-        result = await demo._run_demo(config, llm, demo.Prompting(config.problem))
-        assert result == ([6, 8], [13])
-        assert llm._closed and llm._loop_task is None
-
-    asyncio.run(run())
-    state["path"] = path
-    state["data"] = json.loads(path.read_text())
-    return state
 
 
 def test_demo_export_aligns_batched_samples_and_masks_nongeneration_rows(exported_example):
@@ -131,30 +60,6 @@ def test_demo_export_aligns_batched_samples_and_masks_nongeneration_rows(exporte
     assert sum(target != -100 for target in example["targets"]) == 4
 
 
-@pytest.mark.parametrize("read_mode", ["expanded", "factorized"])
-def test_export_reloads_for_hybrid_forward_and_backward(exported_example, read_mode):
-    (example,) = exported_example["data"]["examples"]
-    trace = Trace.from_dict(example["trace"])
-    plan = trace.to(gdn_segment_size=2, gdn_read_mode=read_mode)
-    targets = torch.tensor(example["targets"])
-    rows = (targets != -100).nonzero().flatten()
-    assert not torch.equal(plan.order, torch.arange(trace.num_tokens))
-    model = tiny_hybrid().train()
-    with torch.no_grad():
-        logits = replay_trace(model, plan, hidden_only=False)
-        expected = F.cross_entropy(logits[rows], targets[rows], reduction="sum")
-    loss = compute_supervised_loss(model, plan, targets, chunk_size=2)
-    torch.testing.assert_close(loss, expected)
-    loss.backward()
-    for parameter in (
-        model.model.embed_tokens.weight,
-        model.model.layers[0].linear_attn.in_proj_qkv.weight,
-        model.lm_head.weight,
-    ):
-        assert parameter.grad is not None
-        assert torch.isfinite(parameter.grad).all() and parameter.grad.abs().sum() > 0
-
-
 def test_recorder_closes_underlying_generator_and_resumes_pending_token(monkeypatch):
     async def run():
         llm, session = _make_llm()
@@ -170,15 +75,20 @@ def test_recorder_closes_underlying_generator_and_resumes_pending_token(monkeypa
 
         monkeypatch.setattr(llm, "async_generate", tracked)
         try:
-            with DemoRecorder(llm) as recorder:
+            with RecordedAsyncLLM(llm) as recorder:
+                samples = {}
                 block = await recorder.create_block()
                 await recorder.forward([1], write_to=block, return_logits=False)
                 ctx = AsyncContext(cache_view=[block], next_input_id=5)
-                async with aclosing(recorder.async_generate(ctx, max_steps=100)) as stream:
+                async with aclosing(
+                    generate_with_targets(recorder, ctx, samples, max_steps=100)
+                ) as stream:
                     assert await anext(stream) == 7
                 assert closed == [True]
                 assert ctx.next_input_id == 7 and block.token_ids == [1, 5]
-                async with aclosing(recorder.async_generate(ctx, max_steps=1)) as stream:
+                async with aclosing(
+                    generate_with_targets(recorder, ctx, samples, max_steps=1)
+                ) as stream:
                     assert await anext(stream) == 9
                     with pytest.raises(StopAsyncIteration):
                         await anext(stream)
@@ -199,7 +109,7 @@ def test_failed_demo_does_not_export_an_artifact(monkeypatch, tmp_path, failure)
     async def run():
         llm, session = _make_llm()
 
-        async def run_loop(config, recorder, tokenizer, prompting):
+        async def run_loop(config, recorder, tokenizer, prompting, samples):
             state["recorder"] = recorder
             block = await recorder.create_block()
             if failure == "prefill":
@@ -208,7 +118,9 @@ def test_failed_demo_does_not_export_an_artifact(monkeypatch, tmp_path, failure)
             if failure == "decode":
                 session.fail_next = RuntimeError("forward failed")
             ctx = AsyncContext(cache_view=[block], next_input_id=5)
-            async with aclosing(recorder.async_generate(ctx, max_steps=2)) as stream:
+            async with aclosing(
+                generate_with_targets(recorder, ctx, samples, max_steps=2)
+            ) as stream:
                 await anext(stream)
                 if failure == "cancel":
                     raise asyncio.CancelledError
