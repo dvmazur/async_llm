@@ -212,16 +212,20 @@ def _queries(
 
 
 @tr.jit
-def _chunk_decay(Alpha, Prefix, Decay, H: tl.constexpr, BT: tl.constexpr):
+def _chunk_decay(Alpha, Segments, Prefix, Decay, H: tl.constexpr, BT: tl.constexpr):
     chunk = tl.program_id(0).to(tl.int64)
     head = tl.program_id(1).to(tl.int64)
     t = tl.arange(0, BT)
     slot = chunk * BT + t
     alpha = tl.load(Alpha + slot * H + head)
-    tl.store(Prefix + slot * H + head, tl.cumprod(alpha, 0))
+    start = tl.load(Segments + slot)
     later = t[None, :] > t[:, None]
     transposed = tl.cumprod(tl.where(later, alpha[None, :], 1.0), 1)
-    transposed = tl.where(t[None, :] >= t[:, None], transposed, 0.0)
+    inside = (t[None, :] >= t[:, None]) & (start[None, :] == start[:, None])
+    transposed = tl.where(inside, transposed, 0.0)
+    first = t[:, None] == start[None, :]
+    prefix = tl.sum(tl.where(first, alpha[:, None] * transposed, 0.0), 0)
+    tl.store(Prefix + slot * H + head, prefix)
     tl.store(Decay + ((chunk * H + head) * BT + t[None, :]) * BT + t[:, None], transposed)
 
 
@@ -565,6 +569,7 @@ def _chunk_prepare_backward(
     Key,
     Value,
     Beta,
+    Segments,
     Prefix,
     Decay,
     T,
@@ -589,6 +594,7 @@ def _chunk_prepare_backward(
     head = tl.program_id(1).to(tl.int64)
     t = tl.arange(0, BT)
     slot = chunk * BT + t
+    start = tl.load(Segments + slot)
     beta = tl.load(Beta + slot * H + head)
     prefix = tl.load(Prefix + slot * H + head)
     gate = beta * prefix
@@ -636,9 +642,10 @@ def _chunk_prepare_backward(
     grad_beta += tl.sum(factor, 1)
     grad_prefix = tl.load(DPrefix + slot * H + head) + beta * projected
     grad_decay = tl.load(DDecay + square) + grad_a * gram * beta[:, None]
+    grad_decay = tl.where(start[:, None] == start[None, :], grad_decay, 0.0)
     above = t[:, None] >= 1
     shifted = tl.load(Decay + square - BT, above, other=0.0)
-    previous = tl.load(Prefix + (slot - 1) * H + head, t >= 1, other=1.0)
+    previous = tl.load(Prefix + (slot - 1) * H + head, t > start, other=1.0)
     paths = tl.dot(grad_decay, tl.trans(shifted), input_precision="ieee")
     grad_alpha = tl.sum(decay * paths, 0) + previous * tl.sum(grad_prefix[:, None] * decay, 0)
     tl.store(DBeta + slot * H + head, grad_beta)
@@ -661,9 +668,10 @@ def chunk_states(
     alpha: torch.Tensor,
     beta: torch.Tensor,
     bounds: torch.Tensor,
+    segments: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     _check(key, value, alpha, beta)
-    _check_index(bounds)
+    _check_index(bounds, segments)
     slots, heads, width = key.shape
     dv = value.shape[-1]
     chunks, columns = slots // CHUNK, width + dv
@@ -673,7 +681,7 @@ def chunk_states(
     state = key.new_empty(chunks, heads, width, columns)
     new = key.new_empty(slots, heads, columns)
     with torch.cuda.device(key.device):
-        _chunk_decay[(chunks, heads)](alpha, prefix, decay, heads, CHUNK, num_warps=8)
+        _chunk_decay[(chunks, heads)](alpha, segments, prefix, decay, heads, CHUNK, num_warps=8)
         _chunk_prepare[(chunks, heads)](
             key,
             value,
@@ -829,10 +837,11 @@ def chunk_states_backward(
     state: torch.Tensor,
     new: torch.Tensor,
     bounds: torch.Tensor,
+    segments: torch.Tensor,
     grads: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     _check(key, value, beta, prefix, decay, w, inverse, state, new, *grads)
-    _check_index(bounds)
+    _check_index(bounds, segments)
     grad_state, grad_new, grad_key, grad_prefix, grad_decay = grads
     slots, heads, width = key.shape
     dv, columns = value.shape[-1], state.shape[-1]
@@ -876,6 +885,7 @@ def chunk_states_backward(
             key,
             value,
             beta,
+            segments,
             prefix,
             decay,
             inverse,
