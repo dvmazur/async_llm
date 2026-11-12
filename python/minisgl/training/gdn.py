@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import groupby
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import torch
 import torch.nn.functional as F
@@ -14,6 +14,53 @@ from .trace import Trace
 
 if TYPE_CHECKING:
     from transformers.cache_utils import Cache
+
+COPY_LIMIT = 64
+
+
+class ChunkLevel(NamedTuple):
+    rows: torch.Tensor
+    positions: torch.Tensor
+    targets: torch.Tensor
+    offsets: torch.Tensor
+    tiles: torch.Tensor
+
+
+class ChunkPlan(NamedTuple):
+    sources: torch.Tensor
+    gather: torch.Tensor
+    bounds: torch.Tensor
+    leaves: torch.Tensor
+    levels: list[ChunkLevel]
+
+
+def _chunk_level(
+    level: list[tuple[int, int, int]], starts: dict[int, int], device: torch.device
+) -> ChunkLevel:
+    from .gdn_kernel import CHUNK, QUERIES
+
+    reads = sorted(
+        (starts[version] + (length - 1) // CHUNK, (length - 1) % CHUNK + 1, row)
+        for version, length, row in level
+    )
+    chunks, positions, rows = zip(*reads)
+    targets: list[int] = []
+    offsets: list[int] = [0]
+    tiles: list[tuple[int, int, int]] = []
+    for chunk, group in groupby(chunks):
+        targets.append(chunk)
+        offsets.append(offsets[-1] + len(list(group)))
+        tiles += [
+            (chunk, start, min(start + QUERIES, offsets[-1]))
+            for start in range(offsets[-2], offsets[-1], QUERIES)
+        ]
+
+    def tensor(values: Sequence[Any], dtype: torch.dtype = torch.int32) -> torch.Tensor:
+        return torch.tensor(values, dtype=dtype, device=device)
+
+    return ChunkLevel(
+        tensor(rows, torch.long), tensor(positions), tensor(targets), tensor(offsets), tensor(tiles)
+    )
 
 
 @dataclass
@@ -31,68 +78,47 @@ class GDNReplay:
 
     @cached_property
     @torch.inference_mode(False)
-    def chunk_plan(self):
-        from .gdn_kernel import CHUNK, QUERIES
+    def chunk_plan(self) -> ChunkPlan:
+        from .gdn_kernel import CHUNK
 
-        n, device = len(self.views), self.reads.device
-
-        def tensor(values, dtype=torch.long):
-            return torch.tensor(values, dtype=dtype, device=device)
-
-        versions, levels = list(self.versions), []
+        n, device = len(self.reads), self.reads.device
+        if len(self.views) != n:
+            raise ValueError("Triton GDN reads need block views from GDNReplay.from_trace")
+        leaves: list[int] = []
+        levels: list[list[tuple[int, int, int]]] = [[]]
         for row, (entries, merged) in enumerate(self.views):
             if merged:
-                version, index = self.homes[row]
+                version, length = self.homes[row]
+                levels[0].append((version, length + 1, row))
             else:
-                version, index = len(versions), 0
-                versions.append((row,))
-            for level, read in enumerate(((version, index + 1), *reversed(entries))):
+                leaves.append(row)
+            for level, (version, length) in enumerate(reversed(entries), 1):
                 if level == len(levels):
                     levels.append([])
-                levels[level].append((*read, row))
-        lengths = Counter()
+                levels[level].append((version, length, row))
+        lengths: Counter[int] = Counter()
         for version, length, _ in (read for level in levels for read in level):
             lengths[version] = max(lengths[version], length)
-        starts, sources, bounds = {}, [], [0]
+        starts: dict[int, int] = {}
+        sources: list[int] = []
+        bounds = [0]
         for version, length in sorted(lengths.items()):
             starts[version] = len(sources) // CHUNK
-            sources += versions[version][:length]
+            sources += self.versions[version][:length]
             sources += [n] * (-len(sources) % CHUNK)
             bounds.append(len(sources) // CHUNK)
-        slots = [[] for _ in range(n)]
+        slots: list[list[int]] = [[] for _ in range(n)]
         for slot, source in enumerate(sources):
             if source < n:
                 slots[source].append(slot)
         width = max(map(len, slots))
-        plans = []
-        for level in levels:
-            reads = sorted(
-                (starts[version] + (length - 1) // CHUNK, (length - 1) % CHUNK + 1, row)
-                for version, length, row in level
-            )
-            chunks, positions, rows = zip(*reads)
-            targets, offsets, tiles = [], [0], []
-            for chunk, group in groupby(chunks):
-                targets.append(chunk)
-                offsets.append(offsets[-1] + len(list(group)))
-                tiles += [
-                    (chunk, start, min(start + QUERIES, offsets[-1]))
-                    for start in range(offsets[-2], offsets[-1], QUERIES)
-                ]
-            plans.append(
-                (
-                    tensor(rows),
-                    tensor(positions, torch.int32),
-                    tensor(targets, torch.int32),
-                    tensor(offsets, torch.int32),
-                    tensor(tiles, torch.int32),
-                )
-            )
-        return (
-            tensor(sources),
-            tensor([group + [len(sources)] * (width - len(group)) for group in slots]),
-            tensor(bounds, torch.int32),
-            plans,
+        gather = [group + [len(sources)] * (width - len(group)) for group in slots]
+        return ChunkPlan(
+            torch.tensor(sources, dtype=torch.long, device=device),
+            torch.tensor(gather, dtype=torch.long, device=device),
+            torch.tensor(bounds, dtype=torch.int32, device=device),
+            torch.tensor(leaves, dtype=torch.long, device=device),
+            [_chunk_level(level, starts, device) for level in levels if level],
         )
 
     @cached_property
@@ -230,8 +256,8 @@ class GDNReplay:
         read_backend: str = "torch",
     ) -> GDNReplay:
         """Compile shared snapshot summaries and original convolution windows."""
-        if read_backend not in {"torch", "triton", "chunk"}:
-            raise ValueError("Read backend must be torch, triton or chunk")
+        if read_backend not in {"torch", "triton"}:
+            raise ValueError("Read backend must be torch or triton")
         tokens = trace.tokens
         n = len(tokens)
         order = torch.as_tensor(order).cpu().tolist()
@@ -265,8 +291,9 @@ class GDNReplay:
         # Each block holds (token count, summary forest, raw-QKV convolution tail).
         empty = (0, (), (-1,) * conv_kernel_size)
         blocks, windows, paths = {}, [None] * n, [None] * n
-        scan = read_backend == "chunk"
+        scan = read_backend == "triton"
         live, versions, views, homes = {}, [], [None] * n, [None] * n
+        copied = 0
         update_index = 0
         for step, rows in groupby(enumerate(tokens), key=lambda x: x[1].step):
             rows = list(rows)
@@ -285,10 +312,16 @@ class GDNReplay:
                 forest = (root,) if root else ()
                 blocks[update.block] = (count, forest, tail)
                 if scan:
+                    copied += sum(
+                        len(versions[live[block]]) for block, length in update.refs if length
+                    )
+                    if copied > COPY_LIMIT * n:
+                        raise NotImplementedError(
+                            f"Triton GDN replay would rescan {copied} copied history tokens "
+                            f"for {n} tokens; use gdn_read_backend='torch' for this trace"
+                        )
                     versions.append(
-                        [inverse[source] for source in update.sources]
-                        if update.refs is None
-                        else [
+                        [
                             source
                             for block, length in update.refs
                             if length
@@ -366,10 +399,6 @@ class GDNReplay:
         reads = [[remap[i] for i in reversed(paths[row])] for row in order]
         reads = [path + [0] * (depth - len(path)) for path in reads]
         conv = [[inverse[i] if i >= 0 else -1 for i in windows[row]] for row in order]
-        if scan and sum(map(len, versions)) > 64 * n:
-            raise NotImplementedError(
-                "Chunked GDN replay expands copied histories; use torch reads"
-            )
         return cls(
             torch.tensor(conv, device=device),
             levels,
@@ -681,36 +710,43 @@ class _Chunk(torch.autograd.Function):
         value: torch.Tensor,
         alpha: torch.Tensor,
         beta: torch.Tensor,
-        replay: GDNReplay,
+        plan: ChunkPlan,
         save: bool,
     ) -> torch.Tensor:
         from .gdn_kernel import chunk_read, chunk_states
 
         n, heads, dk = key.shape
         width = max(16, 1 << (dk - 1).bit_length())
-        sources, _, bounds, levels = replay.chunk_plan
         query, key = (F.pad(x, (0, width - dk)) for x in (query, key))
+        r = query * dk**-0.5
         output = value.new_zeros(n, heads, value.shape[-1])
+        leaf: tuple[torch.Tensor, ...] = ()
+        if len(plan.leaves):
+            leaf = tuple(x[plan.leaves] for x in (r, key, value, alpha[..., None], beta[..., None]))
+            leaf_r, leaf_key, leaf_value, leaf_alpha, leaf_beta = leaf
+            score = (leaf_key * leaf_r).sum(-1, keepdim=True)
+            output.index_copy_(0, plan.leaves, leaf_beta * leaf_value * score)
+            r.index_copy_(0, plan.leaves, leaf_alpha * (leaf_r - leaf_beta * leaf_key * score))
         key, value, beta = (
-            torch.cat((x, x.new_zeros(1, *x.shape[1:])))[sources].contiguous()
+            torch.cat((x, x.new_zeros(1, *x.shape[1:])))[plan.sources].contiguous()
             for x in (key, value, beta)
         )
-        alpha = torch.cat((alpha, alpha.new_ones(1, heads)))[sources].contiguous()
-        prefix, decay, w, inverse, state, new = chunk_states(key, value, alpha, beta, bounds)
-        r, queries, scores = query * dk**-0.5, [], []
-        for rows, positions, _, _, tiles in levels:
-            queries.append(r[rows].contiguous())
+        alpha = torch.cat((alpha, alpha.new_ones(1, heads)))[plan.sources].contiguous()
+        prefix, decay, w, inverse, state, new = chunk_states(key, value, alpha, beta, plan.bounds)
+        queries, scores = [], []
+        for level in plan.levels:
+            queries.append(r[level.rows].contiguous())
             out, score = chunk_read(
-                queries[-1], positions, tiles, key, prefix, decay, state, new, save
+                queries[-1], level.positions, level.tiles, key, prefix, decay, state, new, save
             )
             scores.append(score)
-            output.index_add_(0, rows, out[..., width:])
-            r = torch.zeros_like(r).index_copy_(0, rows, out[..., :width])
+            output.index_add_(0, level.rows, out[..., width:])
+            r.index_copy_(0, level.rows, out[..., :width])
         if save:
             ctx.save_for_backward(
-                key, value, beta, prefix, decay, w, inverse, state, new, *queries, *scores
+                *leaf, key, value, beta, prefix, decay, w, inverse, state, new, *queries, *scores
             )
-            ctx.replay, ctx.dk = replay, dk
+            ctx.plan, ctx.dk = plan, dk
         return output
 
     @staticmethod
@@ -728,25 +764,26 @@ class _Chunk(torch.autograd.Function):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         from .gdn_kernel import chunk_read_backward, chunk_states_backward
 
-        key, value, beta, prefix, decay, w, inverse, state, new, *tape = ctx.saved_tensors
-        _, gather, bounds, levels = ctx.replay.chunk_plan
-        queries, scores = tape[: len(levels)], tape[len(levels) :]
+        plan: ChunkPlan = ctx.plan
+        saved = ctx.saved_tensors
+        leaf = saved[:5] if len(plan.leaves) else ()
+        key, value, beta, prefix, decay, w, inverse, state, new, *tape = saved[len(leaf) :]
+        queries, scores = tape[: len(plan.levels)], tape[len(plan.levels) :]
         grad_output = grad_output.float()
         n, heads, width = len(grad_output), key.shape[1], key.shape[-1]
         grads = tuple(map(torch.zeros_like, (state, new, key, prefix, decay)))
-        grad_r = None
-        for (rows, positions, targets, offsets, _), query, score in zip(
-            reversed(levels), reversed(queries), reversed(scores)
+        grad_r = key.new_zeros(n, heads, width)
+        for level, query, score in zip(
+            reversed(plan.levels), reversed(queries), reversed(scores), strict=True
         ):
-            upper = query.new_zeros(query.shape) if grad_r is None else grad_r[rows]
-            grad = torch.cat((upper, grad_output[rows]), -1)
+            grad = torch.cat((grad_r[level.rows], grad_output[level.rows]), -1)
             grad_query = chunk_read_backward(
                 query,
                 score,
                 grad,
-                positions,
-                targets,
-                offsets,
+                level.positions,
+                level.targets,
+                level.offsets,
                 key,
                 prefix,
                 decay,
@@ -754,13 +791,27 @@ class _Chunk(torch.autograd.Function):
                 new,
                 grads,
             )
-            grad_r = query.new_zeros(n, heads, width).index_copy_(0, rows, grad_query)
+            grad_r.index_copy_(0, level.rows, grad_query)
         grad_key, grad_value, grad_alpha, grad_beta = (
-            torch.cat((x, x.new_zeros(1, *x.shape[1:])))[gather].sum(1)
+            torch.cat((x, x.new_zeros(1, *x.shape[1:])))[plan.gather].sum(1)
             for x in chunk_states_backward(
-                key, value, beta, prefix, decay, w, inverse, state, new, bounds, grads
+                key, value, beta, prefix, decay, w, inverse, state, new, plan.bounds, grads
             )
         )
+        if leaf:
+            leaf_r, leaf_key, leaf_value, leaf_alpha, leaf_beta = leaf
+            upper, grad = grad_r[plan.leaves], grad_output[plan.leaves]
+            score = (leaf_key * leaf_r).sum(-1, keepdim=True)
+            through = (upper * leaf_key).sum(-1, keepdim=True)
+            mixed = (grad * leaf_value).sum(-1, keepdim=True) - leaf_alpha * through
+            kept = leaf_r - leaf_beta * leaf_key * score
+            grad_value.index_add_(0, plan.leaves, leaf_beta * score * grad)
+            grad_alpha.index_add_(0, plan.leaves, (upper * kept).sum(-1))
+            grad_beta.index_add_(0, plan.leaves, (score * mixed).squeeze(-1))
+            grad_key.index_add_(
+                0, plan.leaves, leaf_beta * (mixed * leaf_r - leaf_alpha * score * upper)
+            )
+            grad_r.index_copy_(0, plan.leaves, leaf_alpha * upper + leaf_beta * mixed * leaf_key)
         dk = ctx.dk
         return (
             grad_r[..., :dk] * dk**-0.5,
@@ -781,25 +832,25 @@ def delta(
     beta: torch.Tensor,
     replay: GDNReplay,
 ) -> torch.Tensor:
-    """First-order Torch replay with bounded short-segment reconstruction.
+    """First-order GDN replay of every token's block-view history.
 
-    T dense summaries use O(T H d^2); vectors use O(N D H d) at execution depth D.
-    Factorized reads add O(P H d) for P cached factor columns. Traces store indices.
+    Torch composes DAG summaries: T dense summaries use O(T H d^2), vectors O(N D H d) at
+    execution depth D, factorized reads add O(P H d) for P cached factor columns.
+    Triton scans each block version in 64-token chunks and reads view prefixes per level.
     """
-    if replay.read_backend not in {"torch", "triton", "chunk"}:
-        raise ValueError("Read backend must be torch, triton or chunk")
+    if replay.read_backend not in {"torch", "triton"}:
+        raise ValueError("Read backend must be torch or triton")
     if replay.read_backend == "triton" and not query.is_cuda:
         raise ValueError("Triton GDN reads require CUDA FP32 inputs")
-    if replay.read_backend == "chunk" and not query.is_cuda:
-        raise ValueError("Chunked GDN reads require CUDA FP32 inputs")
     with torch.autocast(query.device.type, enabled=False):
         inputs = tuple(x.float() for x in (query, key, value, alpha, beta))
         query, key, value, alpha, beta = inputs
         query = query * torch.rsqrt(query.square().sum(-1, keepdim=True) + 1e-6)
         key = key * torch.rsqrt(key.square().sum(-1, keepdim=True) + 1e-6)
         save = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
-        function = _Chunk if replay.read_backend == "chunk" else _Delta
-        return function.apply(query, key, value, alpha, beta, replay, save)
+        if replay.read_backend == "triton":
+            return _Chunk.apply(query, key, value, alpha, beta, replay.chunk_plan, save)
+        return _Delta.apply(query, key, value, alpha, beta, replay, save)
 
 
 def chunk_delta(
@@ -811,8 +862,8 @@ def chunk_delta(
     replay: GDNReplay,
 ) -> torch.Tensor:
     """Chunked block-view replay with Triton kernels, taking log decay."""
-    if replay.read_backend != "chunk" or not query.is_cuda:
-        raise ValueError("Chunked GDN reads require a chunk replay and CUDA FP32 inputs")
+    if replay.read_backend != "triton" or not query.is_cuda:
+        raise ValueError("Chunked GDN reads require a Triton replay and CUDA FP32 inputs")
     return delta(query, key, value, log_alpha.float().exp(), beta, replay)
 
 
