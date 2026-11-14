@@ -9,7 +9,11 @@ _IMAGE_INPUT_FIELDS = ("pixel_values", "image_grid_thw", "mm_token_type_ids")
 
 
 def _validate_replay_options(
-    query_chunk_size: int, gdn_segment_size: int, gdn_read_mode: str, gdn_read_backend: str
+    query_chunk_size: int,
+    gdn_segment_size: int,
+    gdn_read_mode: str,
+    gdn_read_backend: str,
+    attention_backend: str = "auto",
 ) -> None:
     if query_chunk_size <= 0:
         raise ValueError("query_chunk_size must be positive")
@@ -19,6 +23,8 @@ def _validate_replay_options(
         raise ValueError("gdn_read_mode must be expanded or factorized")
     if gdn_read_backend not in {"torch", "triton"}:
         raise ValueError("gdn_read_backend must be torch or triton")
+    if attention_backend not in {"auto", "torch", "torch_optimized", "fa4"}:
+        raise ValueError("attention_backend must be 'auto', 'torch', 'torch_optimized' or 'fa4'")
 
 
 @dataclass(frozen=True)
@@ -93,13 +99,13 @@ class Trace:
 
     # Runtime preparation is deliberately excluded from dataclass fields, so
     # asdict(trace) remains a portable record without tensors or cached plans.
-    query_chunk_size = 128
+    query_chunk_size = 1024
     gdn_segment_size = 8
     gdn_read_mode = "expanded"
     gdn_cache_reused = True
     gdn_read_backend = "torch"
     attention_checkpointing = True
-    attention_backend = "torch"
+    attention_backend = "auto"
     cache_plans = True
     _option_names = (
         "query_chunk_size",
@@ -167,10 +173,12 @@ class Trace:
         """Compile visibility lazily; recording changes invalidate derived metadata."""
         if getattr(self, "_replay_snapshot", False):
             return self
-        if self.attention_backend not in {"torch", "torch_optimized", "fa4"}:
-            raise ValueError("attention_backend must be 'torch', 'torch_optimized' or 'fa4'")
         _validate_replay_options(
-            self.query_chunk_size, self.gdn_segment_size, self.gdn_read_mode, self.gdn_read_backend
+            self.query_chunk_size,
+            self.gdn_segment_size,
+            self.gdn_read_mode,
+            self.gdn_read_backend,
+            self.attention_backend,
         )
         history = (tuple(self.batches), tuple(self.updates))
         if history == self._prepared_history:

@@ -52,11 +52,27 @@ replay and inspection, not a serialized field.
 
 Select a backend with `trace.to(device, attention_backend=...)`:
 
-- `torch` (default): dense FP32 reference, returning the original V dtype.
+- `auto` (default): FA4 for supported FP16/BF16 inputs on Hopper (SM90),
+  optimized Torch on other CUDA configurations, and the Torch reference on CPU.
+  If FA4's optional dependencies are unavailable, automatic selection uses
+  optimized Torch. Runtime errors from the selected backend are propagated.
+- `torch`: dense FP32 reference, returning the original V dtype.
 - `torch_optimized`: the same precision, sharing K/V preparation and K RoPE
-  across query chunks.
-- `fa4`: masked varlen attention with a differentiable LSE merge; requires
-  Hopper (SM90) and FP16/BF16 activations.
+  across query chunks and compiling the CUDA chunk computation with `torch.compile`.
+- `fa4`: compiled gather/RoPE preparation, varlen attention, and a differentiable
+  LSE merge. Uses native full/causal masks when the complete plan permits them;
+  historical views retain the custom mask. Requires Hopper (SM90), FP16/BF16
+  activations, and head dimensions divisible by 8 between 8 and 256.
+
+Explicit selections are preserved: `attention_backend="torch"` always uses the
+reference, and `attention_backend="fa4"` reports unsupported inputs or missing
+dependencies instead of changing backend. FA4 currently supports Hopper only;
+other CUDA architectures use optimized Torch in automatic mode.
+
+The default query chunk size is 1024. Override it with
+`trace.to(query_chunk_size=...)`; smaller chunks reduce score workspace at the
+cost of more launches. Attention checkpointing remains enabled by default and
+can be disabled with `attention_checkpointing=False`.
 
 For FA4, install the optional dependencies in the training environment:
 
@@ -65,9 +81,13 @@ pip install 'flash-attn-4[cu13]==4.0.0b37' \
   'nvidia-cutlass-dsl[cu13]==4.6.2' 'quack-kernels==0.6.4'
 ```
 
-FA4 and merge kernels compile on their first forward/backward. See the
-[methodology and measurements](../../../docs/efficient-attention-for-async-llm-training-task.pdf)
-for implementation details.
+Compiled attention specializes on prepared trace shapes, so the first
+forward/backward for a new shape can be expensive. FA4 and merge kernels also
+compile on first use. Compiled regions allow up to 1024 static specializations;
+compiler failures and exhausted limits are reported rather than silently
+switching to eager. Run backward outside the forward's optional autocast context.
+Plans retain metadata only, not activations. See the
+[explanation, measurements, and implementation appendix](../../../docs/efficient-attention-for-async-llm-training-task.pdf).
 
 ## Record and backpropagate
 

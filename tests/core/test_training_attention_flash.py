@@ -1,6 +1,7 @@
 """FA4/CuTe replay errors against FP32 and low-precision Torch attention."""
 
 import math
+import os
 from collections import Counter
 from copy import deepcopy
 from types import SimpleNamespace as NS
@@ -235,18 +236,90 @@ def test_long_decode_packs_one_key_per_token_instead_of_all_prefixes():
     assert plan.q_ends.tolist() == list(range(1, count + 1))
     assert plan.merge_indices.tolist() == list(range(count))
     assert plan.merge_indptr.tolist() == list(range(count + 1))
+    assert plan.mask_kind == "causal"
+
+
+@pytest.mark.parametrize(
+    "sequences,expected",
+    [
+        ([[(3, 7), (3, 7)]], "full"),
+        ([[(0, 1), (0, 2), (0, 3), (0, 4)]], "causal"),
+        ([[(3, 6), (3, 7)]], "causal"),
+        ([[(0, 1), (0, 4)]], "custom"),
+        ([[(0, 1), (0, 2), (0, 4)]], "custom"),
+        ([[(0, 2), (1, 3)]], "custom"),
+        ([[(0, 1), (0, 1), (0, 2), (0, 2)]], "custom"),
+        ([[(0, 4), (0, 4)], [(0, 1), (0, 2)]], "custom"),
+        ([[(0, 3), (0, 4)], [(0, 3), (0, 4), (0, 5)]], "causal"),
+        ([[(0, 1)], [(2, 7)]], "full"),
+    ],
+    ids=[
+        "rectangular-full",
+        "square-causal",
+        "bottom-right-causal-with-offset",
+        "top-left-is-not-bottom-right",
+        "historical-prefix",
+        "sliding-window",
+        "repeated-queries",
+        "mixed-sequence-masks",
+        "rectangular-causal-batch",
+        "single-query-prefers-full",
+    ],
+)
+def test_native_mask_requires_exact_visibility_for_every_sequence(sequences, expected):
+    from minisgl.training.attention.fa4.plan import build_flash_attention_plan
+
+    reads = [
+        [(version, start, end, row)]
+        for version, ranges in enumerate(sequences)
+        for row, (start, end) in enumerate(ranges)
+    ]
+    # Copied histories may reference the same input token multiple times.
+    replay = NS(
+        reads=reads,
+        rope_positions=None,
+        _prepare=lambda: None,
+        compute_source_spans=lambda version, start, end: [
+            (index % len(reads), index % len(reads) + 1, 0) for index in range(start, end)
+        ],
+    )
+    plan = build_flash_attention_plan(replay, "cpu")
+    assert plan.mask_kind == expected
+    for qleft, qright, kleft, kright in zip(
+        plan.cu_q.tolist(), plan.cu_q.tolist()[1:], plan.cu_k.tolist(), plan.cu_k.tolist()[1:]
+    ):
+        if expected == "custom":
+            continue
+        columns = torch.arange(kright - kleft)
+        recorded = (columns >= plan.q_starts[qleft:qright, None]) & (
+            columns < plan.q_ends[qleft:qright, None]
+        )
+        native = torch.ones_like(recorded)
+        if expected == "causal":
+            native = native.tril(diagonal=(kright - kleft) - (qright - qleft))
+        torch.testing.assert_close(recorded, native)
 
 
 def test_attention_backend_option_is_explicit_and_preserves_default():
     original = causal_trace(3).to()
-    assert original.attention_backend == "torch"
+    assert original.attention_backend == "auto"
     configured = original.to(attention_backend="fa4")
     assert configured.attention_backend == "fa4"
-    assert original.attention_backend == "torch"
+    assert original.attention_backend == "auto"
     assert configured.batches == original.batches
     torch.testing.assert_close(configured.input_ids, original.input_ids)
     with pytest.raises(ValueError, match="attention_backend"):
         original.to(attention_backend="unknown")
+
+
+@pytest.mark.parametrize("capability", [(8, 0), (10, 0), (11, 0), (12, 1)])
+def test_explicit_flash_backend_requires_hopper(monkeypatch, capability):
+    from minisgl.training.attention.fa4 import flash_attention
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: capability)
+    tensor = NS(ndim=3, device=torch.device("cuda"), dtype=torch.bfloat16)
+    with pytest.raises(AssertionError, match="Hopper \\(SM90\\)"):
+        flash_attention(tensor, tensor, tensor, None, None, 1.0)
 
 
 @pytest.fixture
@@ -375,6 +448,82 @@ def test_flash_forward_backward(hopper, make_trace, heads, kv_heads, width, rota
     replay = make_trace().to(hopper, attention_checkpointing=False)
     inputs = _inputs(replay.num_tokens, heads, kv_heads, width, torch.bfloat16, hopper)
     _assert_forward_backward(inputs, replay, rotary_width, section)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("heads,kv_heads", [(8, 2), (24, 4)])
+def test_compiled_preparation_preserves_real_mrope_geometry(hopper, dtype, heads, kv_heads):
+    # Rotary64 at head_dim256 exposed a gather/RoPE compiler miscompilation
+    # that the smaller rotary widths in the basic suite did not detect.
+    replay = cache_image_trace().to(hopper, attention_checkpointing=False)
+    inputs = _inputs(replay.num_tokens, heads, kv_heads, 256, dtype, hopper)
+    _assert_forward_backward(inputs, replay, 64, (11, 11, 10))
+
+
+@pytest.mark.skipif(
+    os.environ.get("MINISGL_TEST_LARGE_MERGE") != "1",
+    reason="Set MINISGL_TEST_LARGE_MERGE=1 for the >2^31-element merge regression",
+)
+def test_merge_large_offsets_forward_backward(hopper):
+    """Exercise real 64-bit addresses with a valid one-part-per-query CSR plan.
+
+    Guard prefixes make the original int32 overflow a numerical failure rather
+    than an illegal memory access. This opt-in test needs about 41 GiB free.
+    """
+    from minisgl.training.attention.fa4.merge import _compile_kernel
+
+    count, heads, width = 350000, 24, 256
+    guard = 1 << 31
+    elements = count * heads * width
+    overflow = elements - guard
+    required = 10 * (guard + elements) + 512 * 1024**2
+    if torch.cuda.mem_get_info(hopper)[0] < required:
+        pytest.skip("The large-offset merge regression needs about 41 GiB free")
+
+    def guarded(dtype):
+        storage = torch.full((guard + elements,), -3, dtype=dtype, device=hopper)
+        return storage[guard:].view(count, heads, width), storage[:guard]
+
+    def assert_boundary(tensor, value):
+        sample = tensor.reshape(-1)[[0, guard - 1, guard, elements - 1]]
+        torch.testing.assert_close(sample, torch.full_like(sample, value), atol=0, rtol=0)
+
+    def assert_guard(prefix):
+        # These are exactly the prefix addresses reached by wrapped offsets.
+        corrupted = prefix[:overflow]
+        torch.testing.assert_close(corrupted, torch.full_like(corrupted, -3), atol=0, rtol=0)
+
+    parts, parts_guard = guarded(torch.bfloat16)
+    parts.fill_(1)
+    lse = torch.zeros((heads, count), dtype=torch.float32, device=hopper)
+    indptr = torch.arange(count + 1, dtype=torch.int32, device=hopper)
+    indices = torch.arange(count, dtype=torch.int32, device=hopper)
+    output, output_guard = guarded(torch.bfloat16)
+    output_fp32, scratch_guard = guarded(torch.float32)
+    total_lse = torch.empty((count, heads), dtype=torch.float32, device=hopper)
+    capability = torch.cuda.get_device_capability(hopper)
+    _compile_kernel(False, parts.dtype, heads, width, capability)(
+        parts, lse, indptr, indices, output, output_fp32, total_lse
+    )
+    assert_boundary(output, 1)
+    assert_boundary(output_fp32, 1)
+    assert_guard(output_guard)
+    assert_guard(scratch_guard)
+    torch.testing.assert_close(total_lse, torch.zeros_like(total_lse), atol=0, rtol=0)
+    del output, output_guard
+
+    gradient, gradient_guard = guarded(torch.bfloat16)
+    gradient.fill_(1)
+    grad_parts, grad_parts_guard = guarded(torch.bfloat16)
+    grad_lse = torch.empty_like(lse)
+    _compile_kernel(True, parts.dtype, heads, width, capability)(
+        parts, lse, indptr, indices, output_fp32, total_lse, gradient, grad_parts, grad_lse
+    )
+    assert_boundary(grad_parts, 1)
+    assert_guard(grad_parts_guard)
+    assert_guard(gradient_guard)
+    assert_guard(parts_guard)
+    torch.testing.assert_close(grad_lse, torch.zeros_like(grad_lse), atol=0, rtol=0)
 
 
 def test_flash_singleton_parts_backpropagate_normalization(hopper):

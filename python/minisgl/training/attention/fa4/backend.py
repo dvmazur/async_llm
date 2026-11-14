@@ -1,4 +1,4 @@
-"""Optional Hopper replay using masked FA4 block sequences and a CuTe merge."""
+"""Optional Hopper replay using FA4 block sequences and a CuTe merge."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import torch
 from torch.utils.checkpoint import checkpoint
 
+from minisgl.training.attention._compile import compile_attention
 from minisgl.training.attention.fa4.mask import historical_mask
 from minisgl.training.attention.fa4.merge import merge_attention_parts
 from minisgl.training.attention.fa4.plan import FlashAttentionPlan, build_flash_attention_plan
@@ -30,6 +31,17 @@ def _flash_attention_function() -> Callable[..., tuple[torch.Tensor, torch.Tenso
     return flash_attn_varlen_func
 
 
+@compile_attention
+def _pack_and_rotate_inputs(
+    q, k, v, inv_freq, q_indices, q_positions, k_indices, k_positions, mrope_section
+):
+    """Fuse packing and RoPE, leaving FA4 and the CuTe merge outside Dynamo."""
+    packed_query = rotate(q[q_indices], q_positions, inv_freq, mrope_section)
+    packed_key = rotate(k[k_indices], k_positions, inv_freq, mrope_section)
+    packed_value = v[k_indices]
+    return packed_query, packed_key, packed_value
+
+
 def _forward(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -39,26 +51,38 @@ def _forward(
     scaling: float,
     mrope_section: Sequence[int] | None,
 ) -> torch.Tensor:
-    flash = _flash_attention_function()
-    query = rotate(q[plan.q_indices], plan.q_positions, inv_freq, mrope_section)
-    key = rotate(k[plan.k_indices], plan.k_positions, inv_freq, mrope_section)
-    value = v[plan.k_indices]
-    parts, lse = flash(
-        query,
-        key,
-        value,
+    flash_varlen = _flash_attention_function()
+    packed_query, packed_key, packed_value = _pack_and_rotate_inputs(
+        q,
+        k,
+        v,
+        inv_freq,
+        plan.q_indices,
+        plan.q_positions,
+        plan.k_indices,
+        plan.k_positions,
+        mrope_section,
+    )
+    uses_custom_mask = plan.mask_kind == "custom"
+    partial_outputs, partial_lse = flash_varlen(
+        packed_query,
+        packed_key,
+        packed_value,
         cu_seqlens_q=plan.cu_q,
         cu_seqlens_k=plan.cu_k,
         max_seqlen_q=plan.max_q,
         max_seqlen_k=plan.max_k,
         softmax_scale=scaling,
-        causal=False,
-        mask_mod=historical_mask(),
-        aux_tensors=[plan.q_starts, plan.q_ends],
+        causal=plan.mask_kind == "causal",
+        mask_mod=historical_mask() if uses_custom_mask else None,
+        aux_tensors=[plan.q_starts, plan.q_ends] if uses_custom_mask else None,
         pack_gqa=False,
         return_lse=True,
     )
-    return merge_attention_parts(parts, lse, plan.merge_indptr, plan.merge_indices).flatten(1)
+    # LSE normalizes a query's partial outputs across all blocks it reads.
+    return merge_attention_parts(
+        partial_outputs, partial_lse, plan.merge_indptr, plan.merge_indices
+    ).flatten(1)
 
 
 def flash_attention(
@@ -74,7 +98,7 @@ def flash_attention(
 
     Inputs and output have the same layouts as ``attention.torch.attention``.  Only
     trace metadata is cached; packed activations and rotations are rebuilt each
-    forward.  The existing torch backend remains the reference and default.
+    forward. The torch backend remains the numerical reference.
     """
     if any(x.ndim != 3 for x in (q, k, v)):
         raise ValueError("Replay Q/K/V must have layout [tokens, heads, head_dim]")
@@ -82,8 +106,7 @@ def flash_attention(
         raise ValueError("The fa4 replay backend requires Q/K/V on one CUDA device")
     if q.dtype not in (torch.float16, torch.bfloat16) or any(x.dtype != q.dtype for x in (k, v)):
         raise ValueError("The fa4 replay backend requires matching FP16 or BF16 Q/K/V")
-    if torch.cuda.get_device_capability(q.device)[0] != 9:
-        raise NotImplementedError("FA4 replay requires Hopper (SM90)")
+    assert torch.cuda.get_device_capability(q.device)[0] == 9, "FA4 replay requires Hopper (SM90)"
     if (
         len(q) != len(k)
         or k.shape != v.shape
@@ -100,7 +123,8 @@ def flash_attention(
     cache_key = ("fa4", q.device)
     if cache_key not in replay._attention:
         replay._attention[cache_key] = build_flash_attention_plan(replay, q.device)
-    args = (q, k, v, inv_freq, replay._attention[cache_key], scaling, mrope_section)
+    plan = replay._attention[cache_key]
+    args = (q, k, v, inv_freq, plan, scaling, mrope_section)
     if (
         replay.attention_checkpointing
         and torch.is_grad_enabled()

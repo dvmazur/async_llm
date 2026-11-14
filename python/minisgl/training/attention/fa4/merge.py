@@ -63,11 +63,12 @@ def _kernel_types():
             row_head = block * _WARPS_PER_BLOCK + thread // _WARP_SIZE
             heads = output.shape[1]
             if row_head < output.shape[0] * heads:
-                row, head = row_head // heads, row_head % heads
+                # The row fits int32, but its flattened [row, head, dim] offset may not.
+                row, head = cutlass.Int64(row_head // heads), row_head % heads
                 start, end = indptr[row], indptr[row + 1]
                 maximum = Float32(-Float32.inf)
                 for position in cutlass.range(start, end):
-                    part = indices[position]
+                    part = cutlass.Int64(indices[position])
                     maximum = cute.arch.fmax(maximum, lse[head, part])
 
                 accum = cute.make_rmem_tensor((self.values_per_lane,), Float32)
@@ -75,7 +76,7 @@ def _kernel_types():
                 denominator = Float32(0.0)
                 if maximum != Float32(-Float32.inf):
                     for position in cutlass.range(start, end):
-                        part = indices[position]
+                        part = cutlass.Int64(indices[position])
                         weight = cute.math.exp(lse[head, part] - maximum)
                         denominator += weight
                         for item in cutlass.range_constexpr(self.values_per_lane):
@@ -147,11 +148,11 @@ def _kernel_types():
             row_head = block * _WARPS_PER_BLOCK + thread // _WARP_SIZE
             heads = output_fp32.shape[1]
             if row_head < output_fp32.shape[0] * heads:
-                row, head = row_head // heads, row_head % heads
+                row, head = cutlass.Int64(row_head // heads), row_head % heads
                 normalizer = total_lse[row, head]
                 start, end = indptr[row], indptr[row + 1]
                 for position in cutlass.range(start, end):
-                    part = indices[position]
+                    part = cutlass.Int64(indices[position])
                     weight = Float32(0.0)
                     if normalizer != Float32(-Float32.inf):
                         weight = cute.math.exp(lse[head, part] - normalizer)

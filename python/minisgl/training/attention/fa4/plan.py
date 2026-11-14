@@ -5,6 +5,7 @@ layers and forwards without retaining activations or model weights.
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 
@@ -24,6 +25,7 @@ class FlashAttentionPlan:
     merge_indptr: torch.Tensor
     merge_indices: torch.Tensor
     num_queries: int
+    mask_kind: Literal["full", "causal", "custom"]
 
 
 @torch.inference_mode(False)
@@ -52,14 +54,21 @@ def build_flash_attention_plan(replay, device) -> FlashAttentionPlan:
     k_indices, k_positions = [], []
     cu_q, cu_k = [0], [0]
     max_q = max_k = 0
+    all_sequences_full, all_sequences_causal = True, True
     for version, reads in grouped.items():
         left, right = min(read[1] for read in reads), max(read[2] for read in reads)
-        for row, start, end, position in reads:
+        query_count, key_count = len(reads), right - left
+        for local_row, (row, start, end, position) in enumerate(reads):
             merge_rows[row].append(len(q_indices))
             q_indices.append(row)
             q_positions.append(position)
             q_starts.append(start - left)
             q_ends.append(end - left)
+            all_sequences_full &= start == left and end == right
+            # FA4 aligns a rectangular causal mask to its bottom-right corner.
+            # Every packed sequence must match before dropping the custom mask.
+            causal_key_end = min(key_count, max(0, key_count - query_count + local_row + 1))
+            all_sequences_causal &= start == left and end - left == causal_key_end
         key_start = len(k_indices)
         if rope_positions is None:
             for start, end, _ in replay.compute_source_spans(version, left, right):
@@ -86,6 +95,11 @@ def build_flash_attention_plan(replay, device) -> FlashAttentionPlan:
             raise ValueError("Every replay query must have at least one attention read")
         merge_indices.extend(partials)
         merge_indptr.append(len(merge_indices))
+    mask_kind: Literal["full", "causal", "custom"] = "custom"
+    if all_sequences_full:
+        mask_kind = "full"
+    elif all_sequences_causal:
+        mask_kind = "causal"
     return FlashAttentionPlan(
         q_indices=torch.tensor(q_indices, dtype=torch.long, device=device),
         q_positions=torch.tensor(q_positions, dtype=torch.long, device=device),
@@ -100,4 +114,5 @@ def build_flash_attention_plan(replay, device) -> FlashAttentionPlan:
         merge_indptr=torch.tensor(merge_indptr, dtype=torch.int32, device=device),
         merge_indices=torch.tensor(merge_indices, dtype=torch.int32, device=device),
         num_queries=num_queries,
+        mask_kind=mask_kind,
     )

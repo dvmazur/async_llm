@@ -5,11 +5,14 @@ from dataclasses import dataclass
 import torch
 from torch.utils.checkpoint import checkpoint
 
+from minisgl.training.attention._compile import compile_attention
 from minisgl.training.mrope import rotate
 
 
 @dataclass(frozen=True)
 class _ReadGroup:
+    """A slice of the packed K/V bank and the query reads that use it."""
+
     start: int
     end: int
     entries: torch.Tensor
@@ -17,6 +20,7 @@ class _ReadGroup:
 
 @dataclass(frozen=True)
 class _QueryChunk:
+    # Entry columns: query row, visible key start/end, then RoPE coordinates.
     entries: torch.Tensor
     groups: tuple[_ReadGroup, ...]
 
@@ -25,7 +29,7 @@ class _QueryChunk:
 class _AttentionPlan:
     k_indices: torch.Tensor
     k_positions: torch.Tensor
-    k_offsets: torch.Tensor
+    k_offsets: torch.Tensor  # Offsets within each KV version, distinct from RoPE positions.
     chunks: tuple[_QueryChunk, ...]
 
 
@@ -99,10 +103,11 @@ def _bmm(left, right):
         return torch.bmm(left, right)
 
 
-def _attention_chunk(q, keys, values, offsets, inv_freq, chunk, scaling, mrope_section):
-    heads, width = q.shape[1:]
-    kv_heads = values.shape[0]
-    head_groups = heads // kv_heads
+@compile_attention
+def _attention_chunk(q, keys, values, key_offsets, inv_freq, chunk, scaling, mrope_section):
+    num_heads, head_size = q.shape[1:]
+    num_kv_heads = values.shape[0]
+    heads_per_kv_head = num_heads // num_kv_heads
     entries = chunk.entries
     query_positions = entries[:, 3] if entries.shape[1] == 4 else entries[:, 3:]
     queries = rotate(q[entries[:, 0]], query_positions, inv_freq, mrope_section)
@@ -111,14 +116,14 @@ def _attention_chunk(q, keys, values, offsets, inv_freq, chunk, scaling, mrope_s
     for query, group in zip(queries, chunk.groups, strict=True):
         entries = group.entries
         rows, starts, ends = entries[:, :3].unbind(1)
-        query = query.reshape(-1, kv_heads, head_groups, width).permute(1, 2, 0, 3)
+        query = query.reshape(-1, num_kv_heads, heads_per_kv_head, head_size).permute(1, 2, 0, 3)
         key = keys[:, :, group.start : group.end]
         score = _bmm(query.flatten(1, 2), key).view(
-            kv_heads, head_groups, len(rows), group.end - group.start
+            num_kv_heads, heads_per_kv_head, len(rows), group.end - group.start
         )
         score = score.to(torch.promote_types(score.dtype, torch.float32)) * scaling
-        position = offsets[group.start : group.end]
-        visible = (position >= starts[:, None]) & (position < ends[:, None])
+        key_offset = key_offsets[group.start : group.end]
+        visible = (key_offset >= starts[:, None]) & (key_offset < ends[:, None])
         score = score.masked_fill(~visible, float("-inf"))
         scores.append(
             score.new_full((*score.shape[:2], len(q), score.shape[-1]), float("-inf")).index_copy(
@@ -130,7 +135,11 @@ def _attention_chunk(q, keys, values, offsets, inv_freq, chunk, scaling, mrope_s
     # Every block contributes to the same denominator, including repeated reads.
     weights = torch.cat(scores, -1).softmax(-1).to(values.dtype)
     output = _bmm(weights.flatten(1, 2), torch.cat(chunk_values, dim=1))
-    return output.view(kv_heads, head_groups, len(q), width).permute(2, 0, 1, 3).flatten(1)
+    return (
+        output.view(num_kv_heads, heads_per_kv_head, len(q), head_size)
+        .permute(2, 0, 1, 3)
+        .flatten(1)
+    )
 
 
 def attention(q, k, v, replay, inv_freq, scaling, mrope_section=None):
@@ -138,12 +147,13 @@ def attention(q, k, v, replay, inv_freq, scaling, mrope_section=None):
 
     Precision and autograd match the Torch reference: FP16/BF16 Q/K/V are
     promoted before gathering and RoPE, all attention math uses FP32, and the
-    output is cast to V's original dtype. FP64 inputs retain FP64 matrix math.
+    output is cast to V's original dtype. Input dtypes may differ; any FP64 input
+    selects FP64 matrix math, as in the reference.
     """
     if any(x.ndim != 3 for x in (q, k, v)):
         raise ValueError("Attention Q/K/V must have layout [tokens, heads, head_dim]")
-    if any(x.device != q.device or x.dtype != q.dtype for x in (k, v)):
-        raise ValueError("Attention Q/K/V must have matching devices and dtypes")
+    if any(x.device != q.device for x in (k, v)):
+        raise ValueError("Attention Q/K/V must be on the same device")
     if (
         len(q) != len(k)
         or k.shape != v.shape
@@ -156,7 +166,8 @@ def attention(q, k, v, replay, inv_freq, scaling, mrope_section=None):
     if len(q) != len(replay.reads):
         raise ValueError("Q/K/V rows must match the prepared trace")
     output_dtype = v.dtype
-    compute_dtype = torch.float64 if q.dtype == torch.float64 else torch.float32
+    compute_dtype = torch.float64 if torch.float64 in (q.dtype, k.dtype, v.dtype) else torch.float32
+    # Cast before gather so shared-source gradients accumulate before low-precision rounding.
     q, k, v = (value.to(compute_dtype) for value in (q, k, v))
     cache_key = ("torch_optimized", q.device, replay.query_chunk_size)
     if cache_key not in replay._attention:

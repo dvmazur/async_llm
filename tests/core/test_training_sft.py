@@ -12,6 +12,7 @@ from minisgl.training import Trace, replay_trace, sft
 from minisgl.training.attention import torch as attention_module
 from minisgl.training.gdn import GDNReplay
 from minisgl.training.trace import ForwardBatch, ForwardRequest, TensorData
+from minisgl_examples.training import sft as example_sft
 from test_training import mutation_trace, tiny_model
 from test_training_gdn import tiny_hybrid
 from transformers import Qwen3_5ForCausalLM
@@ -24,12 +25,14 @@ from transformers import Qwen3_5ForCausalLM
         ({"gdn_segment_size": 0}, "gdn_segment_size must be positive"),
         ({"gdn_read_mode": "invalid"}, "gdn_read_mode must be expanded or factorized"),
         ({"gdn_read_backend": "invalid"}, "gdn_read_backend must be torch or triton"),
+        ({"replay_attention_backend": "invalid"}, "attention_backend must be"),
     ],
 )
-def test_sft_rejects_invalid_replay_options_before_loading_data(options, message):
+@pytest.mark.parametrize("entrypoint", [sft, example_sft])
+def test_sft_rejects_invalid_replay_options_before_loading_data(options, message, entrypoint):
     data = Mock()
     with pytest.raises(ValueError, match=message):
-        sft.train(SimpleNamespace(data=data, **options))
+        entrypoint.train(SimpleNamespace(data=data, **options))
     data.read_text.assert_not_called()
 
 
@@ -94,7 +97,13 @@ def test_sft_loads_and_saves_image_model_and_processor(monkeypatch, tmp_path, ki
     output = tmp_path / "checkpoint"
     sft.train(
         SimpleNamespace(
-            data=data, output=output, gradient_checkpointing=False, lr=1e-3, steps=1, seed=7
+            data=data,
+            output=output,
+            gradient_checkpointing=False,
+            lr=1e-3,
+            steps=1,
+            seed=7,
+            replay_attention_backend="torch",
         )
     )
     multimodal = kind != "text"
@@ -114,7 +123,10 @@ def test_sft_loads_and_saves_image_model_and_processor(monkeypatch, tmp_path, ki
     loaders[processor].from_pretrained.return_value.save_pretrained.assert_called_once_with(output)
     loaders[unused].from_pretrained.assert_not_called()
     model.save_pretrained.assert_called_once_with(output)
-    assert json.loads((tmp_path / "metrics.json").read_text())["supervised_tokens"] == len(traces)
+    metrics = json.loads((tmp_path / "metrics.json").read_text())
+    assert metrics["supervised_tokens"] == len(traces)
+    assert metrics["replay_attention_backend"] == "torch"
+    assert all(plan.attention_backend == "torch" for plan, _ in sft.evaluate.call_args.args[1])
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
@@ -258,3 +270,27 @@ def test_sft_cli_plan_cache_flag(monkeypatch, tmp_path, flag, expected):
     monkeypatch.setattr(sft, "train", received.append)
     sft.main()
     assert received.pop().cache_replay_plans is expected
+
+
+@pytest.mark.parametrize("entrypoint", [sft, example_sft])
+@pytest.mark.parametrize("backend", [None, "auto", "torch", "torch_optimized", "fa4"])
+def test_sft_cli_replay_attention_backend(monkeypatch, tmp_path, entrypoint, backend):
+    received = []
+    monkeypatch.chdir(tmp_path)
+    flags = [] if backend is None else ["--replay-attention-backend", backend]
+    monkeypatch.setattr("sys.argv", ["sft", "train", *flags])
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(entrypoint, "train", received.append)
+    entrypoint.main()
+    args = received.pop()
+    assert args.replay_attention_backend == (backend or "auto")
+    assert args.query_chunk_size == 1024
+
+
+@pytest.mark.parametrize("entrypoint", [sft, example_sft])
+def test_sft_cli_rejects_unknown_replay_attention_backend(monkeypatch, tmp_path, entrypoint):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["sft", "train", "--replay-attention-backend", "invalid"])
+    with pytest.raises(SystemExit) as error:
+        entrypoint.main()
+    assert error.value.code == 2
