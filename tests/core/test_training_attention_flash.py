@@ -313,19 +313,22 @@ def test_attention_backend_option_is_explicit_and_preserves_default():
 
 
 @pytest.mark.parametrize("capability", [(8, 0), (10, 0), (11, 0), (12, 1)])
-def test_explicit_flash_backend_requires_hopper(monkeypatch, capability):
+def test_explicit_flash_backend_requires_supported_gpu(monkeypatch, capability):
     from minisgl.training.attention.fa4 import flash_attention
 
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: capability)
-    tensor = NS(ndim=3, device=torch.device("cuda"), dtype=torch.bfloat16)
-    with pytest.raises(AssertionError, match="Hopper \\(SM90\\)"):
+    tensor = NS(ndim=3, device=torch.device("cuda"), dtype=torch.bfloat16, shape=(3, 2, 64))
+    with pytest.raises(ValueError, match="Hopper \\(SM90\\) or B300 \\(SM103\\)"):
         flash_attention(tensor, tensor, tensor, None, None, 1.0)
 
 
 @pytest.fixture
-def hopper():
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9:
-        pytest.skip("FA4 replay requires a Hopper GPU")
+def supported_gpu():
+    if not torch.cuda.is_available():
+        pytest.skip("FA4 replay requires a CUDA GPU")
+    capability = torch.cuda.get_device_capability()
+    if capability[0] != 9 and capability != (10, 3):
+        pytest.skip("FA4 replay requires Hopper (SM90) or B300 (SM103)")
     pytest.importorskip(
         "flash_attn.cute", reason="Install the optional FA4 dependencies from the training README"
     )
@@ -350,9 +353,9 @@ def _assert_flash_error(actual, reference, baseline, *, name):
     atol = 2 * (reference + 0.3 - 0.3 - reference).abs().max().item()
     error = (actual - reference).abs().max().item()
     baseline_error = (baseline - reference).abs().max().item()
-    assert all(
-        math.isfinite(value) for value in (atol, error, baseline_error)
-    ), f"{name}: error calculation contains nonfinite values"
+    assert all(math.isfinite(value) for value in (atol, error, baseline_error)), (
+        f"{name}: error calculation contains nonfinite values"
+    )
     limit = 2 * baseline_error + atol
     # Official FA4: max_error_FA <= 2 * max_error_low_precision_torch + roundoff.
     # For output/dQ/dK/dV, both errors use the FP32 reference with identical Q/K/V and dO.
@@ -414,16 +417,16 @@ def _assert_forward_backward(inputs, replay, rotary_width, section=None):
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_flash_historical_visibility_forward_backward(hopper, dtype):
-    replay = historical_trace().to(hopper, attention_checkpointing=False)
-    _assert_forward_backward(_inputs(6, 4, 2, 64, dtype, hopper), replay, 64)
+def test_flash_historical_visibility_forward_backward(supported_gpu, dtype):
+    replay = historical_trace().to(supported_gpu, attention_checkpointing=False)
+    _assert_forward_backward(_inputs(6, 4, 2, 64, dtype, supported_gpu), replay, 64)
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("make_trace", [interleaved_blocks_trace, tile_boundary_trace])
-def test_flash_masked_trajectory_forward_backward(hopper, dtype, make_trace):
-    replay = make_trace().to(hopper, attention_checkpointing=False, query_chunk_size=64)
-    inputs = _inputs(replay.num_tokens, 4, 2, 64, dtype, hopper)
+def test_flash_masked_trajectory_forward_backward(supported_gpu, dtype, make_trace):
+    replay = make_trace().to(supported_gpu, attention_checkpointing=False, query_chunk_size=64)
+    inputs = _inputs(replay.num_tokens, 4, 2, 64, dtype, supported_gpu)
     _assert_forward_backward(inputs, replay, 32)
 
 
@@ -444,19 +447,21 @@ def test_flash_masked_trajectory_forward_backward(hopper, dtype, make_trace):
         "mrope",
     ],
 )
-def test_flash_forward_backward(hopper, make_trace, heads, kv_heads, width, rotary_width, section):
-    replay = make_trace().to(hopper, attention_checkpointing=False)
-    inputs = _inputs(replay.num_tokens, heads, kv_heads, width, torch.bfloat16, hopper)
+def test_flash_forward_backward(
+    supported_gpu, make_trace, heads, kv_heads, width, rotary_width, section
+):
+    replay = make_trace().to(supported_gpu, attention_checkpointing=False)
+    inputs = _inputs(replay.num_tokens, heads, kv_heads, width, torch.bfloat16, supported_gpu)
     _assert_forward_backward(inputs, replay, rotary_width, section)
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("heads,kv_heads", [(8, 2), (24, 4)])
-def test_compiled_preparation_preserves_real_mrope_geometry(hopper, dtype, heads, kv_heads):
+def test_compiled_preparation_preserves_real_mrope_geometry(supported_gpu, dtype, heads, kv_heads):
     # Rotary64 at head_dim256 exposed a gather/RoPE compiler miscompilation
     # that the smaller rotary widths in the basic suite did not detect.
-    replay = cache_image_trace().to(hopper, attention_checkpointing=False)
-    inputs = _inputs(replay.num_tokens, heads, kv_heads, 256, dtype, hopper)
+    replay = cache_image_trace().to(supported_gpu, attention_checkpointing=False)
+    inputs = _inputs(replay.num_tokens, heads, kv_heads, 256, dtype, supported_gpu)
     _assert_forward_backward(inputs, replay, 64, (11, 11, 10))
 
 
@@ -464,7 +469,7 @@ def test_compiled_preparation_preserves_real_mrope_geometry(hopper, dtype, heads
     os.environ.get("MINISGL_TEST_LARGE_MERGE") != "1",
     reason="Set MINISGL_TEST_LARGE_MERGE=1 for the >2^31-element merge regression",
 )
-def test_merge_large_offsets_forward_backward(hopper):
+def test_merge_large_offsets_forward_backward(supported_gpu):
     """Exercise real 64-bit addresses with a valid one-part-per-query CSR plan.
 
     Guard prefixes make the original int32 overflow a numerical failure rather
@@ -477,11 +482,11 @@ def test_merge_large_offsets_forward_backward(hopper):
     elements = count * heads * width
     overflow = elements - guard
     required = 10 * (guard + elements) + 512 * 1024**2
-    if torch.cuda.mem_get_info(hopper)[0] < required:
+    if torch.cuda.mem_get_info(supported_gpu)[0] < required:
         pytest.skip("The large-offset merge regression needs about 41 GiB free")
 
     def guarded(dtype):
-        storage = torch.full((guard + elements,), -3, dtype=dtype, device=hopper)
+        storage = torch.full((guard + elements,), -3, dtype=dtype, device=supported_gpu)
         return storage[guard:].view(count, heads, width), storage[:guard]
 
     def assert_boundary(tensor, value):
@@ -495,13 +500,13 @@ def test_merge_large_offsets_forward_backward(hopper):
 
     parts, parts_guard = guarded(torch.bfloat16)
     parts.fill_(1)
-    lse = torch.zeros((heads, count), dtype=torch.float32, device=hopper)
-    indptr = torch.arange(count + 1, dtype=torch.int32, device=hopper)
-    indices = torch.arange(count, dtype=torch.int32, device=hopper)
+    lse = torch.zeros((heads, count), dtype=torch.float32, device=supported_gpu)
+    indptr = torch.arange(count + 1, dtype=torch.int32, device=supported_gpu)
+    indices = torch.arange(count, dtype=torch.int32, device=supported_gpu)
     output, output_guard = guarded(torch.bfloat16)
     output_fp32, scratch_guard = guarded(torch.float32)
-    total_lse = torch.empty((count, heads), dtype=torch.float32, device=hopper)
-    capability = torch.cuda.get_device_capability(hopper)
+    total_lse = torch.empty((count, heads), dtype=torch.float32, device=supported_gpu)
+    capability = torch.cuda.get_device_capability(supported_gpu)
     _compile_kernel(False, parts.dtype, heads, width, capability)(
         parts, lse, indptr, indices, output, output_fp32, total_lse
     )
@@ -526,9 +531,10 @@ def test_merge_large_offsets_forward_backward(hopper):
     torch.testing.assert_close(grad_lse, torch.zeros_like(grad_lse), atol=0, rtol=0)
 
 
-def test_flash_singleton_parts_backpropagate_normalization(hopper):
-    replay = singleton_parts_trace().to(hopper, attention_checkpointing=False)
-    inputs = _inputs(2, 4, 2, 64, torch.bfloat16, hopper)
+@pytest.mark.parametrize("width", [64, 256])
+def test_flash_singleton_parts_backpropagate_normalization(supported_gpu, width):
+    replay = singleton_parts_trace().to(supported_gpu, attention_checkpointing=False)
+    inputs = _inputs(2, 4, 2, width, torch.bfloat16, supported_gpu)
     grads = _assert_forward_backward(inputs, replay, 64)
     # Each local one-key output is independent of Q/K. All these derivatives
     # require the LSE path through the merge and the FA kernel's backward.
@@ -536,12 +542,26 @@ def test_flash_singleton_parts_backpropagate_normalization(hopper):
     assert grads[1].abs().sum() > 0
 
 
-def test_flash_no_grad_and_attention_checkpointing(hopper):
+@pytest.mark.parametrize("checkpointing", [False, True])
+def test_flash_forward_backward_on_noncurrent_device(supported_gpu, checkpointing):
+    if torch.cuda.device_count() < 2:
+        pytest.skip("Requires two visible CUDA devices")
+    device = torch.device("cuda:1")
+    if torch.cuda.get_device_capability(device) != torch.cuda.get_device_capability(supported_gpu):
+        pytest.skip("This numerical test requires two GPUs with the same architecture")
+    with torch.cuda.device(0):
+        replay = singleton_parts_trace().to(device, attention_checkpointing=checkpointing)
+        inputs = _inputs(2, 4, 2, 64, torch.bfloat16, device)
+        _assert_forward_backward(inputs, replay, 64)
+        assert torch.cuda.current_device() == 0
+
+
+def test_flash_no_grad_and_attention_checkpointing(supported_gpu):
     from minisgl.training.attention.fa4 import flash_attention
 
-    replay = historical_trace().to(hopper, attention_checkpointing=False)
-    inputs = _inputs(6, 4, 2, 64, torch.bfloat16, hopper)
-    inv_freq = 10000 ** (-torch.arange(0, 64, 2, device=hopper).float() / 64)
+    replay = historical_trace().to(supported_gpu, attention_checkpointing=False)
+    inputs = _inputs(6, 4, 2, 64, torch.bfloat16, supported_gpu)
+    inv_freq = 10000 ** (-torch.arange(0, 64, 2, device=supported_gpu).float() / 64)
     plain = flash_attention(*inputs, replay, inv_freq, 0.125)
     gradient = torch.randn_like(plain)
     expected_grads = torch.autograd.grad(plain, inputs, gradient)
@@ -561,7 +581,9 @@ def test_flash_no_grad_and_attention_checkpointing(hopper):
 
 @pytest.mark.parametrize("cache_plans", [False, True])
 @pytest.mark.parametrize("architecture", ["qwen3", "qwen3_5"])
-def test_supported_adapter_selects_flash_and_backpropagates(hopper, cache_plans, architecture):
+def test_supported_adapter_selects_flash_and_backpropagates(
+    supported_gpu, cache_plans, architecture
+):
     from transformers import (
         Qwen3_5ForCausalLM,
         Qwen3_5TextConfig,
@@ -599,10 +621,10 @@ def test_supported_adapter_selects_flash_and_backpropagates(hopper, cache_plans,
         **extra,
     )
     config._attn_implementation = "eager"
-    model = model_type(config).to(device=hopper, dtype=torch.bfloat16).eval()
+    model = model_type(config).to(device=supported_gpu, dtype=torch.bfloat16).eval()
     reference = deepcopy(model)
     replay = historical_trace().to(
-        hopper,
+        supported_gpu,
         attention_backend="fa4",
         attention_checkpointing=False,
         cache_plans=cache_plans,
@@ -611,7 +633,7 @@ def test_supported_adapter_selects_flash_and_backpropagates(hopper, cache_plans,
     actual = replay_trace(model, replay, hidden_only=False)
     torch.testing.assert_close(actual, expected, atol=1e-2, rtol=3e-2)
     assert bool(replay._attention) is cache_plans
-    targets = torch.arange(replay.num_tokens, device=hopper) % config.vocab_size
+    targets = torch.arange(replay.num_tokens, device=supported_gpu) % config.vocab_size
     expected_loss = F.cross_entropy(expected.float(), targets)
     actual_loss = F.cross_entropy(actual.float(), targets)
     torch.testing.assert_close(actual_loss, expected_loss, atol=1e-3, rtol=1e-3)

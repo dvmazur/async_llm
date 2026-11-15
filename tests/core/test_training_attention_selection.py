@@ -1,5 +1,6 @@
 """Replay backend selection preserves reference and explicit-device semantics."""
 
+import os
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -12,7 +13,9 @@ from minisgl.training.trace import ForwardBatch, ForwardRequest
 
 
 @pytest.fixture(autouse=True)
-def clear_optional_backend_probe():
+def clear_optional_backend_probe(monkeypatch):
+    monkeypatch.delenv("FLASH_ATTENTION_HD256_GENERIC_BWD", raising=False)
+    monkeypatch.setattr(fa4_backend, "_flash_device_unsupported_reason", lambda *args: None)
     adapter._load_optional_flash_attention.cache_clear()
     yield
     adapter._load_optional_flash_attention.cache_clear()
@@ -28,12 +31,14 @@ def clear_optional_backend_probe():
         ("cuda:2", (8, 9), torch.float16, 128, "optimized"),
         ("cuda:2", (9, 0), torch.bfloat16, 256, "fa4"),
         ("cuda:2", (9, 0), torch.float16, 8, "fa4"),
+        ("cuda:2", (9, 0), torch.float16, 192, "fa4"),
         ("cuda:2", (9, 0), torch.float32, 256, "optimized"),
         ("cuda:2", (9, 0), torch.float64, 256, "optimized"),
         ("cuda:2", (9, 0), torch.float16, 7, "optimized"),
         ("cuda:2", (9, 0), torch.float16, 10, "optimized"),
         ("cuda:2", (9, 0), torch.float16, 264, "optimized"),
         ("cuda:2", (10, 0), torch.bfloat16, 256, "optimized"),
+        ("cuda:2", (11, 0), torch.bfloat16, 64, "optimized"),
         ("cuda:2", (12, 0), torch.bfloat16, 256, "optimized"),
     ],
 )
@@ -59,6 +64,86 @@ def test_auto_backend_respects_hardware_dtype_and_head_dimension(
     if device == "cpu":
         hardware.assert_not_called()
     assert loader.call_count == int(expected == "fa4")
+
+
+@pytest.mark.parametrize(
+    "head_size,generic_backward,expected",
+    [
+        (8, None, "fa4"),
+        (128, None, "fa4"),
+        (136, None, "optimized"),
+        (248, "1", "optimized"),
+        (256, None, "optimized"),
+        (256, "0", "optimized"),
+        (256, "true", "optimized"),
+        (256, "1", "fa4"),
+        (264, "1", "optimized"),
+    ],
+)
+def test_b300_auto_respects_head_dimensions_and_lse_backward(
+    monkeypatch, head_size, generic_backward, expected
+):
+    if generic_backward is not None:
+        monkeypatch.setenv("FLASH_ATTENTION_HD256_GENERIC_BWD", generic_backward)
+    query = SimpleNamespace(
+        device=torch.device("cuda:2"), dtype=torch.bfloat16, shape=(1, 8, 3, head_size)
+    )
+    hardware = Mock(return_value=(10, 3))
+    loader = Mock(return_value=object())
+    monkeypatch.setattr(torch.cuda, "get_device_capability", hardware)
+    monkeypatch.setattr(fa4_backend, "_flash_attention_function", loader)
+    implementation = adapter._select_attention_backend("auto", query, query, query)
+    assert (
+        implementation
+        is {
+            "fa4": fa4_backend.flash_attention,
+            "optimized": adapter.optimized_attention,
+        }[expected]
+    )
+    hardware.assert_called_once_with(query.device)
+    assert loader.call_count == int(expected == "fa4")
+    assert os.environ.get("FLASH_ATTENTION_HD256_GENERIC_BWD") == generic_backward
+
+
+@pytest.mark.parametrize(
+    "head_size,reason",
+    [
+        (136, "head dimension between 8 and 128, or 256"),
+        (256, "FLASH_ATTENTION_HD256_GENERIC_BWD=1.*LSE gradients"),
+    ],
+)
+def test_explicit_b300_rejects_unsupported_configurations_before_execution(
+    monkeypatch, head_size, reason
+):
+    query = SimpleNamespace(
+        ndim=3, device=torch.device("cuda:2"), dtype=torch.bfloat16, shape=(3, 8, head_size)
+    )
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (10, 3))
+    with pytest.raises(ValueError, match=reason):
+        fa4_backend.flash_attention(query, query, query, None, None, 1.0)
+    assert "FLASH_ATTENTION_HD256_GENERIC_BWD" not in os.environ
+
+
+def test_b300_backward_requirement_is_not_cached(monkeypatch):
+    query = SimpleNamespace(
+        device=torch.device("cuda:2"), dtype=torch.bfloat16, shape=(1, 8, 3, 256)
+    )
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (10, 3))
+    monkeypatch.setattr(fa4_backend, "_flash_attention_function", Mock(return_value=object()))
+    assert (
+        adapter._select_attention_backend("auto", query, query, query)
+        is adapter.optimized_attention
+    )
+    monkeypatch.setenv("FLASH_ATTENTION_HD256_GENERIC_BWD", "1")
+    assert (
+        adapter._select_attention_backend("auto", query, query, query)
+        is fa4_backend.flash_attention
+    )
+    monkeypatch.delenv("FLASH_ATTENTION_HD256_GENERIC_BWD")
+    assert (
+        adapter._select_attention_backend("auto", query, query, query)
+        is adapter.optimized_attention
+    )
 
 
 @pytest.mark.parametrize(

@@ -8,6 +8,7 @@ from typing import Any
 import torch
 from transformers import AttentionInterface
 
+from minisgl.training.attention._fa4_support import fa4_unsupported_reason
 from minisgl.training.attention.torch import attention
 from minisgl.training.attention.torch_optimized import attention as optimized_attention
 from minisgl.training.trace import Trace
@@ -44,16 +45,22 @@ def _select_attention_backend(
     # FA4 requires matching low-precision inputs; Torch also handles mixed dtypes.
     head_size = query.shape[-1]
     if (
-        query.dtype in (torch.float16, torch.bfloat16)
-        and key.dtype == query.dtype == value.dtype
-        and 8 <= head_size <= 256
-        and head_size % 8 == 0
-        and torch.cuda.get_device_capability(query.device)[0] == 9
+        query.dtype not in (torch.float16, torch.bfloat16)
+        or key.dtype != query.dtype
+        or value.dtype != query.dtype
     ):
-        flash_backend = _load_optional_flash_attention()
-        if flash_backend is not None:
-            return flash_backend
-    return optimized_attention
+        return optimized_attention
+    capability = torch.cuda.get_device_capability(query.device)
+    if fa4_unsupported_reason(capability, head_size) is not None:
+        return optimized_attention
+    flash_backend = _load_optional_flash_attention()
+    if flash_backend is None:
+        return optimized_attention
+    from minisgl.training.attention.fa4.backend import _flash_device_unsupported_reason
+
+    if _flash_device_unsupported_reason(query.device, capability) is not None:
+        return optimized_attention
+    return flash_backend
 
 
 def replay_attention(
