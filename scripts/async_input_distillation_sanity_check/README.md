@@ -19,6 +19,8 @@ the cells from top to bottom. Defaults are:
 - teacher/student: `Qwen/Qwen3.5-4B` and `Qwen/Qwen3.5-0.8B`;
 - correction after 16 generated tokens;
 - 512-token generation budget;
+- FP16 for the notebook's Turing-compatible path (`bfloat16` remains the helper default);
+- sequential AdamW updates on the low-memory path (`foreach=None` remains the helper default);
 - at most 100 optimizer updates at learning rate `1e-6`.
 
 The teacher must answer correctly before training begins. Training uses teacher forcing
