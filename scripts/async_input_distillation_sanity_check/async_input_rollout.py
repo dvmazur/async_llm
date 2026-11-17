@@ -67,6 +67,7 @@ async def generate(args):
     llm = AsyncLLM(
         args.model,
         dtype=torch.bfloat16,
+        attention_backend="fi",
         max_running_req=1,
         memory_ratio=args.memory_ratio,
         page_size=args.page_size,
@@ -79,9 +80,17 @@ async def generate(args):
     injection_step = None
     try:
         prompt, output = await asyncio.gather(llm.create_block(), llm.create_block())
-        initial = (
-            "Please reason step by step, and put your final answer within \\boxed{}.\n\n"
+        problem = (
+            "Solve the problem in at most five short reasoning steps. Additional information "
+            "may arrive while you work; apply it before finalizing. Do not restate or audit "
+            "your instructions. Put the final answer within \\boxed{}.\n\n"
             + shards[0]
+        )
+        initial = tokenizer.apply_chat_template(
+            [{"role": "user", "content": problem}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
         )
         await llm.forward(encode(initial, tokenizer), write_to=prompt, return_logits=False)
         newline = tokenizer.encode("\n", add_special_tokens=False)[-1]
@@ -89,6 +98,11 @@ async def generate(args):
 
         for step in range(args.max_tokens):
             if injection_step is None and step == args.k_steps:
+                # Commit the last sampled token before inserting external input.
+                # Its next token is the correction, so this decode row is intentionally
+                # not supervised as a model-generated continuation.
+                if context.next_input_id is not None:
+                    await llm.forward(cache_view=context, return_logits=False)
                 injection_step = trace.steps
                 correction = INJECTION_PREFIX + shards[1] + "\n\n"
                 await llm.forward(
@@ -97,6 +111,22 @@ async def generate(args):
                     write_to=prompt,
                     return_logits=False,
                 )
+                # Also append the arriving text at the live end of the reasoning
+                # stream. Updating only the earlier prompt block changes its memory
+                # view but does not present the correction at the current dialogue turn.
+                result = await llm.forward(
+                    encode(correction, tokenizer),
+                    cache_view=[prompt, output],
+                    write_to=output,
+                )
+                token = int(result.logits.argmax().item())
+                sampled[trace.num_tokens - 1] = (
+                    token,
+                    result.logits.float().log_softmax(-1)[token].item(),
+                )
+                generated.append(token)
+                context.next_input_id = token
+                continue
 
             batch_cursor = len(trace.batches)
             position = output.num_tokens
