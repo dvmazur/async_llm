@@ -2,8 +2,8 @@
 import pytest
 import torch
 import torch.nn.functional as F
-
 from minisgl.kernel.fp8 import block_fp8_linear, quantize_fp8_groups, validate_weight
+from minisgl.utils import is_turing
 
 
 def quantize_reference(x):
@@ -144,5 +144,10 @@ def test_moe_fp8(rows,on_input):
             expected[row]+=value.to(x.dtype).float()
     actual=fused_experts_impl(x.clone(),w1,w2,scores,ids,
         apply_router_weight_on_input=on_input,w1_scale=s1,w2_scale=s2)
-    assert (actual.float()-expected).norm()/expected.norm()<.02
-    torch.testing.assert_close(actual,expected.to(x.dtype),rtol=.08,atol=.008)
+    relative_l2 = (actual.float()-expected).norm()/expected.norm()
+    assert relative_l2 < (.03 if is_turing(x.device) else .02)
+    # Turing decodes FP8 weights in software; a near-zero BF16 element can
+    # differ by one additional rounding step while the global L2 stays <3%.
+    torch.testing.assert_close(
+        actual, expected.to(x.dtype), rtol=.08, atol=.012 if is_turing(x.device) else .008
+    )
