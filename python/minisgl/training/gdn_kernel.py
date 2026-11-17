@@ -152,10 +152,24 @@ LAUNCH: dict[str, tuple[str, int, int]] = {
     "columns_backward": ("tf32x3", 8, 2),
     "prepare_backward": ("ieee", 8, 2),
 }
+LAUNCH_SM90: dict[str, tuple[str, int, int]] = {
+    "prepare": ("tf32x3", 4, 3),
+    "states": ("tf32x3", 4, 1),
+    "read": ("tf32x3", 4, 3),
+    "read_state": ("ieee", 8, 1),
+    "read_query": ("tf32x3", 8, 3),
+    "states_backward": ("tf32x3", 4, 1),
+    "columns_backward": ("tf32x3", 8, 4),
+    "prepare_backward": ("tf32x3", 4, 1),
+}
+
+
+def _launch_table(device: torch.device) -> dict[str, tuple[str, int, int]]:
+    return LAUNCH_SM90 if torch.cuda.get_device_capability(device) == (9, 0) else LAUNCH
 
 
 def _launch(name: str, device: torch.device) -> dict[str, Any]:
-    precision, warps, stages = LAUNCH[name]
+    precision, warps, stages = _launch_table(device)[name]
     if torch.cuda.get_device_capability(device) < (8, 0):
         precision, stages = "ieee", 1
     return {"PRECISION": precision, "num_warps": warps, "num_stages": stages}
