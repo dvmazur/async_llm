@@ -87,6 +87,7 @@ def record_rollout(
     index: int = 0,
     k_steps: int = 32,
     max_tokens: int = 512,
+    precision: str = "bfloat16",
 ) -> Path:
     """Generate one rollout whose second problem shard arrives during decoding."""
     if directory.exists():
@@ -112,6 +113,8 @@ def record_rollout(
             str(k_steps),
             "--max-tokens",
             str(max_tokens),
+            "--precision",
+            precision,
             "--memory-ratio",
             "0.7",
             "--output",
@@ -122,9 +125,10 @@ def record_rollout(
     return trace
 
 
-# Only these two small adapters are needed for differentiable BF16 parameter substitution.
+# Only these two small adapters are needed for differentiable low-precision
+# parameter substitution.
 class TrainingStep(torch.nn.Module):
-    """Compute the loss and backward before BF16 parameter substitution ends."""
+    """Compute loss/backward before low-precision parameter substitution ends."""
 
     def __init__(self, model: PreTrainedModel) -> None:
         super().__init__()
@@ -151,9 +155,21 @@ class TraceEvaluation(torch.nn.Module):
         return {key: float(result[key]) for key in ("loss", "accuracy")}
 
 
-def run_bf16(module: torch.nn.Module, replay: Replay, targets: torch.Tensor) -> Any:
-    """Use BF16 parameters temporarily while keeping the FP32 master weights."""
-    weights = {name: p.to(torch.bfloat16) for name, p in module.named_parameters()}
+def precision_dtype(precision: str) -> torch.dtype:
+    if precision not in {"bfloat16", "float16"}:
+        raise ValueError(f"Unsupported precision: {precision}")
+    return getattr(torch, precision)
+
+
+def run_low_precision(
+    module: torch.nn.Module,
+    replay: Replay,
+    targets: torch.Tensor,
+    precision: str,
+) -> Any:
+    """Use low-precision parameters temporarily while keeping FP32 master weights."""
+    dtype = precision_dtype(precision)
+    weights = {name: p.to(dtype) for name, p in module.named_parameters()}
     return functional_call(module, weights, (replay, targets), tie_weights=True)
 
 
@@ -195,10 +211,15 @@ def load_student(
 
 
 def evaluate_student(
-    model: PreTrainedModel, replay: Replay, targets: torch.Tensor
+    model: PreTrainedModel,
+    replay: Replay,
+    targets: torch.Tensor,
+    precision: str = "bfloat16",
 ) -> dict[str, float]:
     with torch.no_grad():
-        result: dict[str, float] = run_bf16(TraceEvaluation(model.eval()), replay, targets)
+        result: dict[str, float] = run_low_precision(
+            TraceEvaluation(model.eval()), replay, targets, precision
+        )
     return result
 
 
@@ -207,7 +228,13 @@ def has_overfit(result: dict[str, float]) -> bool:
 
 
 def train_from_trace(
-    trace: Path, model_name: str, output: Path, steps: int, lr: float
+    trace: Path,
+    model_name: str,
+    output: Path,
+    steps: int,
+    lr: float,
+    precision: str = "bfloat16",
+    optimizer_foreach: bool | None = None,
 ) -> dict[str, Any]:
     if output.exists() or steps < 1 or not 0 < lr < float("inf"):
         raise ValueError("Use a new output path and positive steps/lr")
@@ -218,20 +245,20 @@ def train_from_trace(
     torch.backends.cuda.matmul.allow_tf32 = False
     model, replay, targets, tokenizer = load_student(trace, model_name)
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    initial = final = evaluate_student(model, replay, targets)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, foreach=optimizer_foreach)
+    initial = final = evaluate_student(model, replay, targets, precision)
     history = [{"step": 0, **initial}]
     print(f"initial: {initial}", flush=True)
     step = 0
     while step < steps and not has_overfit(final):
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        run_bf16(TrainingStep(model), replay, targets)
+        run_low_precision(TrainingStep(model), replay, targets, precision)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
         optimizer.step()
         step += 1
         if step % 5 == 0 or step == steps:
-            final = evaluate_student(model, replay, targets)
+            final = evaluate_student(model, replay, targets, precision)
             history.append({"step": step, **final})
             print(f"step {step}: {final}", flush=True)
     checkpoint = output / "checkpoint"
@@ -246,7 +273,8 @@ def train_from_trace(
         "checkpoint": str(checkpoint.resolve()),
         "teacher_sha256": source_hash,
         "lr": lr,
-        "precision": "BF16 forward / FP32 master weights and AdamW",
+        "precision": f"{precision} forward / FP32 master weights and AdamW",
+        "optimizer_foreach": optimizer_foreach,
         "seed": 7,
     }
     (output / "metrics.json").write_text(json.dumps(metrics, indent=2, allow_nan=False))
@@ -262,7 +290,10 @@ def fit_student(
     *,
     steps: int = 100,
     lr: float = 1e-6,
+    precision: str = "bfloat16",
+    optimizer_foreach: bool | None = None,
 ) -> dict[str, Any]:
+    foreach = "auto" if optimizer_foreach is None else str(optimizer_foreach).lower()
     run_process(
         root,
         gpu,
@@ -276,6 +307,10 @@ def fit_student(
             str(steps),
             "--lr",
             str(lr),
+            "--precision",
+            precision,
+            "--optimizer-foreach",
+            foreach,
         ],
         directory.parent / "training.log",
     )
@@ -283,7 +318,13 @@ def fit_student(
 
 
 def verify_checkpoint(
-    root: Path, gpu: str, teacher_trace: Path, checkpoint: Path, destination: Path
+    root: Path,
+    gpu: str,
+    teacher_trace: Path,
+    checkpoint: Path,
+    destination: Path,
+    *,
+    precision: str = "bfloat16",
 ) -> dict[str, float]:
     run_process(
         root,
@@ -294,6 +335,8 @@ def verify_checkpoint(
             str(teacher_trace),
             str(checkpoint),
             str(destination),
+            "--precision",
+            precision,
         ],
         destination.with_suffix(".log"),
     )
@@ -438,6 +481,9 @@ def compare_rollouts(
         key: teacher[key] == student[key]
         for key in ("prompt", "problem_shards", "answer", "k_steps", "output_tokens", "targets")
     }
+    fields["precision"] = teacher.get("precision", "bfloat16") == student.get(
+        "precision", "bfloat16"
+    )
     left, right = normalize_trace(teacher["trace"]), normalize_trace(student["trace"])
     fields["execution_trace"] = left == right
     report = {
@@ -467,12 +513,31 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("output", type=Path)
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-6)
+    parser.add_argument(
+        "--precision", choices=("bfloat16", "float16"), default="bfloat16"
+    )
+    parser.add_argument(
+        "--optimizer-foreach", choices=("auto", "true", "false"), default="auto"
+    )
     args = parser.parse_args(argv)
+    optimizer_foreach = {
+        "auto": None,
+        "true": True,
+        "false": False,
+    }[args.optimizer_foreach]
     if args.mode == "train":
-        train_from_trace(args.trace, args.model, args.output, args.steps, args.lr)
+        train_from_trace(
+            args.trace,
+            args.model,
+            args.output,
+            args.steps,
+            args.lr,
+            args.precision,
+            optimizer_foreach,
+        )
     else:
         model, replay, targets, _ = load_student(args.trace, args.model)
-        result = evaluate_student(model, replay, targets)
+        result = evaluate_student(model, replay, targets, args.precision)
         args.output.write_text(json.dumps(result, allow_nan=False))
 
 

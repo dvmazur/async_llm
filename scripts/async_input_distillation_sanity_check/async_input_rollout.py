@@ -66,7 +66,7 @@ async def generate(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     llm = AsyncLLM(
         args.model,
-        dtype=torch.bfloat16,
+        dtype=getattr(torch, args.precision),
         attention_backend="fi",
         max_running_req=1,
         memory_ratio=args.memory_ratio,
@@ -153,6 +153,7 @@ async def generate(args):
             "dataset_split": args.split,
             "dataset_index": args.index,
             "k_steps": args.k_steps,
+            "precision": args.precision,
             "injection_trace_step": injection_step,
             "trace": asdict(trace),
             "targets": targets,
@@ -185,6 +186,9 @@ def main():
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--k-steps", type=int, default=32)
     parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument(
+        "--precision", choices=("bfloat16", "float16"), default="bfloat16"
+    )
     parser.add_argument("--memory-ratio", type=float, default=0.7)
     parser.add_argument("--page-size", type=int, default=1)
     parser.add_argument("--distributed-port", type=int, default=2361)
