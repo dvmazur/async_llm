@@ -15,9 +15,9 @@ stream with an asynchronous input, not Hogwild and not the thinker/writer demo.
 Open `simple_distillation.ipynb`, select an idle GPU with at least 12 GiB free, and run
 the cells from top to bottom. Defaults are:
 
-- dataset: `MrDarkTesla/math_500_sharded`, `train`, row 0;
-- teacher/student: `Qwen/Qwen3-4B` and `Qwen/Qwen3-0.6B`;
-- correction after 32 generated tokens;
+- dataset: `MrDarkTesla/math_500_sharded`, `train`, row 3;
+- teacher/student: `Qwen/Qwen3.5-4B` and `Qwen/Qwen3.5-0.8B`;
+- correction after 16 generated tokens;
 - 512-token generation budget;
 - at most 100 optimizer updates at learning rate `1e-6`.
 

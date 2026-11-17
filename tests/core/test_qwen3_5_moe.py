@@ -156,6 +156,14 @@ def test_qwen3_5_moe_config_and_registry(monkeypatch):
     assert type(dense_model) is Qwen3_5ForCausalLM
     assert all(isinstance(layer.mlp, GatedMLP) for layer in dense_model.model.layers.op_list)
 
+    # Text-only checkpoints saved by Transformers use this architecture name.
+    saved_dense_config = replace(dense_config, architectures=["Qwen3_5ForCausalLM"])
+    with torch.device("meta"):
+        saved_dense_model = get_model_class(
+            saved_dense_config.architectures[0], saved_dense_config
+        )
+    assert type(saved_dense_model) is Qwen3_5ForCausalLM
+
 
 def test_qwen3_5_moe_mlp_matches_transformers(monkeypatch):
     _set_single_rank_globals(monkeypatch)

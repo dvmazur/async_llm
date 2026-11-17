@@ -44,10 +44,23 @@ def run_process(root: Path, gpu: str, arguments: list[str], log: Path) -> None:
     )
     if int(free.strip()) < 12000:
         raise RuntimeError(f"GPU {gpu}: need at least 12000 MiB free")
-    env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu, "OMP_NUM_THREADS": "1"}
+    venv_bin = root / ".venv/bin"
+    cuda_home = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda"))
+    path = [str(venv_bin)]
+    if cuda_home.is_dir():
+        path.append(str(cuda_home / "bin"))
+    path.append(os.environ.get("PATH", ""))
+    env = {
+        **os.environ,
+        "CUDA_VISIBLE_DEVICES": gpu,
+        "OMP_NUM_THREADS": "1",
+        "PATH": ":".join(path),
+    }
+    if cuda_home.is_dir():
+        env["CUDA_HOME"] = str(cuda_home)
     env.setdefault("HF_HOME", str(Path.home() / ".cache/huggingface"))
     log.parent.mkdir(parents=True, exist_ok=True)
-    command = [str(root / ".venv/bin/python"), "-u", *arguments]
+    command = [str(venv_bin / "python"), "-u", *arguments]
     with log.open("w") as output:
         process = subprocess.Popen(
             command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
@@ -170,9 +183,9 @@ def load_student(
     ):
         raise ValueError("Invalid or misaligned token IDs/targets")
     replay = Replay.from_trace(trace)
-    config = AutoConfig.from_pretrained(model_name)
-    if config.model_type != "qwen3":
-        raise ValueError("This sanity check supports dense text Qwen3")
+    config = AutoConfig.from_pretrained(model_name).get_text_config()
+    if config.model_type not in {"qwen3", "qwen3_5_text"}:
+        raise ValueError("This sanity check supports dense text Qwen3/Qwen3.5")
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         config=config,
@@ -341,17 +354,21 @@ def check_async_behavior(example: dict[str, Any], tokenizer: PreTrainedTokenizer
             "\n\nADDITIONAL INFORMATION: " + example["problem_shards"][1] + "\n\n",
             add_special_tokens=False,
         )
-        injection = None
+        injections = []
         output_block = None
         for batch in trace.batches:
             for request in batch.requests:
                 if list(request.input_ids) == correction:
-                    injection = (batch.step, request.write_to, request.write_start)
+                    injections.append((batch.step, request.write_to, request.write_start))
                 if batch.kind == "decode" and output_block is None:
                     output_block = request.write_to
-        if injection is None or output_block is None:
-            raise ValueError("Cannot find correction prefill or generated output block")
-        injection_step, prompt_block, prompt_start = injection
+        if output_block is None:
+            raise ValueError("Cannot find generated output block")
+        prompt_routes = [item for item in injections if item[1] != output_block]
+        stream_routes = [item for item in injections if item[1] == output_block]
+        if len(prompt_routes) != 1 or len(stream_routes) != 1:
+            raise ValueError("Correction must be routed once to prompt and once to live output")
+        injection_step, prompt_block, prompt_start = prompt_routes[0]
         before = after = 0
         sees_extended_prompt = False
         for token, target in zip(trace.tokens, example["targets"], strict=True):
@@ -366,11 +383,7 @@ def check_async_behavior(example: dict[str, Any], tokenizer: PreTrainedTokenizer
                     for block, length in token.view
                 )
         checks = {
-            "one_correction": sum(
-                list(request.input_ids) == correction
-                for batch in trace.batches
-                for request in batch.requests
-            ) == 1,
+            "correction_routed_to_prompt_and_live_stream": len(injections) == 2,
             "injected_after_requested_decode_count": before == example["k_steps"],
             "generation_continues_after_correction": after > 0,
             "post_correction_decode_sees_extended_prompt": sees_extended_prompt,
