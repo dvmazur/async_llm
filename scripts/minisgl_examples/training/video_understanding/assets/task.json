@@ -1,0 +1,60 @@
+{
+  "dataset": "wangyueqian/ProactiveVideoQA",
+  "revision": "7f59bce2a6cdf40b8a895767aac7a52a92136c5f",
+  "subset": "VAD",
+  "annotation": {
+    "video": "Explosion016_x264.mp4",
+    "question_id": "Explosion016_x264.mp4",
+    "conversation": [
+      {
+        "role": "user",
+        "time": 0,
+        "content": "What suspicious or harmful activities, including unlawful, criminal behaviors or destructive accidents, are happening in the video?"
+      }
+    ],
+    "answer": [
+      {
+        "role": "assistant",
+        "content": "An explosion occurred in the distant building, and white smoke came out after a burst of fire.",
+        "related_timespan": [
+          6.0,
+          15.0
+        ],
+        "reply_timespan": [
+          6.0,
+          16.0
+        ],
+        "num_captions": 1
+      }
+    ],
+    "duration": 32.1
+  },
+  "video_sha256": "0672b58c87ec43c15e03f5a543f1b86f81852bc34756a6eb6dabf9080b7de42c",
+  "video_bytes": 4523207,
+  "archive_url": "https://huggingface.co/datasets/wangyueqian/ProactiveVideoQA/resolve/7f59bce2a6cdf40b8a895767aac7a52a92136c5f/VAD/videos.zip",
+  "zip_member": "Explosion016_x264.mp4",
+  "frames": [
+    {
+      "time": 2.0,
+      "path": "frame_00.png",
+      "sha256": "99639cc2a6b0048c980886a403d45642920cd7a597995c90fbb545b6615144db"
+    },
+    {
+      "time": 5.0,
+      "path": "frame_01.png",
+      "sha256": "a7509ce1adb8c54d170148b384cfe1f2603c42b5afb334f1e89925adf6c14505"
+    },
+    {
+      "time": 12.0,
+      "path": "frame_02.png",
+      "sha256": "f1b3d3083ec1057ca28dfd26dff09bffb38cd763823da526a5597f0b18af4b95"
+    },
+    {
+      "time": 14.0,
+      "path": "frame_03.png",
+      "sha256": "a1d691706d7e74d1285cb18b1ab7b101b21a934b3e08eefee428d03160d9d922"
+    }
+  ],
+  "expected_first_reply_frame": 2,
+  "description": "A short sampled-frame stream from the original video, not a full benchmark run."
+}
