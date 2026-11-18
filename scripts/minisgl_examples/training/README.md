@@ -29,6 +29,11 @@ report = isolated(demo.train_student, "Qwen/Qwen3-1.7B", example, "training_runs
 # Pass "training_runs/teacher.json" instead of example to train from disk.
 ```
 
+For the single-stream async-input mode, [corrections](corrections/README.md) mines a
+pinned sharded MATH dataset while injecting the second shard during generation. It
+reuses one inference engine across many rows and writes a multi-example file accepted
+directly by `sft train`.
+
 Import `distillation.demo` for the other schedule. Its training output directory
 contains a `checkpoint/` subdirectory. `student.py` shares HF loading, optimization
 and reload checks; `process.isolated` releases model memory between stages.
