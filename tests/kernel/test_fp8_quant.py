@@ -145,9 +145,7 @@ def test_moe_fp8(rows,on_input):
     actual=fused_experts_impl(x.clone(),w1,w2,scores,ids,
         apply_router_weight_on_input=on_input,w1_scale=s1,w2_scale=s2)
     relative_l2 = (actual.float()-expected).norm()/expected.norm()
-    assert relative_l2 < (.03 if is_turing(x.device) else .02)
-    # Turing decodes FP8 weights in software; a near-zero BF16 element can
-    # differ by one additional rounding step while the global L2 stays <3%.
+    assert relative_l2 < .02
     torch.testing.assert_close(
         actual, expected.to(x.dtype), rtol=.08, atol=.012 if is_turing(x.device) else .008
     )

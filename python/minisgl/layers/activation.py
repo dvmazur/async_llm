@@ -12,7 +12,7 @@ def _portable_gate_and_mul(
     out: torch.Tensor | None,
 ) -> torch.Tensor:
     gate, up = x.chunk(2, dim=-1)
-    result = activation(gate) * up
+    result = (activation(gate.float()) * up.float()).to(dtype=x.dtype)
     if out is not None:
         out.copy_(result)
         return out
@@ -29,9 +29,8 @@ def silu_and_mul(x: torch.Tensor, out: torch.Tensor | None = None):
 
 def gelu_and_mul(x: torch.Tensor, out: torch.Tensor | None = None):
     if x.is_cuda and is_turing(x.device):
-        return _portable_gate_and_mul(
-            x, lambda value: F.gelu(value, approximate="tanh"), out
-        )
+        return _portable_gate_and_mul(x, lambda value: F.gelu(value), out)
+
     from flashinfer import gelu_and_mul
 
     return gelu_and_mul(x, out=out)
