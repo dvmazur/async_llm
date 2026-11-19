@@ -1,14 +1,13 @@
 """Fallbacks remain functional, but their reason must be visible without CUDA."""
 import builtins
-from pathlib import Path
 import runpy
 import sys
-from types import SimpleNamespace
 import warnings
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
-
 from minisgl.moe.fused import _use_torch_moe_fallback
 
 
@@ -55,6 +54,17 @@ def test_gb10_guard_remains_explicit_and_does_not_import_extension(monkeypatch):
         return original(name, *args, **kwargs)
     monkeypatch.setattr(builtins, '__import__', forbidden)
     with pytest.warns(RuntimeWarning, match='SM121.*intentional'):
+        assert _use_torch_moe_fallback(torch.device('cuda:0'))
+
+
+def test_turing_guard_remains_explicit_and_does_not_import_extension(monkeypatch):
+    monkeypatch.setattr(torch.cuda, 'get_device_capability', lambda _: (7, 5))
+    original = builtins.__import__
+    def forbidden(name, *args, **kwargs):
+        assert name != 'sgl_kernel', 'Turing compatibility guard must run before extension import'
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', forbidden)
+    with pytest.warns(RuntimeWarning, match='SM75.*Turing'):
         assert _use_torch_moe_fallback(torch.device('cuda:0'))
 
 
