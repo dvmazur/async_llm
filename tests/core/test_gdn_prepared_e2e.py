@@ -15,7 +15,7 @@ from PIL import Image
 
 from minisgl.llm import AsyncLLM
 from minisgl.shared_cache import AsyncContext, WorkerGroup, PrefillJob
-from _gdn_reference import SharedCacheGDN as ReferenceGDN
+from tests.training._gdn_reference import SharedCacheGDN as ReferenceGDN
 
 
 MODEL = os.environ.get('MINISGL_E2E_MODEL', '')

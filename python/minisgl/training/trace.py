@@ -1,11 +1,23 @@
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Mapping
 from copy import copy
 from dataclasses import dataclass, field
 from itertools import groupby
+from typing import Any, Literal, TypedDict, overload
 
 import torch
+from typing_extensions import Unpack
 
 _IMAGE_INPUT_FIELDS = ("pixel_values", "image_grid_thw", "mm_token_type_ids")
+
+
+class _ReplayOptions(TypedDict, total=False):
+    query_chunk_size: int
+    gdn_segment_size: int
+    gdn_read_mode: Literal["expanded", "factorized"]
+    gdn_cache_reused: bool
+    gdn_read_backend: Literal["torch", "triton"]
+    attention_checkpointing: bool
+    cache_plans: bool
 
 
 def _validate_replay_options(
@@ -33,12 +45,12 @@ class Token:
 
 @dataclass(frozen=True)
 class TensorData:
-    data: tuple
+    data: tuple[bool | int | float | complex, ...]
     shape: tuple[int, ...]
     dtype: str
 
     @classmethod
-    def capture(cls, tensor):
+    def capture(cls, tensor: torch.Tensor | None) -> "TensorData | None":
         if tensor is None:
             return None
         return cls(
@@ -47,7 +59,7 @@ class TensorData:
             str(tensor.dtype).removeprefix("torch."),
         )
 
-    def to_tensor(self):
+    def to_tensor(self) -> torch.Tensor:
         dtype = getattr(torch, self.dtype, None)
         if not isinstance(dtype, torch.dtype):
             raise ValueError(f"Unknown tensor dtype: {self.dtype}")
@@ -126,7 +138,7 @@ class Trace:
         self._gdn, self._attention = {}, {}
 
     @torch.inference_mode(False)
-    def to(self, device: torch.device | str = "cpu", **options) -> "Trace":
+    def to(self, device: torch.device | str = "cpu", **options: Unpack[_ReplayOptions]) -> "Trace":
         """Prepare trace metadata on a device, optionally changing replay settings.
 
         Supported settings are query_chunk_size, attention_checkpointing,
@@ -277,7 +289,24 @@ class Trace:
         self._num_tokens = len(tokens)
         return self
 
-    def compute_source_spans(self, version, start, end, with_rope=False):
+    @overload
+    def compute_source_spans(
+        self, version: int, start: int, end: int, with_rope: Literal[False] = False
+    ) -> Iterator[tuple[int, int, int]]: ...
+
+    @overload
+    def compute_source_spans(
+        self, version: int, start: int, end: int, with_rope: Literal[True]
+    ) -> Iterator[tuple[int, int, int, int]]: ...
+
+    @overload
+    def compute_source_spans(
+        self, version: int, start: int, end: int, with_rope: bool
+    ) -> Iterator[tuple[int, int, int] | tuple[int, int, int, int]]: ...
+
+    def compute_source_spans(
+        self, version: int, start: int, end: int, with_rope: bool = False
+    ) -> Iterator[tuple[int, int, int] | tuple[int, int, int, int]]:
         self._prepare()
         stack = [(version, start, end, 0, 0)]
         while stack:
@@ -306,17 +335,17 @@ class Trace:
                         )
                     )
 
-    def append(self, batch):
+    def append(self, batch: ForwardBatch) -> None:
         """Append a recorded batch; keeps the token count without expanding requests."""
         self.batches.append(batch)
         self._num_tokens += sum(len(request.input_ids) for request in batch.requests)
 
     @property
-    def num_tokens(self):
+    def num_tokens(self) -> int:
         return self._num_tokens
 
     @property
-    def tokens(self):
+    def tokens(self) -> list[Token]:
         records = []
         for batch in self.batches:
             written = {request.write_to for request in batch.requests}
@@ -340,7 +369,7 @@ class Trace:
         return records
 
     @property
-    def multimodal(self):
+    def multimodal(self) -> bool:
         return any(
             request.pixel_values is not None
             or request.image_grid_thw is not None
@@ -353,7 +382,7 @@ class Trace:
         )
 
     @classmethod
-    def from_dict(cls, data):
+    def from_dict(cls, data: Mapping[str, Any]) -> "Trace":
         version = data.get("format_version")
         if type(version) is not int or version != 2:
             raise ValueError(f"Unsupported trace format_version: {version}")

@@ -4,8 +4,9 @@ from typing import TYPE_CHECKING
 
 import torch
 from minisgl.core import get_global_ctx
-from minisgl.layers import BaseOP, LinearOProj, LinearReplicated, RMSNorm
-from minisgl.utils import nvtx_annotate
+from minisgl.distributed import get_tp_info
+from minisgl.layers import BaseOP, LinearOProj, LinearQKVMerged, RMSNorm
+from minisgl.utils import div_even, nvtx_annotate
 
 if TYPE_CHECKING:
     from .config import ModelConfig
@@ -27,12 +28,14 @@ class Qwen3_5Attention(BaseOP):
     and a sigmoid output gate (q_proj is 2x width, the second half is the gate).
 
     The fused ``qkv_proj`` is produced by the standard weight merge of the checkpoint's
-    separate ``q_proj`` (2x), ``k_proj`` and ``v_proj``. (tp=1 only for v1.)
+    separate ``q_proj`` (2x), ``k_proj`` and ``v_proj``. TP partitions whole
+    query/gate head pairs and KV heads; the output projection reduces ranks.
     """
 
     def __init__(self, config: ModelConfig, kv_idx: int):
-        self.num_qo_heads = config.num_qo_heads
-        self.num_kv_heads = config.num_kv_heads
+        tp_size = get_tp_info().size
+        self.num_qo_heads = div_even(config.num_qo_heads, tp_size)
+        self.num_kv_heads = div_even(config.num_kv_heads, tp_size, allow_replicate=True)
         self.head_dim = config.head_dim
         self.qo_dim = self.num_qo_heads * self.head_dim
         self.kv_dim = self.num_kv_heads * self.head_dim
@@ -43,12 +46,15 @@ class Qwen3_5Attention(BaseOP):
         self._inv_freq: torch.Tensor | None = None
 
         # qkv_proj output layout: [q+gate (2*qo_dim) | k (kv_dim) | v (kv_dim)]
-        self.qkv_proj = LinearReplicated(
-            config.hidden_size, 2 * self.qo_dim + 2 * self.kv_dim, has_bias=False
+        self.qkv_proj = LinearQKVMerged(
+            config.hidden_size, config.head_dim, 2 * config.num_qo_heads,
+            config.num_kv_heads, has_bias=False,
         )
         self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps, weight_plus_one=True)
         self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps, weight_plus_one=True)
-        self.o_proj = LinearOProj(self.qo_dim, config.hidden_size, has_bias=False)
+        self.o_proj = LinearOProj(
+            config.num_qo_heads * config.head_dim, config.hidden_size, has_bias=False,
+        )
 
     def _apply_rope(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
         # x: (T, num_heads, head_dim); rotate the first `rotary_dim` dims (neox style).

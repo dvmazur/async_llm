@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from copy import copy, deepcopy
 from types import MethodType
 from typing import TYPE_CHECKING
@@ -14,10 +14,13 @@ from .gdn import replay_gdn
 from .trace import Trace
 
 if TYPE_CHECKING:
+    from minisgl.engine import Engine
     from minisgl.llm import AsyncLLM
 
 
-def _rows(rows, count, device):
+def _rows(
+    rows: Sequence[int] | torch.Tensor | None, count: int, device: torch.device
+) -> torch.Tensor | None:
     if rows is None:
         return None
     if not isinstance(rows, (torch.Tensor, Sequence)) or isinstance(rows, (str, bytes)):
@@ -40,7 +43,9 @@ def _rows(rows, count, device):
     return rows
 
 
-def _forward(model, trace, rows, hidden_only):
+def _forward(
+    model: torch.nn.Module, trace: Trace, rows: torch.Tensor | None, hidden_only: bool
+) -> torch.Tensor:
     if model.config.model_type not in {"qwen3", "qwen3_5_text", "qwen3_5"}:
         raise ValueError("Only dense text Qwen3 and Qwen3.5 are supported")
     backbone = model.model
@@ -111,7 +116,7 @@ def _forward(model, trace, rows, hidden_only):
 class _LiveModel(torch.nn.Module):
     """HF operations with meta parameters, bound to live engine weights per call."""
 
-    def __init__(self, engine, weights):
+    def __init__(self, engine: Engine, weights: Mapping[str, torch.Tensor]) -> None:
         super().__init__()
         from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
 
@@ -169,10 +174,16 @@ class _LiveModel(torch.nn.Module):
             weight.requires_grad_(True)
         self._source_weights = dict(weights)
 
-    def forward(self, trace, rows, hidden_only):
+    def forward(self, trace: Trace, rows: torch.Tensor | None, hidden_only: bool) -> torch.Tensor:
         return _forward(self.model, trace, rows, hidden_only)
 
-    def run(self, weights, trace, rows, hidden_only):
+    def run(
+        self,
+        weights: Mapping[str, torch.Tensor],
+        trace: Trace,
+        rows: torch.Tensor | None,
+        hidden_only: bool,
+    ) -> torch.Tensor:
         for name, weight in weights.items():
             if self._source_weights.get(name) is not weight:
                 weight.requires_grad_(True)
@@ -194,7 +205,7 @@ class _LiveModel(torch.nn.Module):
         )
 
 
-def _live_model(llm):
+def _live_model(llm: AsyncLLM) -> tuple[_LiveModel, dict[str, torch.Tensor], torch.device]:
     if getattr(llm.async_engine, "has_work", False):
         raise RuntimeError("Finish pending AsyncLLM requests before replay_trace")
     engine = llm.engine

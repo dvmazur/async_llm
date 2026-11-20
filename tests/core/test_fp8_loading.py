@@ -9,7 +9,7 @@ from minisgl.models.weight import load_weight, _shard_tensor, _get_expert_stack_
 
 
 def config_for_checkpoint(path):
-    from test_qwen3_5_moe import _tiny_hf_config
+    from tests.core.test_qwen3_5_moe import _tiny_hf_config
     config=_tiny_hf_config()
     config.quantization_config=dict(quant_method='fp8',fmt='e4m3',activation_scheme='dynamic',
                                     weight_block_size=[128,128])
@@ -56,8 +56,12 @@ def test_scale_sharding_matches_blocks():
         scales=torch.arange(2*4*4).reshape(2,4,4)
         values=scales.repeat_interleave(128,-2).repeat_interleave(128,-1)
         for name in ['experts.gate_up_proj','experts.down_proj']:
-            a=_shard_tensor('model.layers.0.mlp.'+name,values,r,2,2)
-            b=_shard_tensor('model.layers.0.mlp.'+name+'_scale_inv',scales,r,2,2)
+            config = SimpleNamespace(
+                moe_intermediate_size=256 if 'gate_up' in name else 512,
+                weight_block_size=128,
+            )
+            a=_shard_tensor('model.layers.0.mlp.'+name,values,r,2,config)
+            b=_shard_tensor('model.layers.0.mlp.'+name+'_scale_inv',scales,r,2,config)
             assert torch.equal(a,b.repeat_interleave(128,-2).repeat_interleave(128,-1))
     assert _get_expert_stack_info('model.layers.0.mlp.experts.2.gate_up_proj.weight_scale_inv') == ('model.layers.0.mlp.experts.gate_up_proj_scale_inv',2)
 
