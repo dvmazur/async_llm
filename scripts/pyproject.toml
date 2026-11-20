@@ -18,6 +18,7 @@ async-thoughts = "minisgl_examples.demos.async_thoughts.__main__:main"
 parallel-thinking = "minisgl_examples.training.parallel_thinking.demo:main"
 async-distillation = "minisgl_examples.training.distillation.demo:main"
 minisgl-sft = "minisgl_examples.training.sft:main"
+minisgl-sft-hf = "minisgl_examples.training.sft_hf:main"
 minisgl-stress = "minisgl_examples.training.stress:main"
 
 [tool.setuptools.packages.find]
