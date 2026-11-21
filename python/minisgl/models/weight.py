@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import glob
+import os
 import re
 from typing import Dict, Iterator, Tuple
 
@@ -127,6 +128,12 @@ def load_weight(model_path: str, device: torch.device, *,
     and on device. Peak CPU memory: one full tensor + a small merge buffer."""
     from .config import ModelConfig
 
+    # Keep the historical backend for simulation/older safetensors versions.
+    # H100 live launches opt into pread: large reads avoid mmap page-fault I/O.
+    backend = os.environ.get("MINISGL_WEIGHT_BACKEND", "mmap")
+    if backend not in ("mmap", "pread"):
+        raise ValueError(f"Unsupported weight backend: {backend}")
+    reader_options = {"backend": backend} if backend != "mmap" else {}
     model_folder = download_hf_weight(model_path)
     hf_config = cached_load_hf_config(model_path)
     config = ModelConfig.from_hf(hf_config)
@@ -149,8 +156,10 @@ def load_weight(model_path: str, device: torch.device, *,
     # Buffer for merge groups: merged_key -> {slot: tensor}
     merge_buf: Dict[str, Dict[str, torch.Tensor]] = {}
     expert_buf: Dict[str, Dict[int, torch.Tensor]] = {}
+    if tp_info.is_primary():
+        print(f"Weight reader: {backend}", flush=True)
     for file in tqdm(files, desc="Loading weights", disable=not tp_info.is_primary()):
-        with safetensors.safe_open(file, framework="pt", device=str(device)) as f:
+        with safetensors.safe_open(file, framework="pt", device=str(device), **reader_options) as f:
             for name in f.keys():
                 # Strip multimodal wrapper prefix, skip vision/projector weights
                 if name.startswith(("vision_tower.", "multi_modal_projector.")):

@@ -48,8 +48,26 @@ class LocalGrid:
         self.rgb=np.zeros((*self.odds.shape,3),dtype=np.float32)
         self.rgb_seen=np.full(self.odds.shape,-np.inf,dtype=float)
 
+    def recenter(self, xy):
+        """Move a rolling grid in integer cells, preserving measured overlap."""
+        center=self.origin+self.width*self.resolution/2
+        delta=np.asarray(xy)-center
+        if np.max(np.abs(delta))<self.width*self.resolution/4:return
+        shift=np.rint(delta/self.resolution).astype(int)
+        for name,fill in (("odds",0),("seen",-np.inf),("rgb",0),("rgb_seen",-np.inf)):
+            old=getattr(self,name);new=np.full_like(old,fill)
+            dx,dy=map(int,shift)
+            if abs(dx)<self.width and abs(dy)<self.width:
+                sx=slice(max(0,dx),min(self.width,self.width+dx))
+                sy=slice(max(0,dy),min(self.width,self.width+dy))
+                tx=slice(max(0,-dx),min(self.width,self.width-dx))
+                ty=slice(max(0,-dy),min(self.width,self.width-dy))
+                new[ty,tx]=old[sy,sx]
+            setattr(self,name,new)
+        self.origin+=shift*self.resolution
+
     def index(self,points):
-        cells=np.floor((np.asarray(points)-self.origin)/self.resolution).astype(int)
+        cells=np.floor((np.asarray(points)-self.origin)/self.resolution+1e-9).astype(int)
         valid=np.all((cells>=0)&(cells<self.width),axis=-1)
         return cells,valid
 

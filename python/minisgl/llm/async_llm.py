@@ -84,9 +84,11 @@ class AsyncLLM:
         engine: "Engine | None" = None,
         async_engine: Optional[AsyncCacheEngine] = None,
         dtype: torch.dtype = torch.bfloat16,
+        sample_forward_token: bool = False,
         **engine_kwargs,
     ):
         self._owns_engine = False
+        self.sample_forward_token = sample_forward_token
         if async_engine is None:
             if engine is None:
                 assert model_path is not None, "AsyncLLM needs a model_path, an engine, or an async_engine"
@@ -302,7 +304,8 @@ class AsyncLLM:
         logits row (or ``None``).  The engine-sampled token is discarded —
         ``forward`` callers do their own selection on the logits."""
         self._ensure_loop()
-        future = self.async_engine.submit_decode(ctx, input_id, return_logits=return_logits)
+        future = self.async_engine.submit_decode(ctx, input_id, return_logits=return_logits,
+                                                 sample_token=self.sample_forward_token)
         self._work_event.set()
         result = await future
         return result[1] if return_logits else None

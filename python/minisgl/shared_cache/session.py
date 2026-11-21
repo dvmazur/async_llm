@@ -871,9 +871,9 @@ class SharedCacheSession:
         types = job.mm_token_type_ids.flatten().to(dtype=torch.int64).cpu()
         rel_pos = self._mrope_rel(ids, types, job.image_grid_thw)
         visual = self.engine.model.model.visual
-        embeds = visual.forward(
-            job.pixel_values.to(self.device), job.image_grid_thw.to(self.device)
-        )
+        from .vision_cache import cached_vision
+        embeds = cached_vision(visual,job.pixel_values.to(self.device),
+            job.image_grid_thw.to(self.device),self._model_config.vision_config.spatial_merge_size)
         assert embeds.shape[0] == int((types == 1).sum()), (
             f"tower produced {embeds.shape[0]} embeddings for "
             f"{int((types == 1).sum())} image tokens"

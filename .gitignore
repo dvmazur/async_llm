@@ -1,52 +1,53 @@
-# pycache
+# Python caches, packages, virtual environments and builds
 __pycache__/
 *.py[cod]
 *$py.class
-
-# installed packages
 *.dist-info/
 *.egg-info/
-
-# json files
-*.json
-*.jsonl
-
-# profiling data
-*.nsys-rep
-*.ncu-rep
-
-# binaries
-build/
-dist/
-*.tar.gz
-
-# virtual environment
 .venv/
 venv/
 env/
+build/
+dist/
 
-# clangd config
-.clangd
-
-# .vscode
-.vscode/
+# Test, coverage and lint output
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .coverage
+.coverage.*
+htmlcov/
 
-# local Doom experiment
+# Local editor and machine configuration
+.DS_Store
+.clangd
+.vscode/
+*.swp
+*.orig
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Logs, profiling captures and model weights
+*.log
+*.jsonl
+*.nsys-rep
+*.ncu-rep
+*.safetensors
+*.gguf
+*.tar.gz
+*.tgz
+
+# Local Doom experiments
 /scripts/doom_basic/deadly_corridor_probe.ipynb
 /scripts/doom_basic/output/
 /_vizdoom.ini
 /_vizdoom/
 
-# Robot runtime and experiment logs
+# Rover runtime, generated results, recordings and local launcher backups
 /robot_sim/.runtime/
 /robot_sim/results/
-
-
-# Keep source configuration despite the upstream blanket JSON ignore.
-!/rover_urdf/*.json
-!/mujoco_scene/*.json
-!/robot_sim/direct_tasks/*.json
-!/robot_sim/evaluation_tasks/*.json
-!/robot_sim/models/yandex_rover/specification.json
-.DS_Store
+/robot_sim/scripts/rover-qwen.sh.before-*
+*.mcap
+*.bag

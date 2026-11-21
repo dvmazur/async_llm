@@ -96,7 +96,8 @@ class Qwen3_5Model(BaseOP):
         # in order, so several requests' images concatenate like several images of one.
         image_embeds = batch.image_embeds
         if image_embeds is None and pixel_values is not None:
-            image_embeds = self.visual.forward(pixel_values, image_grid_thw)  # (n_img, hidden)
+            from minisgl.shared_cache.vision_cache import cached_vision
+            image_embeds = cached_vision(self.visual,pixel_values,image_grid_thw,self.config.vision_config.spatial_merge_size)
         if image_embeds is not None:
             assert mm_token_type_ids is not None
             image_mask = mm_token_type_ids == 1  # 0 - text, 1 - image, 2 - video, etc

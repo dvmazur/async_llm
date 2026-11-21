@@ -65,24 +65,13 @@ class GDNPrefillBuffers(GDNDecodeBuffers):
                             self.cu, self.row_worker, self.row_local, self.conv_output)
 
     def core_and_capture(self, layer, q, k, v, g, beta, initial, use_fla, torch_chunk):
-        if not use_fla:
-            out = self.core(q, k, v, g, beta, initial, False, torch_chunk)
-            self.capture_prefill(layer, k, v, g.exp(), beta)
-            return out
-        self.prefill_count += 1
-        pack_initial(self.read_ptrs[layer], initial, self.joint_initial, self.cu)
-        self.joint_values[0, ..., :self.dv].copy_(v)
-        self.joint_values[0, ..., self.dv + self.dk:].copy_(v)
-        # One installed FLA pass, NOT a second FP32 affine pass. Its operands
-        # (including those updating A/B) use activation dtype, normally BF16;
-        # accumulation is FP32; final A/B use the configured state storage dtype.
-        # This changes capture numerics from
-        # the old FP32 token scan; external model parity is the quality gate.
-        out, final = chunk_gdn(q[None], k[None], self.joint_values, g[None], beta[None],
-                               self.joint_initial, self.cu, self.chunk_indices,
-                               self.chunk_offsets, output_final_state=True, skip_empty_states=True)
-        store_affines(self.write_ptrs[layer], final, self.dv)
-        return out[0, ..., :self.dv].contiguous()
+        # Match the eager recurrence: retain FP32 affine capture separately.
+        # Folding A/B into BF16 FLA operands changes the state later branches
+        # compose, even if the current output looks close. CUDA graph capture
+        # removes host overhead without requiring that arithmetic change.
+        out=self.core(q,k,v,g,beta,initial,use_fla,torch_chunk)
+        self.capture_prefill(layer,k,v,g.exp(),beta)
+        return out
 
     def core(self, q, k, v, g, beta, initial, use_fla, torch_chunk):
         self.prefill_count += 1

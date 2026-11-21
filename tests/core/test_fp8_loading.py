@@ -88,3 +88,42 @@ def test_python_fp8_option():
     options=dict(model_path='unused-local-model',tp_info=DistributedInfo(0,1),dtype=torch.bfloat16)
     assert EngineConfig(**options).quantization is None
     assert EngineConfig(**options,quantization='fp8').quantization=='fp8'
+
+
+@pytest.mark.parametrize("backend", ["mmap", "pread"])
+@pytest.mark.parametrize("rank,size", [(0,1), (0,2), (1,2)])
+def test_weight_backends_preserve_tp_expert_weights_and_scales(tmp_path,monkeypatch,backend,rank,size):
+    import minisgl.distributed.info as dist
+    monkeypatch.setattr(dist,'_TP_INFO',DistributedInfo(rank,size))
+    monkeypatch.setenv('MINISGL_WEIGHT_BACKEND',backend)
+    config_for_checkpoint(tmp_path)
+    prefix='model.language_model.layers.0.mlp.experts'
+    tensors={}
+    for expert in range(4):
+        for j,part in enumerate(['gate_proj','up_proj','down_proj']):
+            # Vary values across both axes so a wrong TP split cannot pass.
+            values=(torch.arange(256*256).reshape(256,256)%31-15).float()+expert+j
+            tensors[f'{prefix}.{expert}.{part}.weight']=values.to(torch.float8_e4m3fn)
+            tensors[f'{prefix}.{expert}.{part}.weight_scale_inv']=(
+                torch.arange(4).reshape(2,2).float()+expert+j+1).to(torch.bfloat16)
+    save_file(tensors,tmp_path/'model.safetensors')
+    loaded=dict(load_weight(str(tmp_path),torch.device('cpu'),quantization='fp8'))
+    for suffix in ('weight','weight_scale_inv'):
+        per_expert=[];down_experts=[]
+        width=256 if suffix=='weight' else 2
+        sl=slice(rank*(width//size),(rank+1)*(width//size))
+        for expert in range(4):
+            per_expert.append(torch.cat([tensors[f'{prefix}.{expert}.{part}.{suffix}'][sl,:]
+                                        for part in ('gate_proj','up_proj')],dim=0))
+            down_experts.append(tensors[f'{prefix}.{expert}.down_proj.{suffix}'][:,sl])
+        ending='' if suffix=='weight' else '_scale_inv'
+        for key,expected in [('gate_up_proj',torch.stack(per_expert)),('down_proj',torch.stack(down_experts))]:
+            actual=loaded[f'model.layers.0.mlp.experts.{key}{ending}']
+            assert actual.dtype==expected.dtype
+            assert torch.equal(actual.view(torch.uint8),expected.contiguous().view(torch.uint8))
+
+
+def test_invalid_weight_backend_fails_before_downloading(monkeypatch):
+    monkeypatch.setenv('MINISGL_WEIGHT_BACKEND','invalid')
+    with pytest.raises(ValueError,match='Unsupported weight backend'):
+        list(load_weight('unused-local-model',torch.device('cpu')))

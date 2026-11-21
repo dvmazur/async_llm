@@ -3,6 +3,7 @@
 Only quantized projections use this module. No GDN, normalization, attention,
 cache, scheduler or synchronization changes. Weight scales multiply FP8 values.
 """
+import os
 import torch
 import triton
 import triton.language as tl
@@ -79,6 +80,22 @@ def _block_gemm(A, B, AS, BS, C, M, N: tl.constexpr, K: tl.constexpr,
     tl.store(C + m[:, None] * N + n[None, :], acc, (m[:, None] < M) & (n[None, :] < N))
 
 
+def use_sm90_backend(x):
+    """Opt-in Hopper path; the legacy and numerical-emulation paths stay intact."""
+    return (os.environ.get('MINISGL_FP8_BACKEND','triton') == 'flashinfer_sm90'
+            and os.environ.get('MINISGL_FP8_EMULATE','0') != '1'
+            and x.dtype in (torch.bfloat16,torch.float16)
+            and torch.cuda.get_device_capability(x.device) == (9,0))
+
+
+def sm90_linear(inputs,weight,input_scales,weight_scales,output):
+    from flashinfer.gemm import fp8_blockscale_gemm_sm90
+    # Keep the existing quantizer and serialized 128x128 weight scales.
+    # FlashInfer uses a small-M swap-AB kernel for decode and a prefill kernel.
+    return fp8_blockscale_gemm_sm90(inputs,weight,input_scales,weight_scales,
+                                   out=output,out_dtype=output.dtype)
+
+
 def block_fp8_linear(x, weight, scales, bias=None):
     validate_weight(weight, scales)
     if weight.ndim != 2 or x.shape[-1] != weight.shape[-1] or x.device != weight.device:
@@ -87,12 +104,19 @@ def block_fp8_linear(x, weight, scales, bias=None):
     inputs, input_scales = quantize_fp8_groups(x.reshape(-1, k).contiguous())
     output = torch.empty((inputs.shape[0], n), device=x.device, dtype=x.dtype)
     if inputs.shape[0]:
-        bm = 16 if inputs.shape[0] < 32 else 32
-        emulated = emulate_fp8(x.device)
-        _block_gemm[(triton.cdiv(inputs.shape[0], bm), triton.cdiv(n, 64))](
-            inputs.view(torch.uint8) if emulated else inputs,
-            weight.view(torch.uint8) if emulated else weight,
-            input_scales, scales, output, inputs.shape[0], n, k, bm, 64, emulated)
+        if use_sm90_backend(x):
+            sm90_linear(inputs, weight, input_scales, scales, output)
+        else:
+            bm = 16 if inputs.shape[0] < 32 else 32
+            emulated = emulate_fp8(x.device)
+            # Same BM/K reduction, quantizer and scale association. Only widen
+            # N for large native prefills; decode and emulation keep their tile.
+            bn = (128 if not emulated and inputs.shape[0] >= 256 and
+                  os.environ.get('MINISGL_FP8_TILING', 'reference') == 'h100_exact' else 64)
+            _block_gemm[(triton.cdiv(inputs.shape[0], bm), triton.cdiv(n, bn))](
+                inputs.view(torch.uint8) if emulated else inputs,
+                weight.view(torch.uint8) if emulated else weight,
+                input_scales, scales, output, inputs.shape[0], n, k, bm, bn, emulated)
     if bias is not None:
         output += bias
     return output.view(*x.shape[:-1], n)

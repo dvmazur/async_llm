@@ -176,8 +176,10 @@ def test_prefill_overflow_precedes_allocations(runtime):
     before = session.page_allocator.num_free_pages
     replays = session.graph_runner.prefill_replay_count
     try:
-        with pytest.raises(ValueError, match='capacity'):
-            session.prefill_block(blocks[0], torch.ones(513, dtype=torch.int32))
+        session.prefill_block(blocks[0],torch.ones(513,dtype=torch.int32))
+        assert blocks[0].num_tokens==513  # Oversized prefill uses eager fallback.
+        assert session.graph_runner.prefill_replay_count==replays
+        session.free_block(blocks[0]);blocks[0]=session.create_block()
         with pytest.raises(ValueError, match='capacity'):
             session.prefill_batch([PrefillJob(b, torch.tensor([10, 20])) for b in blocks])
         assert session.page_allocator.num_free_pages == before

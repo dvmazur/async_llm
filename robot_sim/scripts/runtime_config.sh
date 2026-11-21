@@ -15,10 +15,15 @@ if [[ -z "$ROBOT_CONDA_EXE" || ! -x "$ROBOT_CONDA_EXE" ]]; then
     done
 fi
 if [[ -z "$ROBOT_CONDA_EXE" || ! -x "$ROBOT_CONDA_EXE" ]]; then
-    echo "Conda not found; set ROBOT_CONDA_EXE" >&2
-    return 2
+    if [[ -z "${ROBOT_LLM_PYTHON:-}" || ! -x "$ROBOT_LLM_PYTHON" ]]; then
+        echo "Set ROBOT_LLM_PYTHON to a Python environment, or install Conda" >&2
+        return 2
+    fi
 fi
-ROBOT_CONDA_BASE="$(cd "$(dirname "$ROBOT_CONDA_EXE")/.." && pwd)"
+ROBOT_CONDA_BASE=
+if [[ -n "$ROBOT_CONDA_EXE" && -x "$ROBOT_CONDA_EXE" ]]; then
+    ROBOT_CONDA_BASE="$(cd "$(dirname "$ROBOT_CONDA_EXE")/.." && pwd)"
+fi
 if [[ -z "${ROBOT_ROS_ENV:-}" ]]; then
     if [[ -d "$ROBOT_ROOT/robot_sim/.runtime/ros/conda-meta" ]]; then
         ROBOT_ROS_ENV="$ROBOT_ROOT/robot_sim/.runtime/ros"

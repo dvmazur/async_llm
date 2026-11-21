@@ -37,6 +37,10 @@ class Engine:
         self.config = config
         self.device = torch.device(f"cuda:{config.tp_info.rank}")
         torch.cuda.set_device(self.device)
+        if config.allocator_memory_limit_mib:
+            total = torch.cuda.get_device_properties(self.device).total_memory
+            torch.cuda.set_per_process_memory_fraction(
+                config.allocator_memory_limit_mib * 2**20 / total, self.device)
         torch.manual_seed(42)
         self.stream = torch.cuda.Stream()
         torch.cuda.set_stream(self.stream)

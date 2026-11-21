@@ -142,5 +142,21 @@ If you found this work useful, please consider citing:
 ## Rover experiments
 
 The rover branch adds Gazebo/ROS 2 simulation, direct LLM driving and sensor-only mapping.
+Online exploration with Qwen 27B, concurrent shared-cache streams and model-selected
+candidate waypoints is described in [candidate navigation](robot_sim/CANDIDATE_NAVIGATION.md).
+The paired geometric versus Qwen candidate-generation experiment is documented in
+[candidate experiments](robot_sim/CANDIDATE_EXPERIMENT.md).
+Measured paired-trial results and video links are in
+[experiment results](robot_sim/CANDIDATE_EXPERIMENT_RESULTS.md).
+The matched-scene experiment with direct forward/left/right/stop commands,
+without Nav2 or candidate waypoints, is described in
+[direct command control](robot_sim/DIRECT_COMMAND_EXPERIMENT.md).
+Completed direct-command trials and their comparison with both waypoint methods
+are summarized in [direct command results](robot_sim/DIRECT_COMMAND_EXPERIMENT_RESULTS.md).
+
+To run the physical rover, see the [launcher guide](robot_sim/LIVE_ROVER_START.md)
+and the [H100 setup notes](robot_sim/LIVE_H100.md). The launcher is available
+at `robot_sim/scripts/rover-qwen.sh`.
+
 See [robot_sim/DEPLOYMENT.md](robot_sim/DEPLOYMENT.md) for the double_p environment and server setup,
 [robot_sim/ROVER.md](robot_sim/ROVER.md) for the robot, and [robot_sim/MAPPING.md](robot_sim/MAPPING.md) for SLAM.

@@ -111,6 +111,7 @@ class DecodeRequest:
     sampling_params: SamplingParams
     return_logits: bool  # also return the raw (pre-mask) logits row
     future: Any  # resolved with token id, or (token id, logits) if return_logits
+    sample_token: bool = True
 
 
 class AsyncCacheEngine:
@@ -140,6 +141,8 @@ class AsyncCacheEngine:
             assert engine is not None, "AsyncCacheEngine needs an engine or a sampler"
             sampler = engine.sampler
         self.sampler = sampler
+        self.statistics = dict(prefill_requests=0, prefill_input_tokens=0,
+                               decode_rows=0, raw_forward_rows=0, sampler_rows=0)
         # Swapped for asyncio's loop.create_future by the asyncio frontend.
         self.future_factory: Callable[[], Any] = SimpleFuture
         self._prefill_queue: Deque[PrefillRequest] = deque()
@@ -215,10 +218,15 @@ class AsyncCacheEngine:
         forbid_ids: Sequence[int] = (),
         sampling_params: Optional[SamplingParams] = None,
         return_logits: bool = False,
+        sample_token: bool = True,
     ) -> Any:
         """Queue one decode step for *context*; returns a future resolved with
         the sampled token id — or ``(token_id, logits)`` if *return_logits*,
-        where *logits* is the raw ``[vocab]`` row before forbid masking."""
+        where *logits* is the raw ``[vocab]`` row before forbid masking.
+        ``sample_token=False`` runs the same forward but skips token selection:
+        the token result is None. It is used by the raw-logits forward API."""
+        if not sample_token and (forbid_ids or sampling_params is not None):
+            raise ValueError('Raw forward cannot apply sampling parameters or forbid ids')
         future = self.future_factory()
         self._decode_queue.append(
             DecodeRequest(
@@ -228,6 +236,7 @@ class AsyncCacheEngine:
                 sampling_params=sampling_params or _GREEDY,
                 return_logits=return_logits,
                 future=future,
+                sample_token=sample_token,
             )
         )
         return future
@@ -301,6 +310,8 @@ class AsyncCacheEngine:
             raise
         # Clone outside inference mode: callers own the returned row and may
         # mutate it (e.g. a forbid mask before their own argmax).
+        self.statistics['prefill_requests'] += len(reqs)
+        self.statistics['prefill_input_tokens'] += sum(req.input_ids.numel() for req in reqs)
         for req, rows in zip(reqs, logits):
             req.future.set_result(rows[0].clone() if req.return_logits else None)
 
@@ -330,22 +341,35 @@ class AsyncCacheEngine:
             group = WorkerGroup([req.context for req in reqs])
             input_ids = torch.tensor([req.input_id for req in reqs], dtype=torch.int32)
             logits = self.session.decode_step(group, input_ids)  # inference_mode inside
+            self.statistics['decode_rows'] += len(reqs)
+            self.statistics['raw_forward_rows'] += sum(not req.sample_token for req in reqs)
             # Snapshot raw rows before the forbid mask mutates them.  Cloned
             # outside inference mode: callers own these rows and may mutate
             # them (e.g. a forbid mask before their own argmax).
             raw_logits = {i: logits[i].clone() for i, req in enumerate(reqs) if req.return_logits}
             with torch.inference_mode():
-                next_tokens = self._select_tokens(logits, reqs)
+                sampled = [i for i, req in enumerate(reqs) if req.sample_token]
+                # Preserve the original row order and RNG consumption when a
+                # stochastic consumer shares a tick with raw-forward requests.
+                stochastic = any(not req.sampling_params.is_greedy for req in reqs)
+                if len(sampled) == len(reqs) or stochastic:
+                    next_tokens = dict(enumerate(self._select_tokens(logits, reqs).tolist()))
+                elif sampled:
+                    selected = self._select_tokens(logits[sampled], [reqs[i] for i in sampled])
+                    next_tokens = dict(zip(sampled, selected.tolist()))
+                else:
+                    next_tokens = {}
         except Exception as exc:
             for req in reqs:
                 if not req.future.done():
                     req.future.set_exception(exc)
             raise
-        for i, (req, token) in enumerate(zip(reqs, next_tokens.tolist())):
-            token = int(token)
+        for i, req in enumerate(reqs):
+            token = int(next_tokens[i]) if req.sample_token else None
             req.future.set_result((token, raw_logits[i]) if req.return_logits else token)
 
     def _select_tokens(self, logits: torch.Tensor, reqs: List[DecodeRequest]) -> torch.Tensor:
+        self.statistics['sampler_rows'] += len(reqs)
         for i, req in enumerate(reqs):
             if req.forbid_ids:
                 idx = torch.tensor(req.forbid_ids, dtype=torch.int64, device=logits.device)

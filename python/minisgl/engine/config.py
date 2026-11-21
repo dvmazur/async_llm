@@ -32,6 +32,8 @@ class EngineConfig:
     # operands / FP32 accumulation; False preserves the FP32/IEEE path.
     shared_gdn_bf16_state: bool = False
     page_size: int = 1
+    # Optional allocator cap for explicitly authorized GPU sharing. Zero keeps default.
+    allocator_memory_limit_mib: int = 0
     memory_ratio: float = 0.9
     distributed_timeout: float = 60.0
     use_dummy_weight: bool = False

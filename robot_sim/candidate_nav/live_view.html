@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ровер · Live</title>
+<link rel="icon" href="data:,">
+<style>
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0c1421;color:#e5edf8}*{box-sizing:border-box}body{margin:0;padding:22px}header{display:flex;align-items:center;justify-content:space-between;gap:15px;max-width:1600px;margin:0 auto 18px}h1{font-size:24px;margin:0}header small{display:block;color:#98acc2;font-size:13px;margin-top:6px}.badge{border:1px solid #365068;padding:8px 12px;border-radius:20px;font-size:13px;color:#90e3d9;white-space:nowrap}.badge.stale{color:#ffd18c;border-color:#825e32}main{max-width:1600px;margin:auto;display:grid;grid-template-columns:minmax(0,1.65fr) minmax(310px,1fr);gap:16px}.panel{border:1px solid #263a50;background:#111e2f;border-radius:14px;overflow:hidden}.top{padding:14px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px}.top h2{font-size:16px;font-weight:600;margin:0}.muted{color:#98acc2;font-size:12px}.viewport{height:calc(100vh - 238px);min-height:420px;position:relative;overflow:hidden;touch-action:none;background:#101a28;cursor:grab}.viewport:active{cursor:grabbing}.viewport img{width:100%;height:100%;object-fit:contain;transform-origin:center;user-select:none;pointer-events:none;display:none}.placeholder{position:absolute;inset:0;display:grid;place-items:center;padding:30px;text-align:center;color:#93a6bc;font-size:14px}.map-bottom{padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.legend{display:flex;gap:12px;color:#aab9c9;font-size:12px;flex-wrap:wrap}.legend span:before{content:"";display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;background:var(--color)}button{font:inherit;color:#e0eaf5;background:#1a2c40;border:1px solid #3a526c;border-radius:7px;padding:5px 10px;cursor:pointer}button:hover{background:#29415c}.sidebar{display:grid;align-content:start;gap:16px}.camera{aspect-ratio:4/3;max-height:340px;background:#09111d;position:relative;display:grid;place-items:center}.camera img{width:100%;height:100%;object-fit:contain;display:none}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;padding:3px 16px 16px}.metric small{display:block;color:#93a8c0;font-size:11px;margin-bottom:7px}.metric strong{font-size:20px;font-weight:500;font-variant-numeric:tabular-nums}.state{font-size:14px;padding:0 16px 16px;line-height:1.5;color:#b8cbdc;overflow-wrap:anywhere}.chips{display:flex;gap:6px;flex-wrap:wrap;padding:0 16px 16px}.chip{padding:5px 10px;border:1px solid #407969;border-radius:7px;background:#174535;color:#bcf0dc;font-size:13px}.chip.active{border-color:#edc64c;background:#423a1b;color:#ffe795}.detail{padding:0 16px 16px}.detail p{font-size:13px;line-height:1.5;margin:6px 0 14px;color:#c5d2e1;overflow-wrap:anywhere}.detail p:last-child{margin-bottom:0}.foot{max-width:1600px;margin:14px auto 0;font-size:12px;color:#849ab3}.notice{color:#e6bc7e}@media(max-width:940px){body{padding:12px}main{grid-template-columns:1fr}.viewport{height:60vh;min-height:350px}.sidebar{grid-template-columns:1fr 1fr}.sidebar .decision{grid-column:1/-1}}@media(max-width:620px){.sidebar{grid-template-columns:1fr}.sidebar .decision{grid-column:auto}h1{font-size:20px}.top{flex-wrap:wrap}.viewport{min-height:300px}.badge{font-size:11px}}
+</style>
+</head>
+<body>
+<header><div><h1><span id="roverName">Ровер</span> <span style="color:#63d8d0">/ Live</span></h1><small>Камера, карта и навигация Qwen</small></div><span id="connection" class="badge stale">Подключение…</span></header>
+<main>
+<section class="panel"><div class="top"><h2 id="mapSource">Карта</h2><button id="mapToggle" type="button" aria-pressed="false">Накопленная карта</button><span class="muted" id="mapAge">Ожидание данных</span></div><div class="viewport" id="viewport"><img id="map" alt="Текущая карта, положение ровера и кандидаты"><div class="placeholder" id="mapPlaceholder">Ожидание карты и положения ровера</div></div><div class="map-bottom"><div class="legend"><span style="--color:#00dbe7">Ровер</span><span style="--color:#ffd840">Цель</span><span style="--color:#f0843b">Путь Nav2</span><span style="--color:#46a3e8">След</span></div><div><button id="minus" aria-label="Уменьшить">−</button> <button id="reset">Сброс</button> <button id="plus" aria-label="Увеличить">+</button></div></div></section>
+<div class="sidebar">
+<section class="panel"><div class="top"><h2>Передняя камера</h2><span class="muted" id="cameraAge">—</span></div><div class="camera"><img id="camera" alt="Текущая передняя камера"><div class="placeholder" id="cameraPlaceholder">Ожидание камеры</div></div></section>
+<section class="panel"><div class="top"><h2>Навигация</h2><span class="muted" id="mode">—</span></div><div class="metrics"><div class="metric"><small>ОДОМЕТРИЯ</small><strong id="distance">—</strong></div><div class="metric"><small>АККУМУЛЯТОР</small><strong id="battery">—</strong></div><div class="metric"><small>РЕШЕНИЯ LLM</small><strong id="decisions">—</strong></div></div><div class="state"><small class="muted">ЗАДАЧА</small><div class="muted" id="strategy"></div><div id="instruction">Ожидание нового сеанса</div></div><div class="state" id="state">Сеанс LLM неактивен</div><div class="state muted" id="proposalStatus" hidden></div><div class="chips" id="candidates"></div></section>
+<section class="panel decision"><div class="top"><h2>Последнее решение Qwen</h2><span class="muted" id="latency">—</span></div><div class="detail"><small class="muted">НАБЛЮДЕНИЕ КАМЕРЫ</small><p id="observer">Появится во время инференса</p><small class="muted">ВЫБРАННЫЙ ПЛАН</small><p id="committedPlan">Появится во время инференса</p><div id="rationale"><small class="muted">ПРОСТРАНСТВЕННОЕ ОБОСНОВАНИЕ ПЛАНА</small><p id="reasoner">Появится во время инференса</p></div></div></section>
+</div>
+</main>
+<p class="foot">Масштаб карты — колёсиком мыши, перемещение — перетаскиванием. Кнопка «Сброс» возвращает общий вид. Окно служит для наблюдения.</p>
+<script>
+const byId=id=>document.getElementById(id);let zoom=1,panX=0,panY=0,drag=null;
+function transform(){byId('map').style.transform=`translate(${panX}px,${panY}px) scale(${zoom})`;}
+function scale(factor){zoom=Math.max(.5,Math.min(8,zoom*factor));transform();}
+byId('plus').onclick=()=>scale(1.25);byId('minus').onclick=()=>scale(.8);
+byId('reset').onclick=()=>{zoom=1;panX=0;panY=0;transform();};
+const viewport=byId('viewport');viewport.addEventListener('wheel',e=>{e.preventDefault();scale(e.deltaY<0?1.12:1/1.12);},{passive:false});
+viewport.onpointerdown=e=>{drag={x:e.clientX,y:e.clientY,panX,panY};viewport.setPointerCapture(e.pointerId);};
+viewport.onpointermove=e=>{if(drag){panX=drag.panX+e.clientX-drag.x;panY=drag.panY+e.clientY-drag.y;transform();}};
+viewport.onpointerup=viewport.onpointercancel=()=>{drag=null;};viewport.ondblclick=()=>byId('reset').click();
+function showImage(id,url,placeholder){const pending=new Image();pending.onload=()=>{byId(id).src=pending.src;byId(id).style.display='block';byId(placeholder).style.display='none';};pending.src=url;}
+function age(value){return value==null?'нет данных':`${Math.max(0,value).toFixed(1)} с`;}
+const states={waiting_for_sensors:'Ожидание сенсоров',recovering_mapping:'Восстановление ICP и SLAM перед стартом',sensors_ready:'Сенсоры готовы',sensor_startup_failed:'Не удалось подготовить сенсоры',sensor_startup_timeout:'Истекло время ожидания сенсоров',context_budget_exceeded:'Превышен бюджет контекста модели',action_left_11_25:'Поворот влево 11,25°',action_right_11_25:'Поворот вправо 11,25°',action_left_45:'Поворот влево 45°',action_right_45:'Поворот вправо 45°',waiting_for_continuation:'Ожидание подготовленного продолжения',qwen_thinking:'Qwen выбирает следующую цель',replanning_path:'Перепланирование пути',escaping_obstacle:'Отход от препятствия',waiting_for_new_evidence:'Ожидание новых наблюдений',waiting_for_map_clearance:'Карта пока не даёт проходимого старта',wall_budget:'Сеанс завершён по времени',model_found:'Модель сообщила о выполнении задания',task_complete:'Модель сообщила о выполнении всего задания',interrupted:'Сеанс остановлен',inference_verified:'Проверка без движения завершена',control_link_lost:'Сеанс остановлен: связь с Mac потеряна',qwen_generating_candidates:'Qwen генерирует кандидатов',action_backward:'Движение назад',action_creep_backward:'Назад на 5 см',action_creep_forward:'Вперёд на 5 см',finishing_motion_observations:'Обработка кадров, снятых в движении',action_forward:'Движение вперёд',action_left:'Поворот влево',action_right:'Поворот вправо',action_stop:'Остановка'};
+let accumulatedMap=false;
+byId('mapToggle').onclick=()=>{accumulatedMap=!accumulatedMap;byId('mapToggle').setAttribute('aria-pressed',String(accumulatedMap));byId('mapToggle').textContent=accumulatedMap?'Локальная карта':'Накопленная карта';};
+async function refresh(){
+try{
+ const response=await fetch('/api/state',{cache:'no-store',signal:AbortSignal.timeout(2500)});if(!response.ok)throw Error('HTTP');const data=await response.json();
+ byId('roverName').textContent=`Ровер ${data.rover_id}`;document.title=`Ровер ${data.rover_id} · Live`;
+ const fresh=Date.now()/1000-data.stamp<3;byId('connection').textContent=fresh?'● Подключено · обновление 2 Гц':'Данные устарели';byId('connection').className='badge'+(fresh?'':' stale');
+ byId('mapSource').textContent=accumulatedMap?'Накопленная SLAM':data.map_source||'Карта';byId('mapAge').textContent=`Карта ${age(accumulatedMap?data.accumulated_map?.age_s:data.map_age_s)}`;byId('cameraAge').textContent=`Кадр ${age(data.camera_age_s)}`;
+ if(accumulatedMap?data.accumulated_map_available:data.map_available)showImage('map',`${accumulatedMap?'/accumulated_map.png':'/map.png'}?v=${data.sequence}`,'mapPlaceholder');else{byId('mapPlaceholder').style.display='grid';byId('mapPlaceholder').textContent='Нет свежего положения ровера или карты';}
+ if(data.camera_available)showImage('camera',`/camera.jpg?v=${data.sequence}`,'cameraPlaceholder');
+ const m=data.mission||{},d=m.decision||{};byId('strategy').textContent=m.strategy?`Стратегия ${m.strategy} · ${m.strategy===1?'геометрические кандидаты':m.strategy===2?'кандидаты Qwen':m.strategy===4?'последовательность команд Qwen':'прямые команды Qwen'}`:'';byId('instruction').textContent=m.instruction||'Ожидание нового сеанса';byId('mode').textContent=data.mission_live?(m.motion_enabled?'Сеанс с движением':'Проверка без движения'):'Пассивный просмотр';
+ byId('distance').textContent=typeof m.path_m==='number'?`${m.path_m.toFixed(2)} м`:'—';byId('battery').textContent=typeof data.battery_v==='number'?`${data.battery_v.toFixed(2)} В`:'—';byId('decisions').textContent=m.decisions??'—';
+ let state=data.mission_live?(states[m.state]||(m.state?.startsWith('driving_')?`Движение к цели ${m.active_goal?.id||''}`:m.state)):'Сеанс LLM неактивен';
+ if(!data.mission_live&&m.state)state+=` · ${states[m.state]||m.state}`;
+ if(m.strategy===4&&d.actions){const names={forward:'вперёд 10 см',creep_forward:'вперёд 5 см',backward:'назад 10 см',creep_backward:'назад 5 см',left:'влево 22,5°',right:'вправо 22,5°',left_11_25:'влево 11,25°',right_11_25:'вправо 11,25°',left_45:'влево 45°',right_45:'вправо 45°',stop:'стоп'};state+=` · План: ${d.actions.map(a=>names[a]||a).join(' → ')}`;if(m.trajectory_progress)state+=` · Шаг ${m.trajectory_progress.step}/${m.trajectory_progress.total}`;}
+ byId('state').textContent=state;
+ const nav=m.navigation_status,notes=[];
+ if(m.sensor_startup?.blocked_labels?.length)notes.push('Нет готовых данных: '+m.sensor_startup.blocked_labels.join(', '));
+ if(m.lookahead?.state==='thinking')notes.push('Следующая траектория готовится во время движения');
+ if(m.lookahead?.state==='ready')notes.push('Следующая траектория подготовлена');
+ if(d.prepared_during_motion)notes.push('План подготовлен в движении и проверен перед исполнением');
+ const perception=m.perception_pipeline;
+ if(perception?.state==='processing')notes.push(`Обработка кадров во время исполнения · разобрано ${perception.processed_frames||0}, в очереди ${perception.pending_frames||0}`);
+ if(perception?.state==='finishing_tail')notes.push('Завершена траектория · обработка последних кадров');
+ if(d.observer_reused)notes.push('Следующий план использует готовый разбор конечного кадра');
+ const target=m.visual_state?.target;
+ if(target){
+  const labels={visible:'цель отмечена в последнем кадре',not_visible:'цель вне обзора',uncertain:'идентификация цели не подтверждена',none:'задание без визуальной цели'};
+  if(labels[target.status])notes.push(labels[target.status]);
+  if(target.last_seen&&target.status!=='none')notes.push(`Последнее наблюдение цели · кадр ${target.last_seen.frame_id} · ${target.last_seen.appearance}`);
+ }
+ if(m.visual_state?.last_seen){const v=m.visual_state;notes.push(`Последнее визуальное обнаружение: кадр ${v.last_seen.frame_id}; ${v.relevant_visible===true?'признаки видны в последнем наблюдении':v.relevant_visible===false?'сейчас вне обзора':'текущая видимость не определена'}`);}
+ if(m.collision_protection==='disabled')notes.push('Защита от столкновений отключена');
+ if(nav){
+  if(nav.start_state!=='ready'){
+   const causes={occupied_start:'Стартовая клетка помечена препятствием',unknown_start:'Стартовая клетка ещё не подтверждена как свободная',outside_map:'Положение ровера вне текущей карты',insufficient_clearance:'Недостаточно известного свободного пространства вокруг старта'};
+   notes.push(causes[nav.start_state]||'Карта пока не даёт проходимого старта');
+   if(typeof nav.start_clearance_m==='number')notes.push(`Запас по карте у центра: ${(nav.start_clearance_m*100).toFixed(1)} см`);
+  }
+  if(nav.generation)notes.push(`Кандидаты Qwen: принято ${nav.generation.accepted_count} из ${nav.generation.raw_count}`);
+ }
+ byId('proposalStatus').textContent=notes.join('. ');byId('proposalStatus').hidden=!notes.length;
+ const chips=byId('candidates');chips.replaceChildren();if(data.mission_live){const options=[...(m.candidates||[])];if(m.active_goal&&!options.some(c=>c.id===m.active_goal.id))options.push(m.active_goal);for(const c of options){const chip=document.createElement('span');chip.className='chip'+(c.id===m.active_goal?.id?' active':'');chip.textContent=c.id;chip.title=`${c.kind} · ${c.path_length_m?.toFixed(2)} м`;chips.append(chip);}}
+ byId('committedPlan').textContent=d.selected_plan?.display||d.actions?.join(' → ')||'Появится во время инференса';byId('observer').textContent=d.observer||'Появится во время инференса';byId('rationale').hidden=d.rationale_enabled===false;byId('reasoner').textContent=d.rationale_pending?'План передан. Пояснение формируется.':d.spatial_rationale||d.reasoner||'Появится во время инференса';byId('latency').textContent=typeof d.latency_s==='number'?`${d.latency_s.toFixed(1)} с · ${d.goal_id}`:'—';
+}catch(error){byId('connection').textContent='Связь потеряна';byId('connection').className='badge stale';}
+setTimeout(refresh,600);
+}
+refresh();
+</script>
+</body></html>

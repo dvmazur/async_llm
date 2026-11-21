@@ -112,6 +112,9 @@ class SharedGraphIO:
 
     def select_prefill(self, jobs):
         workers, rows = len(jobs), sum(job.input_ids.numel() for job in jobs)
+        # A small graph catalogue accelerates short continuations; larger
+        # prefills keep the existing eager path rather than becoming invalid.
+        if self.prefill_rows and rows>max(self.prefill_rows):return None
         contexts = [[b for b in (job.context or []) if b.num_tokens > 0] for job in jobs]
         depth = max((len(c)+1 for c in contexts), default=1)
         if depth > self.depth:

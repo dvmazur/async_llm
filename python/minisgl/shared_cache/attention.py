@@ -238,6 +238,22 @@ class SharedCacheAttention:
         self._workspace = workspace
         self._workspace_prepared = True
 
+    def _plan_eager_prefill(self, wrapper, **kwargs):
+        """Size eager scratch for the real request without rebinding graph buffers."""
+        estimator = getattr(wrapper, 'workspace_size', None)
+        if estimator is not None:
+            required_float, required_int = estimator(
+                **{key: value for key, value in kwargs.items() if key != 'non_blocking'})
+            floats, ints = wrapper._float_workspace_buffer, wrapper._int_workspace_buffer
+            if required_float > floats.numel() or required_int > ints.numel():
+                # Allocate both before committing; OOM must preserve the old binding.
+                next_float = (torch.empty(required_float, dtype=torch.uint8, device=self.device)
+                              if required_float > floats.numel() else floats)
+                next_int = (torch.empty(required_int, dtype=torch.uint8, device=self.device)
+                            if required_int > ints.numel() else ints)
+                wrapper.reset_workspace_buffer(next_float, next_int)
+        wrapper.plan(**kwargs)
+
     def _rope(self, x: torch.Tensor, corrections: torch.Tensor) -> torch.Tensor:
         """Block-relative RoPE correction on ``x [N, heads, head_dim]``.
 
@@ -571,7 +587,7 @@ class SharedCacheAttention:
             ctx_qo_indptr = torch.tensor([0] + ctx_q_lens, **CPU_KWARGS).cumsum_(0).to(torch.int32)
             ctx_seq_cpu = torch.tensor(ctx_seq_lens, **CPU_KWARGS)
             ctx_last_cpu = torch.tensor(ctx_last_page, **CPU_KWARGS)
-            self.prefill_ctx_wrapper.plan(
+            self._plan_eager_prefill(self.prefill_ctx_wrapper,
                 qo_indptr=ctx_qo_indptr,
                 paged_kv_indptr=ctx_kv_indptr,
                 paged_kv_indices=ctx_kv_indices,
@@ -592,7 +608,7 @@ class SharedCacheAttention:
         self_qo_indptr = torch.tensor([0] + self_q_lens, **CPU_KWARGS).cumsum_(0).to(torch.int32)
         self_seq_cpu = torch.tensor(self_seq_lens, **CPU_KWARGS)
         self_last_cpu = torch.tensor(self_last_page, **CPU_KWARGS)
-        self.prefill_self_wrapper.plan(
+        self._plan_eager_prefill(self.prefill_self_wrapper,
             qo_indptr=self_qo_indptr,
             paged_kv_indptr=self_kv_indptr,
             paged_kv_indices=self_kv_indices,

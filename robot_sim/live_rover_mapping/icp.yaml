@@ -1,0 +1,12 @@
+icp_odom:
+  ros__parameters:
+    frame_id: base_link
+    Odom/ResetCountdown: '0'
+    publish_tf: true
+    Reg/Force3DoF: 'true'
+    Icp/CorrespondenceRatio: '0.2'
+    Icp/VoxelSize: '0.02'
+    scan_voxel_size: 0.02
+    scan_range_max: 6.0
+    OdomF2M/ScanSubtractRadius: '0.02'
+    OdomF2M/ScanMaxSize: '4000'

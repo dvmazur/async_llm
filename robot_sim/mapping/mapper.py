@@ -47,7 +47,7 @@ class Mapper(Node):
         self.started=time.monotonic();self.frames=[];self.last_publish=-1;self.last_snapshot=-1
         self.log=(args.output/"mapping.jsonl").open("w")
         self.frame_log=(args.output/"map_frames.jsonl").open("w")
-        (args.output/"map_frames").mkdir()
+        (args.output/"map_frames").mkdir(exist_ok=True)
         latched=QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL,reliability=ReliabilityPolicy.RELIABLE)
         self.local_pub=self.create_publisher(OccupancyGrid,"/mapping/dynamic_grid",latched)
         self.risk_pub=self.create_publisher(OccupancyGrid,"/mapping/costmap",latched)
@@ -78,6 +78,7 @@ class Mapper(Node):
     def odometry(self,msg):
         self.odom=msg
         p=msg.pose.pose.position
+        if getattr(self.args,"rolling",False):self.grid.recenter((p.x,p.y))
         self.path.append([p.x,p.y])
         if len(self.path)>10000:self.path=self.path[::2]
 
@@ -170,7 +171,7 @@ class Mapper(Node):
         self.track_pub.publish(String(data=json.dumps({"sim_time":now,"tracks":self.tracks})))
         self.log.write(json.dumps({"sim_time":now,**self.stats,"known_cells":int(np.sum(values>=0)),
                    "occupied_cells":int(np.sum(values>=65)),"tracks":self.tracks})+"\n");self.log.flush()
-        if now-self.last_snapshot>=.95:
+        if now-self.last_snapshot>=.95 and not getattr(self.args,"no_preview",False):
             self.last_snapshot=now
             self.snapshot(values,cost,now)
         self.save_grids(values,now)
@@ -259,6 +260,8 @@ class Mapper(Node):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument("--output",type=Path,required=True)
+    p.add_argument("--rolling",action="store_true",help="Keep the dynamic grid around the rover on long routes")
+    p.add_argument("--no-preview",action="store_true",help="Let the candidate agent record the composite view")
     args=p.parse_args();rclpy.init();node=Mapper(args)
     try:rclpy.spin(node)
     except (KeyboardInterrupt,rclpy.executors.ExternalShutdownException):pass
