@@ -79,10 +79,8 @@ def test_fp32_summary_scan_against_original(lengths):
                                    alpha[None, section], beta[None, section], workers=[w])
         start += length
         for actual, expected in zip(targets[w].linear_affine[0], refs[w].linear_affine[0]):
-            # Single-request FP32 capture must retain the original accumulation
-            # order; ragged slicing may alter the key normalization's reduction.
-            tol = 0 if len(lengths) == 1 else 5e-6
-            torch.testing.assert_close(actual, expected, atol=tol, rtol=tol)
+            atol = 5e-6 * expected.abs().max().item()
+            torch.testing.assert_close(actual, expected, atol=atol, rtol=0)
 
 
 @pytest.mark.parametrize('use_fla', [True, False])

@@ -149,6 +149,8 @@ The model comes from the data file. There is no separate training model flag.
 | `--lr` | `3e-5` | Positive AdamW learning rate; larger values may fit faster but destabilize training. |
 | `--seed` | `7` | Torch seed. |
 | `--gradient-checkpointing` | off | Recompute decoder layers in backward: less activation memory, more compute. |
+| `--gdn-checkpoint-every` | `1` | With `--gradient-checkpointing`, checkpoint every N-th GDN layer; `0` checkpoints none while attention layers stay checkpointed. Fewer checkpointed GDN layers: less recompute, more saved activations. |
+| `--expandable-segments` / `--no-expandable-segments` | off | Expandable CUDA allocator segments: less fragmentation when many layers keep their activations, e.g. with `--gdn-checkpoint-every 0`. |
 | `--attention-checkpointing` / `--no-attention-checkpointing` | on | Recompute full-attention chunks: less saved attention memory, more compute. Independent of layer checkpointing. |
 | `--loss-checkpointing` / `--no-loss-checkpointing` | on | Recompute vocabulary projection/loss chunks: less saved logits memory, more compute. Independent of layer checkpointing. |
 | `--cache-replay-plans` / `--no-cache-replay-plans` | on | Retain device metadata between forwards: faster repeated replay, memory retained per visited trace. Off rebuilds next forward; layers and backward still share the active plan. |
