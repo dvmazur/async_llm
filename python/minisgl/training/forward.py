@@ -46,10 +46,12 @@ def _rows(
 def _forward(
     model: torch.nn.Module, trace: Trace, rows: torch.Tensor | None, hidden_only: bool
 ) -> torch.Tensor:
-    if model.config.model_type not in {"qwen3", "qwen3_5_text", "qwen3_5"}:
+    get_base_model = getattr(model, "get_base_model", None)
+    base_model = get_base_model() if callable(get_base_model) else model
+    if base_model.config.model_type not in {"qwen3", "qwen3_5_text", "qwen3_5"}:
         raise ValueError("Only dense text Qwen3 and Qwen3.5 are supported")
-    backbone = model.model
-    if model.config.model_type == "qwen3_5":
+    backbone = base_model.model
+    if base_model.config.model_type == "qwen3_5":
         backbone = backbone.language_model
     config, rotary = backbone.config, backbone.rotary_emb
     if getattr(rotary, "rope_type", "default") != "default":
@@ -96,7 +98,7 @@ def _forward(
     if trace.multimodal:
         from .images import compute_input_embeddings
 
-        kwargs["inputs_embeds"] = compute_input_embeddings(model, trace)[None]
+        kwargs["inputs_embeds"] = compute_input_embeddings(base_model, trace)[None]
     else:
         kwargs["input_ids"] = trace.input_ids[None]
     output = (backbone if hidden_only else model)(

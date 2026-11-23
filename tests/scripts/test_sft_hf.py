@@ -22,8 +22,8 @@ from minisgl_examples.training.trainer_hf import (
 )
 from transformers import TrainingArguments
 
-from tests.training.models import tiny_model
-from tests.training.workloads import causal_trace
+from tests.training.models import tiny_hybrid, tiny_model
+from tests.training.workloads import causal_trace, mutation_trace
 
 
 def examples():
@@ -56,6 +56,7 @@ def train_arguments(tmp_path, **overrides):
         "data": tmp_path / "traces.json",
         "output": tmp_path / "checkpoint",
         "model": None,
+        "model_revision": None,
         "steps": 1,
         "batch_size": 1,
         "gradient_accumulation_steps": None,
@@ -64,7 +65,13 @@ def train_arguments(tmp_path, **overrides):
         "max_grad_norm": 1.0,
         "seed": 7,
         "gradient_checkpointing": False,
+        "fast": False,
+        "lora": False,
+        "lora_rank": 16,
+        "lora_alpha": 32,
+        "lora_dropout": 0.05,
         "eval_steps": 1,
+        "eval_size": None,
         "save_steps": 0,
         "verify_reload": False,
         "attention_checkpointing": Trace.attention_checkpointing,
@@ -130,6 +137,131 @@ def test_trainer_runs_accumulated_optimizer_step(tmp_path):
     assert result.global_step == 1
     assert torch.isfinite(torch.tensor(result.training_loss))
     assert not torch.equal(model.lm_head.weight, before)
+
+
+@pytest.mark.parametrize(
+    "capability,bf16_supported,expected",
+    [
+        ((7, 5), False, ({"fp16": True, "bf16": False}, "fp16")),
+        ((8, 0), True, ({"fp16": False, "bf16": True}, "bf16")),
+        ((9, 0), True, ({"fp16": False, "bf16": True}, "bf16")),
+    ],
+)
+def test_fast_precision_follows_gpu_architecture(monkeypatch, capability, bf16_supported, expected):
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: capability)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: bf16_supported)
+    assert sft_hf._precision(True) == expected
+
+
+def test_precision_defaults_to_fp32_without_querying_cuda(monkeypatch):
+    capability = Mock(side_effect=AssertionError("CUDA should not be queried"))
+    monkeypatch.setattr(torch.cuda, "get_device_capability", capability)
+    assert sft_hf._precision(False) == ({"fp16": False, "bf16": False}, "fp32")
+    capability.assert_not_called()
+
+
+def test_eval_subset_is_seeded_and_keeps_source_order():
+    values = [{"index": index} for index in range(20)]
+    first = sft_hf._select_eval_examples(values, 5, seed=7)
+    second = sft_hf._select_eval_examples(values, 5, seed=7)
+    assert first == second
+    assert [value["index"] for value in first] == sorted(value["index"] for value in first)
+    assert len(first) == 5
+    assert sft_hf._select_eval_examples(values, None, seed=7) is values
+    assert sft_hf._select_eval_examples(values, 20, seed=7) is values
+
+
+def test_model_factory_pins_huggingface_revision(monkeypatch):
+    config = Mock()
+    auto_config = Mock()
+    monkeypatch.setattr(sft_hf, "AutoConfig", auto_config)
+    auto_config.from_pretrained.return_value = config
+    factory, selected = sft_hf._model_factory("student", False, "abc123")
+    auto_config.from_pretrained.assert_called_once_with("student", revision="abc123")
+    assert factory is sft_hf.AutoModelForCausalLM
+    assert selected is config.get_text_config.return_value
+
+
+@pytest.mark.parametrize("capability", [(6, 1), (7, 0)])
+def test_fast_precision_rejects_unsupported_architectures(monkeypatch, capability):
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: capability)
+    with pytest.raises(RuntimeError, match="Turing.*Ampere"):
+        sft_hf._precision(True)
+
+
+def test_lora_replay_only_trains_adapters():
+    model = sft_hf._apply_lora(
+        tiny_model(),
+        SimpleNamespace(lora_rank=4, lora_alpha=8, lora_dropout=0.0),
+    ).train()
+    dataset = TraceDataset(examples()[:1])
+    loss = compute_supervised_loss(
+        model,
+        dataset[0]["trace"],
+        dataset[0]["labels"],
+        checkpointing=False,
+    )
+    loss.backward()
+    trainable = [
+        (name, parameter) for name, parameter in model.named_parameters() if parameter.requires_grad
+    ]
+    frozen = [parameter for parameter in model.parameters() if not parameter.requires_grad]
+    assert trainable and all("lora_" in name for name, _ in trainable)
+    assert any(parameter.grad is not None for _, parameter in trainable)
+    assert frozen and all(parameter.grad is None for parameter in frozen)
+
+
+def test_lora_replay_trains_qwen35_linear_attention_adapters():
+    model = sft_hf._apply_lora(
+        tiny_hybrid(),
+        SimpleNamespace(lora_rank=4, lora_alpha=8, lora_dropout=0.0),
+    ).train()
+    trace = mutation_trace()
+    targets = torch.arange(trace.num_tokens) % model.config.vocab_size
+    targets[::3] = -100
+    compute_supervised_loss(model, trace, targets, checkpointing=False).backward()
+    linear_attention = [
+        parameter
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad and "linear_attn" in name
+    ]
+    assert linear_attention
+    assert any(
+        parameter.grad is not None and parameter.grad.abs().sum() > 0
+        for parameter in linear_attention
+    )
+
+
+def test_lora_trainer_saves_reloadable_adapter(tmp_path):
+    from peft import PeftModel
+
+    model = sft_hf._apply_lora(
+        tiny_model(),
+        SimpleNamespace(lora_rank=4, lora_alpha=8, lora_dropout=0.0),
+    ).train()
+    dataset = TraceDataset(examples())
+    trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    trainer = TraceSFTTrainer(
+        model=model,
+        args=arguments(tmp_path),
+        train_dataset=dataset,
+        data_collator=TraceDataCollator(),
+        loss_checkpointing=False,
+        optimizers=(torch.optim.AdamW(trainable, lr=1e-3), None),
+    )
+    assert trainer.train().global_step == 1
+    expected = sft_hf.evaluate(model.eval(), dataset.replay_examples, 128)
+    checkpoint = tmp_path / "adapter"
+    trainer.save_model(checkpoint)
+
+    reloaded = PeftModel.from_pretrained(tiny_model(), checkpoint).eval()
+    actual = sft_hf.evaluate(reloaded, dataset.replay_examples, 128)
+    assert (checkpoint / "adapter_config.json").is_file()
+    assert (checkpoint / "adapter_model.safetensors").is_file()
+    for left, right in zip(expected["examples"], actual["examples"], strict=True):
+        torch.testing.assert_close(
+            torch.tensor(left["nll"]), torch.tensor(right["nll"]), rtol=0, atol=0
+        )
 
 
 @pytest.mark.parametrize(
@@ -282,6 +414,37 @@ def test_hf_sft_cli_plan_cache_flag(monkeypatch, tmp_path, flag, expected):
     monkeypatch.setattr(sft_hf, "train", received.append)
     sft_hf.main(["train", *([flag] if flag else [])])
     assert received.pop().cache_replay_plans is expected
+
+
+def test_hf_sft_cli_fast_lora_flags(monkeypatch, tmp_path):
+    received = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(sft_hf, "train", received.append)
+    sft_hf.main(
+        [
+            "train",
+            "--fast",
+            "--lora",
+            "--lora-rank",
+            "8",
+            "--lora-alpha",
+            "16",
+            "--lora-dropout",
+            "0.1",
+            "--model-revision",
+            "abc123",
+        ]
+    )
+    args = received.pop()
+    assert args.fast is True
+    assert args.model_revision == "abc123"
+    assert (args.lora, args.lora_rank, args.lora_alpha, args.lora_dropout) == (
+        True,
+        8,
+        16,
+        0.1,
+    )
 
 
 def _original_sft_step(model, dataset, learning_rate, started):

@@ -58,11 +58,13 @@ supervised token count. Pixel traces select the full conditional generation mode
 so the vision tower also receives gradients; checkpoints include its processor
 instead of a text-only tokenizer.
 
-Mining uses FP16; both training CLIs use FP32, including the GDN core. The original
-trainer evaluates every five updates and stops early when every example has 100%
-target accuracy and loss below `0.01`. The HF Trainer variant evaluates according
-to `--eval-steps` and always runs `--steps` updates. Both save a standard HF
-checkpoint and tokenizer to `--output`.
+Mining uses FP16; both training CLIs use FP32 by default, including the GDN core.
+The HF Trainer variant can enable architecture-aware mixed precision with `--fast`:
+FP16 on Turing and BF16 on Ampere or newer. The original trainer evaluates every
+five updates and stops early when every example has 100% target accuracy and loss
+below `0.01`. The HF Trainer variant evaluates according to `--eval-steps` and
+always runs `--steps` updates. Both save a standard HF checkpoint and tokenizer to
+`--output`.
 
 ## Run
 
@@ -88,7 +90,7 @@ uv run --no-sync python -m minisgl_examples.training.sft_hf mine \
 uv run --no-sync python -m minisgl_examples.training.sft_hf train \
   --data training_runs/qwen3_sft_hf/trajectories.json \
   --output training_runs/qwen3_sft_hf/checkpoint \
-  --steps 80 --gradient-checkpointing
+  --steps 80 --gradient-checkpointing --fast --lora
 ```
 
 Trace targets are already aligned with the logits rows that sampled them; the
@@ -200,17 +202,25 @@ the logits are not expected to match the teacher.
 | Flag | Default | Meaning / tradeoff |
 | --- | --- | --- |
 | `--model` | model stored in data | Optional student model ID or local path. |
+| `--model-revision` | repository default | Pin a Hugging Face commit or tag for reproducible model and tokenizer downloads. |
 | `--batch-size` | `1` | Traces replayed before each backward call. Trace graphs remain variable and are processed sequentially. |
 | `--gradient-accumulation-steps` | one dataset pass | Microbatches per optimizer update. The automatic default matches one original-SFT update. |
 | `--weight-decay` | `0.01` | AdamW weight decay. |
 | `--max-grad-norm` | `1.0` | Gradient clipping norm. |
+| `--fast` | off | Use mixed-precision autocast selected by GPU architecture: FP16 on Turing (7.5), BF16 on Ampere or newer; FP32 remains the default. Volta and Pascal are rejected. |
+| `--lora` | off | Freeze the base model and train PEFT LoRA adapters for every linear layer. The final checkpoint contains the adapter and its config. |
+| `--lora-rank` | `16` | LoRA adapter rank. |
+| `--lora-alpha` | `32` | LoRA scaling numerator. |
+| `--lora-dropout` | `0.05` | Dropout applied on LoRA branches. |
 | `--eval-steps` | `5` | Trainer evaluation interval in optimizer updates. |
+| `--eval-size` | all examples | Evaluate a deterministic seeded subset without removing those examples from training. Useful when replay evaluation is expensive. |
 | `--save-steps` | `0` | Intermediate checkpoint interval; `0` disables intermediate checkpoints. The final checkpoint is always saved. |
 | `--verify-reload` / `--no-verify-reload` | on | Reload the final checkpoint and require identical per-token NLL values. |
 
 The HF variant writes `metrics_hf.json` next to the checkpoint and saves
-`trainer_state.json`. It currently supports only one process/GPU; distributed
-Trainer modes are rejected explicitly.
+`trainer_state.json`. Full training saves a complete model; `--lora` saves a PEFT
+adapter that reloads on top of the original base model. It currently supports only
+one process/GPU; distributed Trainer modes are rejected explicitly.
 
 GDN flags affect only Qwen3.5 linear-attention layers. None of the optional
 tradeoffs is a universal speed or memory win; compare on the intended trace.
@@ -226,10 +236,10 @@ model weights or optimizer state.
 ## Validation and limits
 
 The scripts require one visible GPU. These are single-GPU overfitting harnesses,
-with no mixed precision, distributed training, or HF CLI resume flag. Success
-measures learning the recorded targets, not answer quality. Tests cover mining
-and data alignment, chunked loss/gradients, replay options, image model loading,
-and checkpoint output:
+with no distributed training or HF CLI resume flag. Success measures learning the
+recorded targets, not answer quality. Tests cover mining and data alignment,
+chunked loss/gradients, replay options, architecture-aware mixed precision, LoRA,
+image model loading, and checkpoint output:
 
 ```bash
 uv run --no-sync pytest -o addopts='' tests/training

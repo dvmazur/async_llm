@@ -45,6 +45,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+training = [
+    "peft>=0.22.0,<0.23; python_version >= '3.11'",
+]
 dev = [
     "pytest>=6.0",
     "pytest-cov>=2.0",
