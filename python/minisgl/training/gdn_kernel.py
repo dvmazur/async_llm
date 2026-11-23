@@ -321,7 +321,7 @@ def _chunk_states(
             U + (slot[:, None] * H + head) * DV + c[None, :] - BK,
             (c[None, :] >= BK) & columns,
             other=0.0,
-        )
+        ).to(tl.float32)
         new = u - _mm(_rows(W, slot, head, H, BK, BK), state, PRECISION)
         tl.store(New + (slot[:, None] * H + head) * DW + c[None, :], new, columns)
         key = _rows(Key, slot, head, H, BK, BK) * tail[:, None]
@@ -712,43 +712,25 @@ def chunk_decay(alpha: torch.Tensor, segments: torch.Tensor) -> tuple[torch.Tens
     return prefix, decay
 
 
-def chunk_states(
+def chunk_scan(
     key: torch.Tensor,
-    value: torch.Tensor,
-    alpha: torch.Tensor,
-    beta: torch.Tensor,
+    prefix: torch.Tensor,
+    decay: torch.Tensor,
+    w: torch.Tensor,
+    u: torch.Tensor,
     bounds: torch.Tensor,
-    segments: torch.Tensor,
     full: torch.Tensor,
     tape: torch.dtype = torch.float32,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    _check(key, value, alpha, beta)
-    _check_index(bounds, segments, full)
+) -> tuple[torch.Tensor, torch.Tensor]:
+    _check(prefix, decay)
+    _check_tape(key, w, u)
+    _check_index(bounds, full)
     slots, heads, width = key.shape
-    dv = value.shape[-1]
+    dv = u.shape[-1]
     chunks, columns = slots // CHUNK, width + dv
-    prefix, decay = chunk_decay(alpha, segments)
-    w, u = torch.empty_like(key), torch.empty_like(value)
-    inverse = key.new_empty(chunks, heads, CHUNK, CHUNK, dtype=tape)
-    state = key.new_empty(chunks, heads, width, columns)
-    new = key.new_empty(slots, heads, columns)
+    state = key.new_empty(chunks, heads, width, columns, dtype=tape)
+    new = key.new_empty(slots, heads, columns, dtype=tape)
     with torch.cuda.device(key.device):
-        _chunk_prepare[(chunks, heads)](
-            key,
-            value,
-            beta,
-            prefix,
-            decay,
-            w,
-            u,
-            inverse,
-            heads,
-            dv,
-            CHUNK,
-            width,
-            tr.next_power_of_2(max(dv, 16)),
-            **_launch("prepare", key.device),
-        )
         _chunk_states[(len(bounds) - 1, heads, tr.cdiv(columns, COLUMNS))](
             key,
             prefix,
@@ -767,7 +749,48 @@ def chunk_states(
             COLUMNS,
             **_launch("states", key.device),
         )
-    return prefix, decay, w, inverse, state, new
+    return state, new
+
+
+def chunk_states(
+    key: torch.Tensor,
+    value: torch.Tensor,
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
+    bounds: torch.Tensor,
+    segments: torch.Tensor,
+    full: torch.Tensor,
+    tape: torch.dtype = torch.float32,
+) -> tuple[
+    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+]:
+    _check(key, value, alpha, beta)
+    _check_index(bounds, segments, full)
+    slots, heads, width = key.shape
+    dv = value.shape[-1]
+    chunks = slots // CHUNK
+    prefix, decay = chunk_decay(alpha, segments)
+    w, u = torch.empty_like(key), torch.empty_like(value)
+    inverse = key.new_empty(chunks, heads, CHUNK, CHUNK, dtype=tape)
+    with torch.cuda.device(key.device):
+        _chunk_prepare[(chunks, heads)](
+            key,
+            value,
+            beta,
+            prefix,
+            decay,
+            w,
+            u,
+            inverse,
+            heads,
+            dv,
+            CHUNK,
+            width,
+            tr.next_power_of_2(max(dv, 16)),
+            **_launch("prepare", key.device),
+        )
+    state, new = chunk_scan(key, prefix, decay, w, u, bounds, full)
+    return prefix, decay, w, u, inverse, state, new
 
 
 def chunk_read(

@@ -801,7 +801,7 @@ class _Chunk(torch.autograd.Function):
             r.index_copy_(0, plan.leaves, leaf_query)
         key, value, beta = (_slots(x, plan.sources) for x in (key, value, beta))
         alpha = torch.cat((alpha, alpha.new_ones(1, heads)))[plan.sources].contiguous()
-        prefix, decay, w, inverse, state, new = chunk_states(
+        prefix, decay, w, u, inverse, state, new = chunk_states(
             key, value, alpha, beta, plan.bounds, plan.segments, plan.full, tape
         )
         queries, scores = [], []
@@ -823,28 +823,15 @@ class _Chunk(torch.autograd.Function):
             output.index_add_(0, level.rows, out[..., width:])
             r.index_copy_(0, level.rows, out[..., :width])
             del out
-        del r
+        del r, state, new
         if save:
-            state = state.to(tape)
-            new = new.to(tape)
-            value, w = value.to(tape), w.to(tape)
+            value, w, u = value.to(tape), w.to(tape), u.to(tape)
             units = tuple(x.to(tape) for x in units)
             queries = [x.to(tape) for x in queries[1:]]
             ctx.save_for_backward(
-                *units,
-                *scales,
-                *leaf,
-                value,
-                beta,
-                alpha,
-                w,
-                inverse,
-                state,
-                new,
-                *queries,
-                *scores,
+                *units, *scales, *leaf, value, beta, alpha, w, u, inverse, *queries, *scores
             )
-            ctx.plan, ctx.dk, ctx.width = plan, dk, width
+            ctx.plan, ctx.dk, ctx.width, ctx.tape = plan, dk, width, tape
         return output
 
     @staticmethod
@@ -864,17 +851,18 @@ class _Chunk(torch.autograd.Function):
     ) -> tuple[
         torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None, None
     ]:
-        from .gdn_kernel import chunk_decay, chunk_read_backward, chunk_states_backward
+        from .gdn_kernel import chunk_decay, chunk_read_backward, chunk_scan, chunk_states_backward
 
         plan: ChunkPlan = ctx.plan
         dk, width = ctx.dk, ctx.width
         unit_query, unit_key, query_scale, key_scale, *saved = ctx.saved_tensors
         leaf = saved[:5] if len(plan.leaves) else []
-        value, beta, alpha, w, inverse, state, new, *tape = saved[len(leaf) :]
+        value, beta, alpha, w, u, inverse, *tape = saved[len(leaf) :]
         stored = max(len(plan.levels) - 1, 0)
         queries, scores = list(tape[:stored]), tape[stored:]
         key = _slots(F.pad(unit_key, (0, width - dk)), plan.sources)
         prefix, decay = chunk_decay(alpha, plan.segments)
+        state, new = chunk_scan(key, prefix, decay, w, u, plan.bounds, plan.full, ctx.tape)
         if plan.levels:
             r = F.pad(unit_query.float(), (0, width - dk)) * dk**-0.5
             if leaf:
