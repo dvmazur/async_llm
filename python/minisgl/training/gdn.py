@@ -804,22 +804,12 @@ class _Chunk(torch.autograd.Function):
         prefix, decay, w, u, inverse, state, new = chunk_states(
             key, value, alpha, beta, plan.bounds, plan.segments, plan.full, tape
         )
-        queries, scores = [], []
+        queries = []
         for level in plan.levels:
             queries.append(r[level.rows].contiguous())
-            out, score = chunk_read(
-                queries[-1],
-                level.positions,
-                level.tiles,
-                key,
-                prefix,
-                decay,
-                state,
-                new,
-                save,
-                tape,
+            out = chunk_read(
+                queries[-1], level.positions, level.tiles, key, prefix, decay, state, new
             )
-            scores.append(score)
             output.index_add_(0, level.rows, out[..., width:])
             r.index_copy_(0, level.rows, out[..., :width])
             del out
@@ -829,7 +819,7 @@ class _Chunk(torch.autograd.Function):
             units = tuple(x.to(tape) for x in units)
             queries = [x.to(tape) for x in queries[1:]]
             ctx.save_for_backward(
-                *units, *scales, *leaf, value, beta, alpha, w, u, inverse, *queries, *scores
+                *units, *scales, *leaf, value, beta, alpha, w, u, inverse, *queries
             )
             ctx.plan, ctx.dk, ctx.width, ctx.tape = plan, dk, width, tape
         return output
@@ -851,15 +841,19 @@ class _Chunk(torch.autograd.Function):
     ) -> tuple[
         torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None, None
     ]:
-        from .gdn_kernel import chunk_decay, chunk_read_backward, chunk_scan, chunk_states_backward
+        from .gdn_kernel import (
+            chunk_decay,
+            chunk_read_backward,
+            chunk_scan,
+            chunk_scores,
+            chunk_states_backward,
+        )
 
         plan: ChunkPlan = ctx.plan
         dk, width = ctx.dk, ctx.width
         unit_query, unit_key, query_scale, key_scale, *saved = ctx.saved_tensors
         leaf = saved[:5] if len(plan.leaves) else []
-        value, beta, alpha, w, u, inverse, *tape = saved[len(leaf) :]
-        stored = max(len(plan.levels) - 1, 0)
-        queries, scores = list(tape[:stored]), tape[stored:]
+        value, beta, alpha, w, u, inverse, *queries = saved[len(leaf) :]
         key = _slots(F.pad(unit_key, (0, width - dk)), plan.sources)
         prefix, decay = chunk_decay(alpha, plan.segments)
         state, new = chunk_scan(key, prefix, decay, w, u, plan.bounds, plan.full, ctx.tape)
@@ -875,15 +869,15 @@ class _Chunk(torch.autograd.Function):
             torch.zeros_like(x, dtype=torch.float32) for x in (state, new, key, prefix, decay)
         )
         grad_r = grad_output.new_zeros(n, heads, width)
-        for level, query, score in zip(
-            reversed(plan.levels), reversed(queries), reversed(scores), strict=True
-        ):
+        for level, query in zip(reversed(plan.levels), reversed(queries), strict=True):
             grad_r.index_copy_(
                 0,
                 level.rows,
                 chunk_read_backward(
                     query,
-                    score,
+                    chunk_scores(
+                        query, level.positions, level.tiles, key, prefix, decay, state, new
+                    ),
                     torch.cat((grad_r[level.rows], grad_output[level.rows]), -1),
                     level.positions,
                     level.targets,

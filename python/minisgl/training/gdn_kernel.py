@@ -347,6 +347,7 @@ def _chunk_read(
     BC: tl.constexpr,
     BQ: tl.constexpr,
     SAVE: tl.constexpr,
+    OUTPUT: tl.constexpr,
     PRECISION: tl.constexpr,
 ):
     tile = tl.program_id(0)
@@ -363,15 +364,17 @@ def _chunk_read(
     score = tl.where(t[None, :] <= row[:, None], score, 0.0)
     if SAVE:
         tl.store(Scores + (read[:, None] * H + head) * BT + t[None, :], score, valid[:, None])
-    weight = score * decay
-    query *= top[:, None]
-    for offset in range(first, DW, BC):
-        c = offset + tl.arange(0, BC)
-        columns = c[None, :] < DW
-        state = tl.load(_tile(State, chunk, head, c, H, DW, BK), columns, other=0.0)
-        new = tl.load(New + (slot[:, None] * H + head) * DW + c[None, :], columns, other=0.0)
-        out = _mm(query, state, PRECISION) + _mm(weight, new, PRECISION)
-        tl.store(Out + (read[:, None] * H + head) * DW + c[None, :], out, valid[:, None] & columns)
+    if OUTPUT:
+        weight = score * decay
+        query *= top[:, None]
+        for offset in range(first, DW, BC):
+            c = offset + tl.arange(0, BC)
+            columns = c[None, :] < DW
+            state = tl.load(_tile(State, chunk, head, c, H, DW, BK), columns, other=0.0)
+            new = tl.load(New + (slot[:, None] * H + head) * DW + c[None, :], columns, other=0.0)
+            out = _mm(query, state, PRECISION) + _mm(weight, new, PRECISION)
+            mask = valid[:, None] & columns
+            tl.store(Out + (read[:, None] * H + head) * DW + c[None, :], out, mask)
 
 
 @tr.jit
@@ -802,15 +805,47 @@ def chunk_read(
     decay: torch.Tensor,
     state: torch.Tensor,
     new: torch.Tensor,
-    save: bool,
-    tape: torch.dtype = torch.float32,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     _check(query, key, prefix, decay, state, new)
     _check_index(positions, tiles)
     reads, heads, width = query.shape
-    columns = state.shape[-1]
-    output = query.new_empty(reads, heads, columns)
-    scores = query.new_empty((reads, heads, CHUNK) if save else (0,), dtype=tape)
+    output = query.new_empty(reads, heads, state.shape[-1])
+    _read(query, positions, tiles, key, prefix, decay, state, new, output, query.new_empty(0))
+    return output
+
+
+def chunk_scores(
+    query: torch.Tensor,
+    positions: torch.Tensor,
+    tiles: torch.Tensor,
+    key: torch.Tensor,
+    prefix: torch.Tensor,
+    decay: torch.Tensor,
+    state: torch.Tensor,
+    new: torch.Tensor,
+) -> torch.Tensor:
+    _check(prefix, decay)
+    _check_tape(query, key, state, new)
+    _check_index(positions, tiles)
+    reads, heads, _ = query.shape
+    scores = prefix.new_empty(reads, heads, CHUNK)
+    _read(query, positions, tiles, key, prefix, decay, state, new, prefix.new_empty(0), scores)
+    return scores
+
+
+def _read(
+    query: torch.Tensor,
+    positions: torch.Tensor,
+    tiles: torch.Tensor,
+    key: torch.Tensor,
+    prefix: torch.Tensor,
+    decay: torch.Tensor,
+    state: torch.Tensor,
+    new: torch.Tensor,
+    output: torch.Tensor,
+    scores: torch.Tensor,
+) -> None:
+    heads, width = query.shape[1:]
     with torch.cuda.device(query.device):
         _chunk_read[(len(tiles), heads)](
             query,
@@ -824,15 +859,15 @@ def chunk_read(
             output,
             scores,
             heads,
-            columns,
+            state.shape[-1],
             CHUNK,
             width,
             COLUMNS,
             QUERIES,
-            save,
+            scores.numel() > 0,
+            output.numel() > 0,
             **_launch("read", query.device),
         )
-    return output, scores
 
 
 def chunk_read_backward(
