@@ -251,8 +251,23 @@ async def mine(args: argparse.Namespace) -> None:
     )
 
 
+def _checkpoint_gdn_layers(model: torch.nn.Module, every: int) -> None:
+    kinds = getattr(model.config.get_text_config(), "layer_types", None)
+    if not kinds:
+        return
+    gdn = 0
+    for layer, kind in zip(model.get_decoder().layers, kinds, strict=True):
+        if kind == "linear_attention":
+            layer.gradient_checkpointing = every > 0 and gdn % every == 0
+            gdn += 1
+
+
 def train(args: argparse.Namespace) -> None:
     query_chunk_size = getattr(args, "query_chunk_size", Trace.query_chunk_size)
+    gdn_checkpoint_every = getattr(args, "gdn_checkpoint_every", 1)
+    expandable_segments = getattr(args, "expandable_segments", False)
+    if gdn_checkpoint_every < 0:
+        raise ValueError("GDN checkpoint frequency must be nonnegative")
     loss_chunk_size = getattr(args, "loss_chunk_size", 128)
     attention_checkpointing = getattr(
         args, "attention_checkpointing", Trace.attention_checkpointing
@@ -292,9 +307,12 @@ def train(args: argparse.Namespace) -> None:
     model_class = AutoModelForImageTextToText if multimodal else AutoModelForCausalLM
     if not multimodal:
         config = config.get_text_config()
+    if expandable_segments:
+        torch.cuda.memory._set_allocator_settings("expandable_segments:True")
     model = model_class.from_pretrained(data["model"], config=config, dtype=torch.float32).cuda()
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        _checkpoint_gdn_layers(model, gdn_checkpoint_every)
     initial = evaluate(model.eval(), examples, loss_chunk_size)
     errors = [
         abs(nll + lp)
@@ -350,6 +368,8 @@ def train(args: argparse.Namespace) -> None:
         "steps": step,
         "supervised_tokens": count,
         "gradient_checkpointing": args.gradient_checkpointing,
+        "gdn_checkpoint_every": gdn_checkpoint_every,
+        "expandable_segments": expandable_segments,
         "attention_checkpointing": attention_checkpointing,
         "loss_checkpointing": loss_checkpointing,
         "cache_replay_plans": cache_replay_plans,
@@ -390,6 +410,18 @@ def main() -> None:
     training.add_argument("--lr", type=float, default=3e-5)
     training.add_argument("--seed", type=int, default=7)
     training.add_argument("--gradient-checkpointing", action="store_true")
+    training.add_argument(
+        "--gdn-checkpoint-every",
+        type=int,
+        default=1,
+        help="With --gradient-checkpointing, checkpoint every N-th GDN layer; 0 checkpoints none",
+    )
+    training.add_argument(
+        "--expandable-segments",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use expandable CUDA allocator segments to curb fragmentation",
+    )
     training.add_argument(
         "--attention-checkpointing",
         action=argparse.BooleanOptionalAction,
@@ -454,6 +486,11 @@ def main() -> None:
             "--steps, --lr, --query-chunk-size, --loss-chunk-size and --gdn-segment-size "
             "must be positive"
         )
+    if args.command == "train" and args.gdn_checkpoint_every < 0:
+        parser.error("--gdn-checkpoint-every must be nonnegative")
+    if args.command == "train" and args.gdn_checkpoint_every != 1:
+        if not args.gradient_checkpointing:
+            parser.error("--gdn-checkpoint-every needs --gradient-checkpointing")
     torch.manual_seed(args.seed)
     if args.command == "mine":
         asyncio.run(mine(args))
