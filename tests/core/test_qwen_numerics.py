@@ -3,12 +3,79 @@ import pytest
 import torch
 
 from minisgl.layers.norm import RMSNorm, RMSNormFused
+from minisgl.utils import is_turing
 
 
 def reference_norm(x, weight, eps, offset=1.0):
     xf = x.float()
     normalized = xf * torch.rsqrt(xf.square().mean(-1, keepdim=True) + eps)
     return (normalized * (weight.float() + offset)).to(x.dtype)
+
+
+def test_rmsnorm_flattens_leading_dimensions_for_flashinfer(monkeypatch):
+    monkeypatch.setattr('minisgl.layers.norm.is_turing', lambda device: True)
+    x = torch.randn(5, 7, 11)
+    norm = object.__new__(RMSNorm)
+    norm.eps = 1e-6
+    norm.weight = torch.randn(11)
+    calls = []
+
+    def kernel(value, weight, eps, out=None):
+        calls.append(value.shape)
+        assert value.ndim == 2
+        result = reference_norm(value, weight, eps)
+        if out is not None:
+            out.copy_(result)
+            return out
+        return result
+
+    norm.rmsnorm = kernel
+    expected = reference_norm(x, norm.weight, norm.eps)
+    actual = norm.forward(x)
+    torch.testing.assert_close(actual, expected)
+    inplace = x.clone()
+    norm.forward_inplace(inplace)
+    torch.testing.assert_close(inplace, expected)
+    assert calls == [torch.Size([35, 11]), torch.Size([35, 11])]
+
+
+def test_rmsnorm_preserves_native_shape_off_turing(monkeypatch):
+    monkeypatch.setattr('minisgl.layers.norm.is_turing', lambda device: False)
+    x = torch.randn(5, 7, 11)
+    norm = object.__new__(RMSNorm)
+    norm.eps = 1e-6
+    norm.weight = torch.randn(11)
+    calls = []
+
+    def kernel(value, weight, eps, out=None):
+        calls.append(value.shape)
+        result = reference_norm(value, weight, eps)
+        if out is not None:
+            out.copy_(result)
+            return out
+        return result
+
+    norm.rmsnorm = kernel
+    norm.forward(x)
+    norm.forward_inplace(x.clone())
+    assert calls == [torch.Size([5, 7, 11]), torch.Size([5, 7, 11])]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA required')
+def test_qwen_qk_norm_accepts_3d_on_current_gpu():
+    torch.manual_seed(119)
+    dtype = torch.float16 if is_turing() else torch.bfloat16
+    x = torch.randn(17, 8, 256, device='cuda', dtype=dtype)
+    weight = (torch.randn(256, device='cuda') * .015).to(dtype)
+    norm = RMSNorm(256, 1e-6, weight_plus_one=True)
+    norm.weight = weight
+    expected = reference_norm(x, weight, norm.eps)
+    actual = norm.forward(x)
+    assert actual.shape == x.shape
+    torch.testing.assert_close(actual, expected, rtol=.008, atol=.002)
+    inplace = x.clone()
+    norm.forward_inplace(inplace)
+    torch.testing.assert_close(inplace, actual, rtol=0, atol=0)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA required')

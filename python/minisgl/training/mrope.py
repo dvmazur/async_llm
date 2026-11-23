@@ -11,14 +11,21 @@ def rotate(
     inv_freq: torch.Tensor,
     mrope_section: Sequence[int] | None = None,
 ) -> torch.Tensor:
+    """Apply partial RoPE, with functional axis selection for compiled mRoPE."""
     if positions.ndim == 2:
         if mrope_section is None:
             raise ValueError("Three-axis positions require an mRoPE model")
         frequencies = positions.float()[..., None] * inv_freq.float()
-        angles = frequencies[:, 0].clone()
-        for axis in (1, 2):
-            section = slice(axis, mrope_section[axis] * 3, 3)
-            angles[:, section] = frequencies[:, axis, section]
+        # Keep the interleaved frequency assignment free of strided writes:
+        # fusing those writes with gather/RoPE miscompiles in the pinned Torch.
+        frequency_index = torch.arange(inv_freq.numel(), device=positions.device)
+        use_axis_1 = (frequency_index % 3 == 1) & (frequency_index < mrope_section[1] * 3)
+        use_axis_2 = (frequency_index % 3 == 2) & (frequency_index < mrope_section[2] * 3)
+        angles = torch.where(
+            use_axis_1,
+            frequencies[:, 1],
+            torch.where(use_axis_2, frequencies[:, 2], frequencies[:, 0]),
+        )
     else:
         angles = positions.float()[:, None] * inv_freq.float()[None, :]
     cos, sin = angles.cos()[:, None, :], angles.sin()[:, None, :]
