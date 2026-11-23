@@ -30,13 +30,15 @@ Usage::
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field, replace
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 import torch
+
 from minisgl.core import Batch, Req
-from minisgl.utils import div_ceil
+from minisgl.utils import div_ceil, is_turing
 
 from .attention import PrefillSpec, SharedCacheAttention
 from .gdn import SharedCacheGDN
@@ -46,6 +48,24 @@ from .worker_group import WorkerGroup
 
 if TYPE_CHECKING:
     from minisgl.engine import Engine
+
+
+def _compatible_shared_graph_config(device, sizes, limit, prefill_rows):
+    """Disable only the unsupported shared graph optimization on Turing."""
+    graphs_requested = limit != 0 and (
+        bool(sizes)
+        or bool(prefill_rows)
+        or (sizes is None and limit is not None and limit > 0)
+    )
+    if is_turing(device) and graphs_requested:
+        warnings.warn(
+            "Shared-cache CUDA graphs are disabled on SM75 (Turing); "
+            "shared KV-cache attention remains enabled in eager mode.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return [], 0, []
+    return sizes, limit, prefill_rows
 
 
 @dataclass
@@ -282,6 +302,9 @@ class SharedCacheSession:
         sizes = engine.config.cuda_graph_bs
         limit = engine.config.cuda_graph_max_bs
         prefill_rows = engine.config.shared_cuda_graph_prefill_rows or []
+        sizes, limit, prefill_rows = _compatible_shared_graph_config(
+            self.device, sizes, limit, prefill_rows
+        )
         if sizes is None and limit is not None and limit > 0:
             from minisgl.engine.graph import _determine_cuda_graph_bs
             sizes = _determine_cuda_graph_bs(None, limit, 0)
@@ -289,6 +312,7 @@ class SharedCacheSession:
             raise ValueError('Shared prefill graphs require explicit decode graph sizes or a positive max')
         if sizes and limit != 0:
             from minisgl.engine.graph import GraphRunner
+
             from .graph import SharedGraphIO
             if any(bs <= 0 or bs > engine.config.max_running_req for bs in sizes):
                 raise ValueError("Shared graph sizes must be within max_running_req")

@@ -328,6 +328,7 @@ def train(args):
     expandable_segments = getattr(args, "expandable_segments", False)
     if gdn_checkpoint_every < 0:
         raise ValueError("GDN checkpoint frequency must be nonnegative")
+    replay_attention_backend = getattr(args, "replay_attention_backend", Trace.attention_backend)
     loss_chunk_size = getattr(args, "loss_chunk_size", 128)
     attention_checkpointing = getattr(
         args, "attention_checkpointing", Trace.attention_checkpointing
@@ -338,7 +339,13 @@ def train(args):
     gdn_read_mode = getattr(args, "gdn_read_mode", Trace.gdn_read_mode)
     gdn_cache_reused = getattr(args, "gdn_cache_reused", Trace.gdn_cache_reused)
     gdn_read_backend = getattr(args, "gdn_read_backend", Trace.gdn_read_backend)
-    _validate_replay_options(query_chunk_size, gdn_segment_size, gdn_read_mode, gdn_read_backend)
+    _validate_replay_options(
+        query_chunk_size,
+        gdn_segment_size,
+        gdn_read_mode,
+        gdn_read_backend,
+        replay_attention_backend,
+    )
     data = json.loads(args.data.read_text())
     examples = []
     for example in data["examples"]:
@@ -349,6 +356,7 @@ def train(args):
         plan = trace.to(
             "cpu",
             query_chunk_size=query_chunk_size,
+            attention_backend=replay_attention_backend,
             attention_checkpointing=attention_checkpointing,
             cache_plans=cache_replay_plans,
             gdn_segment_size=gdn_segment_size,
@@ -434,6 +442,7 @@ def train(args):
         "loss_checkpointing": loss_checkpointing,
         "cache_replay_plans": cache_replay_plans,
         "query_chunk_size": query_chunk_size,
+        "replay_attention_backend": replay_attention_backend,
         "loss_chunk_size": loss_chunk_size,
         "gdn_segment_size": gdn_segment_size,
         "gdn_read_mode": gdn_read_mode,
@@ -507,6 +516,12 @@ def main():
         help="Keep replay plans between forwards; disable to save device memory and recompile each time",
     )
     training.add_argument("--query-chunk-size", type=int, default=Trace.query_chunk_size)
+    training.add_argument(
+        "--replay-attention-backend",
+        choices=("auto", "torch", "torch_optimized", "fa4"),
+        default=Trace.attention_backend,
+        help="Replay attention implementation; auto selects FA4 on supported Hopper inputs",
+    )
     training.add_argument("--loss-chunk-size", type=int, default=128)
     training.add_argument(
         "--gdn-segment-size",
