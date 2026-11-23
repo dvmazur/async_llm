@@ -21,6 +21,24 @@ def is_arch_supported(major: int, minor: int = 0) -> bool:
     return arch >= (major, minor)
 
 
+def get_device_capability(device=None) -> Tuple[int, int] | None:
+    """Return the capability of *device* without assuming the default GPU."""
+    import torch
+
+    if not torch.cuda.is_available():
+        return None
+    return torch.cuda.get_device_capability(device)
+
+
+def is_turing(device=None) -> bool:
+    """Whether *device* is an NVIDIA Turing GPU (SM75).
+
+    Volta and Pascal are intentionally not included: mini-sglang does not
+    claim support for those architectures.
+    """
+    return get_device_capability(device) == (7, 5)
+
+
 def is_sm90_supported() -> bool:
     return is_arch_supported(9, 0)
 
