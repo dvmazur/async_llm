@@ -106,6 +106,7 @@ class GDNReplay:
     views: tuple = ()
     homes: tuple = ()
     versions: tuple = ()
+    tape_dtype: torch.dtype = torch.float32
 
     @cached_property
     @torch.inference_mode(False)
@@ -754,6 +755,16 @@ class _Delta(torch.autograd.Function):
         return grad_query, grad_key, grad_value, grad_alpha, grad_beta, None, None
 
 
+def _slots(x: torch.Tensor, sources: torch.Tensor) -> torch.Tensor:
+    return torch.cat((x, x.new_zeros(1, *x.shape[1:])))[sources].contiguous()
+
+
+def _leaf_reads(leaf: Sequence[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+    leaf_r, leaf_key, leaf_value, leaf_alpha, leaf_beta = leaf
+    score = (leaf_key * leaf_r).sum(-1, keepdim=True)
+    return leaf_beta * leaf_value * score, leaf_alpha * (leaf_r - leaf_beta * leaf_key * score)
+
+
 def _normalize_backward(
     unit: torch.Tensor, scale: torch.Tensor, grad: torch.Tensor
 ) -> torch.Tensor:
@@ -771,6 +782,7 @@ class _Chunk(torch.autograd.Function):
         beta: torch.Tensor,
         plan: ChunkPlan,
         save: bool,
+        tape: torch.dtype,
     ) -> torch.Tensor:
         from .gdn_kernel import chunk_read, chunk_states
 
@@ -778,43 +790,53 @@ class _Chunk(torch.autograd.Function):
         width = max(16, 1 << (dk - 1).bit_length())
         scales = tuple(torch.rsqrt(x.square().sum(-1, keepdim=True) + 1e-6) for x in (query, key))
         units = tuple(x * scale for x, scale in zip((query, key), scales, strict=True))
-        query, key = (F.pad(x, (0, width - dk)) for x in units)
-        r = query * dk**-0.5
+        key = F.pad(units[1], (0, width - dk))
+        r = F.pad(units[0], (0, width - dk)) * dk**-0.5
         output = value.new_zeros(n, heads, value.shape[-1])
         leaf: tuple[torch.Tensor, ...] = ()
         if len(plan.leaves):
             leaf = tuple(x[plan.leaves] for x in (r, key, value, alpha[..., None], beta[..., None]))
-            leaf_r, leaf_key, leaf_value, leaf_alpha, leaf_beta = leaf
-            score = (leaf_key * leaf_r).sum(-1, keepdim=True)
-            output.index_copy_(0, plan.leaves, leaf_beta * leaf_value * score)
-            r.index_copy_(0, plan.leaves, leaf_alpha * (leaf_r - leaf_beta * leaf_key * score))
-        key, value, beta = (
-            torch.cat((x, x.new_zeros(1, *x.shape[1:])))[plan.sources].contiguous()
-            for x in (key, value, beta)
-        )
+            leaf_output, leaf_query = _leaf_reads(leaf)
+            output.index_copy_(0, plan.leaves, leaf_output)
+            r.index_copy_(0, plan.leaves, leaf_query)
+        key, value, beta = (_slots(x, plan.sources) for x in (key, value, beta))
         alpha = torch.cat((alpha, alpha.new_ones(1, heads)))[plan.sources].contiguous()
         prefix, decay, w, inverse, state, new = chunk_states(
-            key, value, alpha, beta, plan.bounds, plan.segments, plan.full
+            key, value, alpha, beta, plan.bounds, plan.segments, plan.full, tape
         )
         queries, scores = [], []
         for level in plan.levels:
             queries.append(r[level.rows].contiguous())
             out, score = chunk_read(
-                queries[-1], level.positions, level.tiles, key, prefix, decay, state, new, save
+                queries[-1],
+                level.positions,
+                level.tiles,
+                key,
+                prefix,
+                decay,
+                state,
+                new,
+                save,
+                tape,
             )
             scores.append(score)
             output.index_add_(0, level.rows, out[..., width:])
             r.index_copy_(0, level.rows, out[..., :width])
+            del out
+        del r
         if save:
+            state = state.to(tape)
+            new = new.to(tape)
+            value, w = value.to(tape), w.to(tape)
+            units = tuple(x.to(tape) for x in units)
+            queries = [x.to(tape) for x in queries[1:]]
             ctx.save_for_backward(
                 *units,
                 *scales,
                 *leaf,
-                key,
                 value,
                 beta,
-                prefix,
-                decay,
+                alpha,
                 w,
                 inverse,
                 state,
@@ -822,13 +844,15 @@ class _Chunk(torch.autograd.Function):
                 *queries,
                 *scores,
             )
-            ctx.plan, ctx.dk = plan, dk
+            ctx.plan, ctx.dk, ctx.width = plan, dk, width
         return output
 
     @staticmethod
     def backward(
         ctx: Any, grad_output: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
+    ) -> tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None, None
+    ]:
         if torch.is_grad_enabled():
             raise RuntimeError("GDN replay supports first-order gradients only")
         with torch.autocast(grad_output.device.type, enabled=False):
@@ -837,56 +861,74 @@ class _Chunk(torch.autograd.Function):
     @staticmethod
     def _backward(
         ctx: Any, grad_output: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
-        from .gdn_kernel import chunk_read_backward, chunk_states_backward
+    ) -> tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None, None
+    ]:
+        from .gdn_kernel import chunk_decay, chunk_read_backward, chunk_states_backward
 
         plan: ChunkPlan = ctx.plan
+        dk, width = ctx.dk, ctx.width
         unit_query, unit_key, query_scale, key_scale, *saved = ctx.saved_tensors
         leaf = saved[:5] if len(plan.leaves) else []
-        key, value, beta, prefix, decay, w, inverse, state, new, *tape = saved[len(leaf) :]
-        queries, scores = tape[: len(plan.levels)], tape[len(plan.levels) :]
+        value, beta, alpha, w, inverse, state, new, *tape = saved[len(leaf) :]
+        stored = max(len(plan.levels) - 1, 0)
+        queries, scores = list(tape[:stored]), tape[stored:]
+        key = _slots(F.pad(unit_key, (0, width - dk)), plan.sources)
+        prefix, decay = chunk_decay(alpha, plan.segments)
+        if plan.levels:
+            r = F.pad(unit_query.float(), (0, width - dk)) * dk**-0.5
+            if leaf:
+                r.index_copy_(0, plan.leaves, _leaf_reads(leaf)[1])
+            queries.insert(0, r[plan.levels[0].rows].contiguous())
+            del r
         grad_output = grad_output.float()
-        n, heads, width = len(grad_output), key.shape[1], key.shape[-1]
-        grads = tuple(map(torch.zeros_like, (state, new, key, prefix, decay)))
-        grad_r = key.new_zeros(n, heads, width)
+        n, heads = len(grad_output), key.shape[1]
+        grads = tuple(
+            torch.zeros_like(x, dtype=torch.float32) for x in (state, new, key, prefix, decay)
+        )
+        grad_r = grad_output.new_zeros(n, heads, width)
         for level, query, score in zip(
             reversed(plan.levels), reversed(queries), reversed(scores), strict=True
         ):
-            grad = torch.cat((grad_r[level.rows], grad_output[level.rows]), -1)
-            grad_query = chunk_read_backward(
-                query,
-                score,
-                grad,
-                level.positions,
-                level.targets,
-                level.offsets,
-                level.splits,
-                key,
-                prefix,
-                decay,
-                state,
-                new,
-                grads,
+            grad_r.index_copy_(
+                0,
+                level.rows,
+                chunk_read_backward(
+                    query,
+                    score,
+                    torch.cat((grad_r[level.rows], grad_output[level.rows]), -1),
+                    level.positions,
+                    level.targets,
+                    level.offsets,
+                    level.splits,
+                    key,
+                    prefix,
+                    decay,
+                    state,
+                    new,
+                    grads,
+                ),
             )
-            grad_r.index_copy_(0, level.rows, grad_query)
-        grad_key, grad_value, grad_alpha, grad_beta = (
-            torch.cat((x, x.new_zeros(1, *x.shape[1:])))[plan.gather].sum(1)
-            for x in chunk_states_backward(
-                key,
-                value,
-                beta,
-                prefix,
-                decay,
-                w,
-                inverse,
-                state,
-                new,
-                plan.bounds,
-                plan.segments,
-                plan.full,
-                grads,
-            )
+        slot_grads = chunk_states_backward(
+            key,
+            value,
+            beta,
+            prefix,
+            decay,
+            w,
+            inverse,
+            state,
+            new,
+            plan.bounds,
+            plan.segments,
+            plan.full,
+            grads,
         )
+        del grads
+        grad_key, grad_value, grad_alpha, grad_beta = (
+            torch.cat((x, x.new_zeros(1, *x.shape[1:])))[plan.gather].sum(1) for x in slot_grads
+        )
+        del slot_grads
         if leaf:
             leaf_r, leaf_key, leaf_value, leaf_alpha, leaf_beta = leaf
             upper, grad = grad_r[plan.leaves], grad_output[plan.leaves]
@@ -901,13 +943,13 @@ class _Chunk(torch.autograd.Function):
                 0, plan.leaves, leaf_beta * (mixed * leaf_r - leaf_alpha * score * upper)
             )
             grad_r.index_copy_(0, plan.leaves, leaf_alpha * upper + leaf_beta * mixed * leaf_key)
-        dk = ctx.dk
         return (
-            _normalize_backward(unit_query, query_scale, grad_r[..., :dk] * dk**-0.5),
-            _normalize_backward(unit_key, key_scale, grad_key[..., :dk]),
+            _normalize_backward(unit_query.float(), query_scale, grad_r[..., :dk] * dk**-0.5),
+            _normalize_backward(unit_key.float(), key_scale, grad_key[..., :dk]),
             grad_value,
             grad_alpha,
             grad_beta,
+            None,
             None,
             None,
         )
@@ -931,12 +973,17 @@ def delta(
         raise ValueError("Read backend must be torch or triton")
     if replay.read_backend == "triton" and not query.is_cuda:
         raise ValueError("Triton GDN reads require CUDA FP32 inputs")
+    if replay.tape_dtype not in {torch.float32, torch.bfloat16}:
+        raise ValueError("GDN tape dtype must be float32 or bfloat16")
+    if replay.tape_dtype != torch.float32 and replay.read_backend != "triton":
+        raise ValueError("A bfloat16 GDN tape requires the triton read backend")
     with torch.autocast(query.device.type, enabled=False):
         inputs = tuple(x.float() for x in (query, key, value, alpha, beta))
         query, key, value, alpha, beta = inputs
         save = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
         if replay.read_backend == "triton":
-            return _Chunk.apply(query, key, value, alpha, beta, replay.chunk_plan, save)
+            plan, tape = replay.chunk_plan, replay.tape_dtype
+            return _Chunk.apply(query, key, value, alpha, beta, plan, save, tape)
         query = query * torch.rsqrt(query.square().sum(-1, keepdim=True) + 1e-6)
         key = key * torch.rsqrt(key.square().sum(-1, keepdim=True) + 1e-6)
         return _Delta.apply(query, key, value, alpha, beta, replay, save)
