@@ -30,8 +30,6 @@ from typing import Optional, Tuple
 
 import torch
 
-from minisgl.utils import is_turing
-
 Tensor = torch.Tensor
 
 
@@ -116,11 +114,9 @@ def compose_gdn_affines(
         # CUDA bmm uses BF16 operands with FP32 output/accumulation. Add B in
         # FP32 and round only the final stored summary, just like compose_level.
         def mm(x, y):
-            if x.is_cuda and not is_turing(x.device):
+            if x.is_cuda:
                 return torch.bmm(x.flatten(0, 1), y.flatten(0, 1),
                                  out_dtype=torch.float32).reshape(*x.shape[:-1], y.shape[-1])
-            # SM75 does not support BF16 operands with an FP32 bmm output.
-            # Explicit FP32 operands preserve the accumulation/storage boundary.
             return torch.matmul(x.float(), y.float())
         A = mm(A_first, A_second).to(torch.bfloat16)
         B = (mm(B_first, A_second) + B_second.float()).to(torch.bfloat16)

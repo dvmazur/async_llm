@@ -2,7 +2,6 @@ from typing import Tuple
 
 import torch
 
-from ..utils.arch import is_turing
 from .base import BaseOP
 
 
@@ -17,17 +16,10 @@ class RMSNorm(BaseOP):
         self.rmsnorm = gemma_rmsnorm if weight_plus_one else rmsnorm
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not is_turing(x.device) or x.ndim == 2:
-            return self.rmsnorm(x, self.weight, self.eps)
-        shape = x.shape
-        x = x.reshape(-1, shape[-1])
-        return self.rmsnorm(x, self.weight, self.eps).reshape(shape)
+        return self.rmsnorm(x, self.weight, self.eps)
 
     def forward_inplace(self, x: torch.Tensor) -> None:
-        if not is_turing(x.device) or x.ndim == 2:
-            self.rmsnorm(x, self.weight, self.eps, out=x)
-        else:
-            x.copy_(self.forward(x))
+        self.rmsnorm(x, self.weight, self.eps, out=x)
 
 
 class RMSNormFused(BaseOP):

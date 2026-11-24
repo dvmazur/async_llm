@@ -81,8 +81,8 @@ def test_fp32_summary_scan_against_original(lengths):
         for actual, expected in zip(targets[w].linear_affine[0], refs[w].linear_affine[0]):
             # Torch GEMV and the scan may use different FP32 reduction trees.
             # Ragged slicing can also change the key-normalization reduction.
-            atol = 5e-6 * expected.abs().max().item()
-            torch.testing.assert_close(actual, expected, atol=atol, rtol=0)
+            atol, rtol = (1e-7, 1e-6) if len(lengths) == 1 else (5e-6, 5e-6)
+            torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize('use_fla', [True, False])

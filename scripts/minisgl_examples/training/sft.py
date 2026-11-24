@@ -251,24 +251,8 @@ async def mine(args: argparse.Namespace) -> None:
     )
 
 
-def _checkpoint_gdn_layers(model: torch.nn.Module, every: int) -> None:
-    kinds = getattr(model.config.get_text_config(), "layer_types", None)
-    if not kinds:
-        return
-    gdn = 0
-    for layer, kind in zip(model.get_decoder().layers, kinds, strict=True):
-        if kind == "linear_attention":
-            layer.gradient_checkpointing = every > 0 and gdn % every == 0
-            gdn += 1
-
-
 def train(args: argparse.Namespace) -> None:
     query_chunk_size = getattr(args, "query_chunk_size", Trace.query_chunk_size)
-    gdn_checkpoint_every = getattr(args, "gdn_checkpoint_every", 1)
-    expandable_segments = getattr(args, "expandable_segments", False)
-    if gdn_checkpoint_every < 0:
-        raise ValueError("GDN checkpoint frequency must be nonnegative")
-    replay_attention_backend = getattr(args, "replay_attention_backend", Trace.attention_backend)
     loss_chunk_size = getattr(args, "loss_chunk_size", 128)
     attention_checkpointing = getattr(
         args, "attention_checkpointing", Trace.attention_checkpointing
@@ -279,13 +263,7 @@ def train(args: argparse.Namespace) -> None:
     gdn_read_mode = getattr(args, "gdn_read_mode", Trace.gdn_read_mode)
     gdn_cache_reused = getattr(args, "gdn_cache_reused", Trace.gdn_cache_reused)
     gdn_read_backend = getattr(args, "gdn_read_backend", Trace.gdn_read_backend)
-    _validate_replay_options(
-        query_chunk_size,
-        gdn_segment_size,
-        gdn_read_mode,
-        gdn_read_backend,
-        replay_attention_backend,
-    )
+    _validate_replay_options(query_chunk_size, gdn_segment_size, gdn_read_mode, gdn_read_backend)
     data = json.loads(args.data.read_text())
     examples = []
     for example in data["examples"]:
@@ -296,7 +274,6 @@ def train(args: argparse.Namespace) -> None:
         plan = trace.to(
             "cpu",
             query_chunk_size=query_chunk_size,
-            attention_backend=replay_attention_backend,
             attention_checkpointing=attention_checkpointing,
             cache_plans=cache_replay_plans,
             gdn_segment_size=gdn_segment_size,
@@ -315,12 +292,9 @@ def train(args: argparse.Namespace) -> None:
     model_class = AutoModelForImageTextToText if multimodal else AutoModelForCausalLM
     if not multimodal:
         config = config.get_text_config()
-    if expandable_segments:
-        torch.cuda.memory._set_allocator_settings("expandable_segments:True")
     model = model_class.from_pretrained(data["model"], config=config, dtype=torch.float32).cuda()
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-        _checkpoint_gdn_layers(model, gdn_checkpoint_every)
     initial = evaluate(model.eval(), examples, loss_chunk_size)
     errors = [
         abs(nll + lp)
@@ -376,13 +350,10 @@ def train(args: argparse.Namespace) -> None:
         "steps": step,
         "supervised_tokens": count,
         "gradient_checkpointing": args.gradient_checkpointing,
-        "gdn_checkpoint_every": gdn_checkpoint_every,
-        "expandable_segments": expandable_segments,
         "attention_checkpointing": attention_checkpointing,
         "loss_checkpointing": loss_checkpointing,
         "cache_replay_plans": cache_replay_plans,
         "query_chunk_size": query_chunk_size,
-        "replay_attention_backend": replay_attention_backend,
         "loss_chunk_size": loss_chunk_size,
         "gdn_segment_size": gdn_segment_size,
         "gdn_read_mode": gdn_read_mode,
@@ -420,18 +391,6 @@ def main() -> None:
     training.add_argument("--seed", type=int, default=7)
     training.add_argument("--gradient-checkpointing", action="store_true")
     training.add_argument(
-        "--gdn-checkpoint-every",
-        type=int,
-        default=1,
-        help="With --gradient-checkpointing, checkpoint every N-th GDN layer; 0 checkpoints none",
-    )
-    training.add_argument(
-        "--expandable-segments",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Use expandable CUDA allocator segments to curb fragmentation",
-    )
-    training.add_argument(
         "--attention-checkpointing",
         action=argparse.BooleanOptionalAction,
         default=Trace.attention_checkpointing,
@@ -450,12 +409,6 @@ def main() -> None:
         help="Keep replay plans between forwards; disable to save device memory and recompile each time",
     )
     training.add_argument("--query-chunk-size", type=int, default=Trace.query_chunk_size)
-    training.add_argument(
-        "--replay-attention-backend",
-        choices=("auto", "torch", "torch_optimized", "fa4"),
-        default=Trace.attention_backend,
-        help="Replay attention implementation; auto selects FA4 on supported Hopper inputs",
-    )
     training.add_argument("--loss-chunk-size", type=int, default=128)
     training.add_argument(
         "--gdn-segment-size",
@@ -501,11 +454,6 @@ def main() -> None:
             "--steps, --lr, --query-chunk-size, --loss-chunk-size and --gdn-segment-size "
             "must be positive"
         )
-    if args.command == "train" and args.gdn_checkpoint_every < 0:
-        parser.error("--gdn-checkpoint-every must be nonnegative")
-    if args.command == "train" and args.gdn_checkpoint_every != 1:
-        if not args.gradient_checkpointing:
-            parser.error("--gdn-checkpoint-every needs --gradient-checkpointing")
     torch.manual_seed(args.seed)
     if args.command == "mine":
         asyncio.run(mine(args))

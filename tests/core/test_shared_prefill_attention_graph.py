@@ -4,15 +4,14 @@ from unittest.mock import patch
 
 import pytest
 import torch
+
 from minisgl.kernel import store_cache
 from minisgl.shared_cache.attention import PrefillSpec, SharedCacheAttention
 from minisgl.shared_cache.attention_graph import SharedPrefillAttentionBuffers
 from minisgl.shared_cache.shared_block import CacheBlock
-from minisgl.utils import is_turing
 
 
-@pytest.mark.skipif(not torch.cuda.is_available() or is_turing(),
-                    reason='FlashInfer shared graph replay is unsupported on SM75')
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA shared prefill Attention')
 @pytest.mark.parametrize('mrope', [False, True])
 @torch.inference_mode()
 def test_prefill_attention_changes_contexts_rows_and_pages_without_recapture(mrope):

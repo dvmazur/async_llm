@@ -48,63 +48,6 @@ format-v1 JSON, and `BlockUpdate.sources` are no longer supported. Record throug
 `refs`, including `refs=()` for a clear. `trace.tokens` is a derived view for
 replay and inspection, not a serialized field.
 
-## Full attention backends
-
-Select a backend with `trace.to(device, attention_backend=...)`:
-
-- `auto` (default): FA4 for supported FP16/BF16 inputs on Hopper (SM90) or B300 (SM103),
-  optimized Torch on other CUDA configurations, and the Torch reference on CPU.
-  If FA4's optional dependencies are unavailable, automatic selection uses
-  optimized Torch. Runtime errors from the selected backend are propagated.
-- `torch`: dense FP32 reference, returning the original V dtype.
-- `torch_optimized`: the same precision, sharing K/V preparation and K RoPE
-  across query chunks and compiling the CUDA chunk computation with `torch.compile`.
-- `fa4`: compiled gather/RoPE preparation, varlen attention, and a differentiable
-  LSE merge. Uses native full/causal masks when the complete plan permits them;
-  historical views retain the custom mask. Requires matching FP16/BF16 Q/K/V
-  activations and head dimensions divisible by 8: 8 through 256 on Hopper,
-  or 8 through 128 and 256 on B300.
-
-Explicit selections are preserved: `attention_backend="torch"` always uses the
-reference, and `attention_backend="fa4"` reports unsupported inputs or missing
-dependencies instead of changing backend. Other CUDA architectures, including
-unverified Blackwell capabilities, use optimized Torch in automatic mode.
-
-For B300 with head dimension 256, set `FLASH_ATTENTION_HD256_GENERIC_BWD=1`
-for the entire training process, including backward and checkpoint recomputation.
-FA4 4.0.0b37's dedicated HD256 backward rejects the LSE gradient needed to merge
-replay's partial outputs. This flag selects its generic backward with a 64-row
-KV tile and 2CTA; `FA_DISABLE_2CTA=1` is incompatible with that path. The replay
-backend reads this flag without changing the process environment. Without it,
-`auto` uses optimized Torch for B300 HD256 and explicit `fa4` raises an explanatory
-error. Hopper and B300 head dimensions up to 128 do not require this flag.
-
-FA4 4.0.0b37 caches one CUDA architecture for the lifetime of the process. Replay
-initializes that cache on the input device and preserves the caller's current
-device. If FA4 already selected another architecture, `auto` uses optimized Torch
-and explicit `fa4` reports the mismatch. Use separate processes to use FA4 on
-different architectures; the cache is never reset while backward graphs may be live.
-
-The default query chunk size is 1024. Override it with
-`trace.to(query_chunk_size=...)`; smaller chunks reduce score workspace at the
-cost of more launches. Attention checkpointing remains enabled by default and
-can be disabled with `attention_checkpointing=False`.
-
-For FA4, install the optional dependencies in the training environment:
-
-```bash
-pip install 'flash-attn-4[cu13]==4.0.0b37' \
-  'nvidia-cutlass-dsl[cu13]==4.6.2' 'quack-kernels==0.6.4'
-```
-
-Compiled attention specializes on prepared trace shapes, so the first
-forward/backward for a new shape can be expensive. FA4 and merge kernels also
-compile on first use. Compiled regions allow up to 1024 static specializations;
-compiler failures and exhausted limits are reported rather than silently
-switching to eager. Run backward outside the forward's optional autocast context.
-Plans retain metadata only, not activations. See the
-[explanation, measurements, and implementation appendix](../../../docs/efficient-attention-for-async-llm-training-task.pdf).
-
 ## Record and backpropagate
 
 This text example records a single causal prefill, then backpropagates a

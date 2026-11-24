@@ -3,12 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+
 from minisgl.shared_cache.attention import SharedCacheAttention
 from minisgl.shared_cache.attention_graph import (
-    SharedDecodeAttentionBuffers,
-    SharedPrefillAttentionBuffers,
+    SharedDecodeAttentionBuffers, SharedPrefillAttentionBuffers,
 )
-from minisgl.utils import is_turing
 
 
 def cpu_attention(monkeypatch):
@@ -77,8 +76,7 @@ def test_empty_catalogue_and_foreign_owner(monkeypatch):
         attention.prepare_workspace([SimpleNamespace(attention=object())])
 
 
-@pytest.mark.skipif(not torch.cuda.is_available() or is_turing(),
-                    reason='FlashInfer shared graph replay is unsupported on SM75')
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='FlashInfer workspace and replay')
 @pytest.mark.parametrize('heads,kv_heads,dim', [(16, 2, 256), (4, 4, 128)])
 @pytest.mark.parametrize('with_prefill', [False, True])
 @torch.inference_mode()

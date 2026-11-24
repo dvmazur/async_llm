@@ -3,8 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+
 from minisgl.engine.engine import _adjust_config
-from minisgl.utils.arch import _get_torch_cuda_version, is_turing
+from minisgl.utils.arch import _get_torch_cuda_version
 
 
 @pytest.fixture(autouse=True)
@@ -41,10 +42,3 @@ def test_explicit_attention_selection_does_not_probe_hardware(monkeypatch):
         is_hybrid=False, is_moe=False), page_size=1)
     _adjust_config(config)
     assert config.attention_backend == "fi" and config.page_size == 1
-
-
-@pytest.mark.parametrize("arch,expected", [((7, 5), True), ((7, 0), False), ((8, 0), False), ((9, 0), False)])
-def test_turing_detection_is_exact(monkeypatch, arch, expected):
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *args: arch)
-    assert is_turing(torch.device("cuda:0")) is expected

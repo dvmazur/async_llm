@@ -3,7 +3,6 @@ import warnings
 from typing import Dict, Tuple
 
 import torch
-
 from minisgl.moe import BaseMoeBackend
 from minisgl.utils import div_ceil
 
@@ -14,19 +13,13 @@ def _use_torch_moe_fallback(device: torch.device) -> bool:
         warnings.warn(f"MoE routing/alignment uses Torch fallback on {device}: CUDA backend unavailable. "
                       "Expert GEMM backend is unchanged.", RuntimeWarning, stacklevel=2)
         return True
-    if torch.cuda.get_device_capability(device) == (7, 5):
-        warnings.warn("MoE routing/alignment uses Torch fallback on SM75 (Turing): "
-                      "the pinned sgl_kernel does not provide reliable Turing kernels. "
-                      "Triton expert GEMMs remain enabled.",
-                      RuntimeWarning, stacklevel=2)
-        return True
     if torch.cuda.get_device_capability(device) == (12, 1):
         warnings.warn("MoE routing/alignment uses Torch fallback on SM121 (GB10): intentional "
                       "sgl_kernel compatibility guard. Triton expert GEMMs remain enabled.",
                       RuntimeWarning, stacklevel=2)
         return True
     try:
-        import sgl_kernel as _sgl_kernel  # noqa: F401
+        import sgl_kernel
     except (ImportError, OSError) as exc:
         warnings.warn(f"MoE routing/alignment uses Torch fallback because sgl_kernel failed to import: "
                       f"{type(exc).__name__}: {exc}. This can reduce throughput. Install the "

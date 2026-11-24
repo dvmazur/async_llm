@@ -144,13 +144,10 @@ The model comes from the data file. There is no separate training model flag.
 | `--lr` | `3e-5` | Positive AdamW learning rate; larger values may fit faster but destabilize training. |
 | `--seed` | `7` | Torch seed. |
 | `--gradient-checkpointing` | off | Recompute decoder layers in backward: less activation memory, more compute. |
-| `--gdn-checkpoint-every` | `1` | With `--gradient-checkpointing`, checkpoint every N-th GDN layer; `0` checkpoints none while attention layers stay checkpointed. Fewer checkpointed GDN layers: less recompute, more saved activations. |
-| `--expandable-segments` / `--no-expandable-segments` | off | Expandable CUDA allocator segments: less fragmentation when many layers keep their activations, e.g. with `--gdn-checkpoint-every 0`. |
 | `--attention-checkpointing` / `--no-attention-checkpointing` | on | Recompute full-attention chunks: less saved attention memory, more compute. Independent of layer checkpointing. |
 | `--loss-checkpointing` / `--no-loss-checkpointing` | on | Recompute vocabulary projection/loss chunks: less saved logits memory, more compute. Independent of layer checkpointing. |
 | `--cache-replay-plans` / `--no-cache-replay-plans` | on | Retain device metadata between forwards: faster repeated replay, memory retained per visited trace. Off rebuilds next forward; layers and backward still share the active plan. |
-| `--query-chunk-size` | `1024` | Positive full-attention query rows per chunk. Smaller reduces score workspace but adds gathers/launches; never truncates history. |
-| `--replay-attention-backend` | `auto` | `auto`, `torch`, `torch_optimized`, or `fa4`. Auto uses FA4 for supported Hopper FP16/BF16 inputs and optimized Torch for other CUDA inputs. Explicit selections are preserved. |
+| `--query-chunk-size` | `128` | Positive full-attention query rows per chunk. Smaller reduces score workspace but adds gathers/launches; never truncates history. |
 | `--loss-chunk-size` | `128` | Positive supervised rows per vocabulary projection. Smaller reduces logits workspace but adds overhead. |
 | `--gdn-segment-size` | `8` | Positive compact segment bound; `1` disables short-segment compaction. Larger values can save dense summaries but increase local triangular work and reconstruction. |
 | `--gdn-read-mode` | `expanded` | `expanded` reads compact segments token by token; `factorized` shortens read paths but adds factor caches and gathers. Speed and peak memory depend on layout. |
@@ -159,10 +156,6 @@ The model comes from the data file. There is no separate training model flag.
 
 GDN flags affect only Qwen3.5 linear-attention layers. None of the optional
 tradeoffs is a universal speed or memory win; compare on the intended trace.
-This example loads FP32 model weights, so its automatic full-attention backend
-is optimized Torch. FA4 requires FP16/BF16 activations; the replay API also
-supports models loaded in those dtypes. This replay option is independent of the
-inference engine's attention backend used while collecting traces.
 Full attention can still require quadratic work in visible context. GDN avoids
 flattening copied history, but dense summaries, saved read vectors, and deep merge
 dependencies still cost memory/time. Chunking and checkpointing do not reduce

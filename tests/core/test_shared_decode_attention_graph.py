@@ -4,17 +4,16 @@ from unittest.mock import patch
 
 import pytest
 import torch
+
 from minisgl.kernel import store_cache
 from minisgl.shared_cache.attention import SharedCacheAttention
 from minisgl.shared_cache.attention_graph import SharedDecodeAttentionBuffers
 from minisgl.shared_cache.session import SharedCacheSession
 from minisgl.shared_cache.shared_block import CacheBlock
 from minisgl.shared_cache.worker_group import WorkerGroup
-from minisgl.utils import is_turing
 
 
-@pytest.mark.skipif(not torch.cuda.is_available() or is_turing(),
-                    reason='FlashInfer shared graph replay is unsupported on SM75')
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA shared decode Attention')
 @pytest.mark.parametrize('page', [1, 16])
 @pytest.mark.parametrize('mrope', [False, True])
 @torch.inference_mode()

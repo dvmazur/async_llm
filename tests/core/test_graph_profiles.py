@@ -1,7 +1,8 @@
+import pytest
 from types import SimpleNamespace
 
-import pytest
 import torch
+
 from minisgl.engine.graph import GraphRunner, _determine_cuda_graph_bs
 
 
@@ -48,25 +49,10 @@ def test_explicit_profiles_and_global_off():
     assert _determine_cuda_graph_bs([], None, 0) == []
 
 
-def test_turing_disables_only_requested_shared_graphs(monkeypatch):
-    import minisgl.shared_cache.session as module
-
-    monkeypatch.setattr(module, 'is_turing', lambda device: True)
-    with pytest.warns(RuntimeWarning, match='shared KV-cache attention remains enabled'):
-        assert module._compatible_shared_graph_config(
-            torch.device('cuda'), [1, 4], 4, [128]
-        ) == ([], 0, [])
-    # An already-eager session stays quiet and unchanged.
-    assert module._compatible_shared_graph_config(
-        torch.device('cuda'), None, None, []
-    ) == (None, None, [])
-
-
 def test_completed_refs_retire_across_inactive_decode_and_prefill_profiles():
     import weakref
-
-    from minisgl.shared_cache.gdn_decode import GDNDecodeBuffers
     from minisgl.shared_cache.graph import SharedGraphIO
+    from minisgl.shared_cache.gdn_decode import GDNDecodeBuffers
     class Retained:
         pass
     completed, inflight, prefill = Retained(), Retained(), Retained()
