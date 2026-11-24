@@ -9,10 +9,17 @@ from minisgl.training import replay_trace
 from minisgl.training.attention import adapter
 from minisgl.training.attention import attention as reference_attention
 from minisgl.training.attention.torch_optimized import attention
-from test_training import causal_trace, mutation_trace, repeated_view_trace, tiny_model
-from test_training_attention_flash import interleaved_blocks_trace, tile_boundary_trace
-from test_training_images import cache_image_trace
 from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+
+from tests.core.test_training_attention_flash import interleaved_blocks_trace, tile_boundary_trace
+from tests.training.fixtures import cpu_profiling as cpu_profiling
+from tests.training.models import tiny_model
+from tests.training.workloads import (
+    cache_image_trace,
+    causal_trace,
+    mutation_trace,
+    repeated_view_trace,
+)
 
 
 def inputs(replay, *, device="cpu", dtype=torch.float32, seed=211):
