@@ -1,18 +1,18 @@
-"""Single-example Qwen3 distillation using the existing async_thoughts demo."""
+"""Distill one recorded trajectory with a delayed problem correction."""
 
 import argparse
 import hashlib
 import json
 import os
 import subprocess
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import torch
-from minisgl.training.replay import Replay
-from minisgl.training.sft import evaluate, supervised_loss
-from minisgl.training.trace import Trace
+from minisgl.training import Trace
+from minisgl_examples.training.loss import compute_supervised_loss, evaluate
 from torch.func import functional_call
 from transformers import (
     AutoConfig,
@@ -44,7 +44,7 @@ def run_process(root: Path, gpu: str, arguments: list[str], log: Path) -> None:
     )
     if int(free.strip()) < 12000:
         raise RuntimeError(f"GPU {gpu}: need at least 12000 MiB free")
-    venv_bin = root / ".venv/bin"
+    venv_bin = Path(sys.executable).parent
     cuda_home = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda"))
     path = [str(venv_bin)]
     if cuda_home.is_dir():
@@ -60,7 +60,7 @@ def run_process(root: Path, gpu: str, arguments: list[str], log: Path) -> None:
         env["CUDA_HOME"] = str(cuda_home)
     env.setdefault("HF_HOME", str(Path.home() / ".cache/huggingface"))
     log.parent.mkdir(parents=True, exist_ok=True)
-    command = [str(venv_bin / "python"), "-u", *arguments]
+    command = [sys.executable, "-u", *arguments]
     with log.open("w") as output:
         process = subprocess.Popen(
             command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
@@ -134,8 +134,8 @@ class TrainingStep(torch.nn.Module):
         super().__init__()
         self.model = model
 
-    def forward(self, replay: Replay, targets: torch.Tensor) -> float:
-        loss = supervised_loss(self.model, replay, targets) / targets.ne(-100).sum()
+    def forward(self, trace: Trace, targets: torch.Tensor) -> float:
+        loss = compute_supervised_loss(self.model, trace, targets) / targets.ne(-100).sum()
         if not torch.isfinite(loss):
             raise ValueError("Nonfinite loss")
         # Keep backward inside functional_call, including checkpoint recomputation.
@@ -150,8 +150,8 @@ class TraceEvaluation(torch.nn.Module):
         super().__init__()
         self.model = model
 
-    def forward(self, replay: Replay, targets: torch.Tensor) -> dict[str, float]:
-        result = evaluate(self.model, [(replay, targets)])
+    def forward(self, trace: Trace, targets: torch.Tensor) -> dict[str, float]:
+        result = evaluate(self.model, [(trace, targets)])
         return {key: float(result[key]) for key in ("loss", "accuracy")}
 
 
@@ -163,20 +163,25 @@ def precision_dtype(precision: str) -> torch.dtype:
 
 def run_low_precision(
     module: torch.nn.Module,
-    replay: Replay,
+    trace: Trace,
     targets: torch.Tensor,
     precision: str,
 ) -> Any:
     """Use low-precision parameters temporarily while keeping FP32 master weights."""
     dtype = precision_dtype(precision)
     weights = {name: p.to(dtype) for name, p in module.named_parameters()}
-    return functional_call(module, weights, (replay, targets), tie_weights=True)
+    return functional_call(module, weights, (trace, targets), tie_weights=True)
 
 
 def load_student(
-    trace_path: Path, model_name: str
-) -> tuple[PreTrainedModel, Replay, torch.Tensor, PreTrainedTokenizerBase]:
-    if torch.cuda.device_count() != 1:
+    trace_path: Path,
+    model_name: str,
+    *,
+    attention_backend: str = "torch",
+    query_chunk_size: int = 128,
+    device: str = "cuda",
+) -> tuple[PreTrainedModel, Trace, torch.Tensor, PreTrainedTokenizerBase]:
+    if torch.device(device).type == "cuda" and torch.cuda.device_count() != 1:
         raise ValueError("Select exactly one GPU")
     torch.backends.cuda.matmul.allow_tf32 = False
     data = json.loads(trace_path.read_text())
@@ -198,7 +203,7 @@ def load_student(
         or any(type(t.token_id) is not int or t.token_id not in valid for t in trace.tokens)
     ):
         raise ValueError("Invalid or misaligned token IDs/targets")
-    replay = Replay.from_trace(trace)
+    trace = trace.to(device, attention_backend=attention_backend, query_chunk_size=query_chunk_size)
     config = AutoConfig.from_pretrained(model_name).get_text_config()
     if config.model_type not in {"qwen3", "qwen3_5_text"}:
         raise ValueError("This sanity check supports dense text Qwen3/Qwen3.5")
@@ -206,13 +211,13 @@ def load_student(
         model_name,
         config=config,
         dtype=torch.float32,
-    ).cuda()
-    return model, replay, torch.tensor(ids, dtype=torch.long), tokenizer
+    ).to(device)
+    return model, trace, torch.tensor(ids, dtype=torch.long, device=device), tokenizer
 
 
 def evaluate_student(
     model: PreTrainedModel,
-    replay: Replay,
+    replay: Trace,
     targets: torch.Tensor,
     precision: str = "bfloat16",
 ) -> dict[str, float]:
@@ -235,6 +240,9 @@ def train_from_trace(
     lr: float,
     precision: str = "bfloat16",
     optimizer_foreach: bool | None = None,
+    *,
+    attention_backend: str = "torch",
+    query_chunk_size: int = 128,
 ) -> dict[str, Any]:
     if output.exists() or steps < 1 or not 0 < lr < float("inf"):
         raise ValueError("Use a new output path and positive steps/lr")
@@ -243,7 +251,9 @@ def train_from_trace(
     source_hash = hashlib.sha256(trace.read_bytes()).hexdigest()
     torch.manual_seed(7)
     torch.backends.cuda.matmul.allow_tf32 = False
-    model, replay, targets, tokenizer = load_student(trace, model_name)
+    model, replay, targets, tokenizer = load_student(
+        trace, model_name, attention_backend=attention_backend, query_chunk_size=query_chunk_size
+    )
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, foreach=optimizer_foreach)
     initial = final = evaluate_student(model, replay, targets, precision)
@@ -275,6 +285,10 @@ def train_from_trace(
         "lr": lr,
         "precision": f"{precision} forward / FP32 master weights and AdamW",
         "optimizer_foreach": optimizer_foreach,
+        "replay_options": {
+            "attention_backend": attention_backend,
+            "query_chunk_size": query_chunk_size,
+        },
         "seed": 7,
     }
     (output / "metrics.json").write_text(json.dumps(metrics, indent=2, allow_nan=False))
@@ -292,6 +306,8 @@ def fit_student(
     lr: float = 1e-6,
     precision: str = "bfloat16",
     optimizer_foreach: bool | None = None,
+    attention_backend: str = "torch",
+    query_chunk_size: int = 128,
 ) -> dict[str, Any]:
     foreach = "auto" if optimizer_foreach is None else str(optimizer_foreach).lower()
     run_process(
@@ -311,6 +327,10 @@ def fit_student(
             precision,
             "--optimizer-foreach",
             foreach,
+            "--attention-backend",
+            attention_backend,
+            "--query-chunk-size",
+            str(query_chunk_size),
         ],
         directory.parent / "training.log",
     )
@@ -325,7 +345,9 @@ def verify_checkpoint(
     destination: Path,
     *,
     precision: str = "bfloat16",
-) -> dict[str, float]:
+    attention_backend: str = "torch",
+    query_chunk_size: int = 128,
+) -> dict[str, Any]:
     run_process(
         root,
         gpu,
@@ -337,6 +359,10 @@ def verify_checkpoint(
             str(destination),
             "--precision",
             precision,
+            "--attention-backend",
+            attention_backend,
+            "--query-chunk-size",
+            str(query_chunk_size),
         ],
         destination.with_suffix(".log"),
     )
@@ -388,11 +414,13 @@ def check_answer(
     )
 
 
-def check_async_behavior(example: dict[str, Any], tokenizer: PreTrainedTokenizerBase) -> dict[str, Any]:
+def check_async_behavior(
+    example: dict[str, Any], tokenizer: PreTrainedTokenizerBase
+) -> dict[str, Any]:
     """Check that the second shard was appended after k supervised decode steps."""
     try:
         trace = Trace.from_dict(example["trace"])
-        Replay.from_trace(trace)
+        trace.to("cpu")
         correction = tokenizer.encode(
             "\n\nADDITIONAL INFORMATION: " + example["problem_shards"][1] + "\n\n",
             add_special_tokens=False,
@@ -513,13 +541,15 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("output", type=Path)
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-6)
+    parser.add_argument("--precision", choices=("bfloat16", "float16"), default="bfloat16")
+    parser.add_argument("--optimizer-foreach", choices=("auto", "true", "false"), default="auto")
     parser.add_argument(
-        "--precision", choices=("bfloat16", "float16"), default="bfloat16"
+        "--attention-backend", choices=("torch", "auto", "torch_optimized", "fa4"), default="torch"
     )
-    parser.add_argument(
-        "--optimizer-foreach", choices=("auto", "true", "false"), default="auto"
-    )
+    parser.add_argument("--query-chunk-size", type=int, default=128)
     args = parser.parse_args(argv)
+    if args.query_chunk_size < 1:
+        parser.error("query-chunk-size must be positive")
     optimizer_foreach = {
         "auto": None,
         "true": True,
@@ -534,13 +564,30 @@ def main(argv: list[str] | None = None) -> None:
             args.lr,
             args.precision,
             optimizer_foreach,
+            attention_backend=args.attention_backend,
+            query_chunk_size=args.query_chunk_size,
         )
     else:
-        model, replay, targets, _ = load_student(args.trace, args.model)
+        model, replay, targets, _ = load_student(
+            args.trace,
+            args.model,
+            attention_backend=args.attention_backend,
+            query_chunk_size=args.query_chunk_size,
+        )
         result = evaluate_student(model, replay, targets, args.precision)
-        args.output.write_text(json.dumps(result, allow_nan=False))
+        args.output.write_text(
+            json.dumps(
+                {
+                    **result,
+                    "replay_options": {
+                        "attention_backend": args.attention_backend,
+                        "query_chunk_size": args.query_chunk_size,
+                    },
+                },
+                allow_nan=False,
+            )
+        )
 
 
 if __name__ == "__main__":
     main()
-

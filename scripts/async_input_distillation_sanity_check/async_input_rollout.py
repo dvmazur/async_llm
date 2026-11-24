@@ -8,12 +8,11 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-import pyarrow as pa
 import torch
 from huggingface_hub import hf_hub_download
 from minisgl.llm import AsyncLLM
 from minisgl.shared_cache import AsyncContext
-from minisgl.training.trace import record
+from minisgl.training import RecordedAsyncLLM
 from transformers import AutoTokenizer
 
 DATASET = "MrDarkTesla/math_500_sharded"
@@ -28,6 +27,8 @@ def encode(text, tokenizer):
 
 def load_row(dataset, revision, index):
     """Read one row from the Hub repository's Dataset.save_to_disk Arrow file."""
+    import pyarrow as pa
+
     path = hf_hub_download(dataset, DATA_FILE, repo_type="dataset", revision=revision)
     table = pa.ipc.open_stream(path).read_all()
     if not 0 <= index < table.num_rows:
@@ -64,7 +65,7 @@ async def generate(args):
         raise ValueError("Expected exactly two nonempty problem_shards")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    llm = AsyncLLM(
+    base_llm = AsyncLLM(
         args.model,
         dtype=getattr(torch, args.precision),
         attention_backend="fi",
@@ -73,107 +74,110 @@ async def generate(args):
         page_size=args.page_size,
         distributed_addr=f"tcp://127.0.0.1:{args.distributed_port}",
     )
-    trace = record(llm)
-    prompt = output = None
-    sampled = {}
-    generated = []
-    injection_step = None
     try:
-        prompt, output = await asyncio.gather(llm.create_block(), llm.create_block())
-        problem = (
-            "Solve the problem in at most five short reasoning steps. Additional information "
-            "may arrive while you work; apply it before finalizing. Do not restate or audit "
-            "your instructions. Put the final answer within \\boxed{}.\n\n"
-            + shards[0]
-        )
-        initial = tokenizer.apply_chat_template(
-            [{"role": "user", "content": problem}],
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
-        await llm.forward(encode(initial, tokenizer), write_to=prompt, return_logits=False)
-        newline = tokenizer.encode("\n", add_special_tokens=False)[-1]
-        context = AsyncContext([prompt, output], next_input_id=newline)
-
-        for step in range(args.max_tokens):
-            if injection_step is None and step == args.k_steps:
-                # Commit the last sampled token before inserting external input.
-                # Its next token is the correction, so this decode row is intentionally
-                # not supervised as a model-generated continuation.
-                if context.next_input_id is not None:
-                    await llm.forward(cache_view=context, return_logits=False)
-                injection_step = trace.steps
-                correction = INJECTION_PREFIX + shards[1] + "\n\n"
-                await llm.forward(
-                    encode(correction, tokenizer),
-                    cache_view=[prompt],
-                    write_to=prompt,
-                    return_logits=False,
+        with RecordedAsyncLLM(base_llm) as llm:
+            trace = llm.get_trace()
+            prompt = output = None
+            sampled = {}
+            generated = []
+            injection_step = None
+            try:
+                prompt, output = await asyncio.gather(llm.create_block(), llm.create_block())
+                problem = (
+                    "Solve the problem in at most five short reasoning steps. Additional information "
+                    "may arrive while you work; apply it before finalizing. Do not restate or audit "
+                    "your instructions. Put the final answer within \\boxed{}.\n\n" + shards[0]
                 )
-                # Also append the arriving text at the live end of the reasoning
-                # stream. Updating only the earlier prompt block changes its memory
-                # view but does not present the correction at the current dialogue turn.
-                result = await llm.forward(
-                    encode(correction, tokenizer),
-                    cache_view=[prompt, output],
-                    write_to=output,
+                initial = tokenizer.apply_chat_template(
+                    [{"role": "user", "content": problem}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
                 )
-                token = int(result.logits.argmax().item())
-                sampled[trace.num_tokens - 1] = (
-                    token,
-                    result.logits.float().log_softmax(-1)[token].item(),
+                await llm.forward(encode(initial, tokenizer), write_to=prompt, return_logits=False)
+                newline = tokenizer.encode("\n", add_special_tokens=False)[-1]
+                context = AsyncContext([prompt, output], next_input_id=newline)
+
+                for step in range(args.max_tokens):
+                    if injection_step is None and step == args.k_steps:
+                        # Commit the last sampled token before inserting external input.
+                        # Its next token is the correction, so this decode row is intentionally
+                        # not supervised as a model-generated continuation.
+                        if context.next_input_id is not None:
+                            await llm.forward(cache_view=context, return_logits=False)
+                        injection_step = trace.steps
+                        correction = INJECTION_PREFIX + shards[1] + "\n\n"
+                        await llm.forward(
+                            encode(correction, tokenizer),
+                            cache_view=[prompt],
+                            write_to=prompt,
+                            return_logits=False,
+                        )
+                        # Also append the arriving text at the live end of the reasoning
+                        # stream. Updating only the earlier prompt block changes its memory
+                        # view but does not present the correction at the current dialogue turn.
+                        result = await llm.forward(
+                            encode(correction, tokenizer),
+                            cache_view=[prompt, output],
+                            write_to=output,
+                        )
+                        token = int(result.logits.argmax().item())
+                        sampled[trace.num_tokens - 1] = (
+                            token,
+                            result.logits.float().log_softmax(-1)[token].item(),
+                        )
+                        generated.append(token)
+                        context.next_input_id = token
+                        continue
+
+                    batch_cursor = len(trace.batches)
+                    position = output.num_tokens
+                    result = await llm.forward(cache_view=context)
+                    token = int(result.logits.argmax().item())
+                    row = target_row(trace, batch_cursor, output.block_id, position)
+                    sampled[row] = (token, result.logits.float().log_softmax(-1)[token].item())
+                    generated.append(token)
+                    context.next_input_id = token
+                    if token == tokenizer.eos_token_id:
+                        break
+
+                if injection_step is None:
+                    raise RuntimeError("Correction was not injected; require k_steps < max_tokens")
+                targets, logprobs = [-100] * trace.num_tokens, [None] * trace.num_tokens
+                for row, (token, logprob) in sampled.items():
+                    targets[row], logprobs[row] = token, logprob
+                example = {
+                    "prompt": initial,
+                    "problem_shards": shards,
+                    "answer": str(item["answer"]),
+                    "dataset": args.dataset,
+                    "dataset_revision": args.dataset_revision,
+                    "dataset_split": args.split,
+                    "dataset_index": args.index,
+                    "k_steps": args.k_steps,
+                    "precision": args.precision,
+                    "injection_trace_step": injection_step,
+                    "trace": asdict(trace),
+                    "targets": targets,
+                    "logprobs": logprobs,
+                    "output_tokens": generated,
+                }
+                destination = Path(args.output)
+                if destination.exists():
+                    raise ValueError(f"Refusing to overwrite {destination}")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(
+                    json.dumps({"model": args.model, "examples": [example]}, ensure_ascii=False)
+                    + "\n"
                 )
-                generated.append(token)
-                context.next_input_id = token
-                continue
-
-            batch_cursor = len(trace.batches)
-            position = output.num_tokens
-            result = await llm.forward(cache_view=context)
-            token = int(result.logits.argmax().item())
-            row = target_row(trace, batch_cursor, output.block_id, position)
-            sampled[row] = (token, result.logits.float().log_softmax(-1)[token].item())
-            generated.append(token)
-            context.next_input_id = token
-            if token == tokenizer.eos_token_id:
-                break
-
-        if injection_step is None:
-            raise RuntimeError("Correction was not injected; require k_steps < max_tokens")
-        targets, logprobs = [-100] * trace.num_tokens, [None] * trace.num_tokens
-        for row, (token, logprob) in sampled.items():
-            targets[row], logprobs[row] = token, logprob
-        example = {
-            "prompt": initial,
-            "problem_shards": shards,
-            "answer": str(item["answer"]),
-            "dataset": args.dataset,
-            "dataset_revision": args.dataset_revision,
-            "dataset_split": args.split,
-            "dataset_index": args.index,
-            "k_steps": args.k_steps,
-            "precision": args.precision,
-            "injection_trace_step": injection_step,
-            "trace": asdict(trace),
-            "targets": targets,
-            "logprobs": logprobs,
-            "output_tokens": generated,
-        }
-        destination = Path(args.output)
-        if destination.exists():
-            raise ValueError(f"Refusing to overwrite {destination}")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(
-            json.dumps({"model": args.model, "examples": [example]}, ensure_ascii=False) + "\n"
-        )
-        print(tokenizer.decode(generated, skip_special_tokens=True), flush=True)
+                print(tokenizer.decode(generated, skip_special_tokens=True), flush=True)
+            finally:
+                if output is not None:
+                    await llm.free_block(output)
+                if prompt is not None:
+                    await llm.free_block(prompt)
     finally:
-        if output is not None:
-            await llm.free_block(output)
-        if prompt is not None:
-            await llm.free_block(prompt)
-        await llm.close()
+        await base_llm.close()
 
 
 def main():
@@ -186,9 +190,7 @@ def main():
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--k-steps", type=int, default=32)
     parser.add_argument("--max-tokens", type=int, default=512)
-    parser.add_argument(
-        "--precision", choices=("bfloat16", "float16"), default="bfloat16"
-    )
+    parser.add_argument("--precision", choices=("bfloat16", "float16"), default="bfloat16")
     parser.add_argument("--memory-ratio", type=float, default=0.7)
     parser.add_argument("--page-size", type=int, default=1)
     parser.add_argument("--distributed-port", type=int, default=2361)
@@ -200,4 +202,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
