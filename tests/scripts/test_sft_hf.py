@@ -2,6 +2,7 @@
 
 import json
 import threading
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import asdict, replace
@@ -22,6 +23,7 @@ from minisgl_examples.training.trainer_hf import (
 )
 from transformers import TrainingArguments
 
+from tests.training.fixtures import cpu_profiling as cpu_profiling
 from tests.training.models import tiny_hybrid, tiny_model
 from tests.training.workloads import causal_trace, mutation_trace
 
@@ -78,6 +80,7 @@ def train_arguments(tmp_path, **overrides):
         "loss_checkpointing": True,
         "cache_replay_plans": Trace.cache_plans,
         "query_chunk_size": Trace.query_chunk_size,
+        "replay_attention_backend": Trace.attention_backend,
         "loss_chunk_size": 128,
         "gdn_segment_size": Trace.gdn_segment_size,
         "gdn_read_mode": Trace.gdn_read_mode,
@@ -271,6 +274,7 @@ def test_lora_trainer_saves_reloadable_adapter(tmp_path):
         ("gdn_segment_size", 0, "gdn_segment_size must be positive"),
         ("gdn_read_mode", "invalid", "gdn_read_mode must be expanded or factorized"),
         ("gdn_read_backend", "invalid", "gdn_read_backend must be torch or triton"),
+        ("replay_attention_backend", "invalid", "attention_backend must be"),
     ],
 )
 def test_hf_sft_rejects_invalid_replay_options_before_loading_data(
@@ -381,6 +385,101 @@ def test_hf_sft_loads_and_saves_image_model_and_processor(monkeypatch, tmp_path,
     metrics = json.loads((tmp_path / "metrics_hf.json").read_text())
     assert metrics["supervised_tokens"] == len(traces)
     assert metrics["gradient_accumulation_steps"] == len(traces)
+    assert metrics["replay_options"]["attention_backend"] == Trace.attention_backend
+    assert metrics["replay_options"]["query_chunk_size"] == Trace.query_chunk_size
+    assert metrics["loss_chunk_size"] == 128
+
+
+def test_hf_sft_releases_training_allocations_before_reload(monkeypatch, tmp_path):
+    data = tmp_path / "traces.json"
+    data.write_text(
+        json.dumps(
+            {
+                "model": "tiny-model",
+                "examples": [{"trace": asdict(causal_trace(4)), "targets": [-100, 3, 4, 5]}],
+            }
+        )
+    )
+    retained = {}
+    loads = 0
+
+    def load_model(*args, **kwargs):
+        nonlocal loads
+        if loads:
+            assert all(reference() is None for reference in retained.values()), {
+                name for name, reference in retained.items() if reference() is not None
+            }
+        loads += 1
+        model = torch.nn.Linear(2, 2)
+        if loads == 1:
+            retained["model"] = weakref.ref(model)
+            for name, parameter in model.named_parameters():
+                retained[name] = weakref.ref(parameter)
+        return model
+
+    class FakeTrainer:
+        def __init__(self, model, optimizers, **kwargs):
+            self.model, self.optimizer = model, optimizers[0]
+            retained["optimizer"] = weakref.ref(self.optimizer)
+
+        def train(self):
+            self.model(torch.ones(1, 2)).sum().backward()
+            self.optimizer.step()
+            for index, state in enumerate(self.optimizer.state.values()):
+                retained[f"moment_{index}"] = weakref.ref(state["exp_avg"])
+            return SimpleNamespace(global_step=1, training_loss=1.0, metrics={})
+
+        def save_model(self, output):
+            output.mkdir(parents=True)
+
+        def save_state(self):
+            pass
+
+    monkeypatch.setattr(sft_hf, "AutoConfig", Mock())
+    monkeypatch.setattr(sft_hf, "AutoModelForCausalLM", SimpleNamespace(from_pretrained=load_model))
+    monkeypatch.setattr(sft_hf, "AutoTokenizer", Mock())
+    monkeypatch.setattr(sft_hf, "TraceSFTTrainer", FakeTrainer)
+    monkeypatch.setattr(sft_hf, "TrainingArguments", lambda **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr(torch.nn.Module, "cuda", lambda self: self)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(
+        sft_hf,
+        "evaluate",
+        lambda *args: {
+            "loss": 1.0,
+            "accuracy": 0.0,
+            "examples": [{"nll": [1.0, 1.0, 1.0]}],
+        },
+    )
+    sft_hf.train(train_arguments(tmp_path, data=data, verify_reload=True))
+    assert loads == 2
+    assert json.loads((tmp_path / "metrics_hf.json").read_text())["reload_exact"]
+
+
+@pytest.mark.parametrize("backend", ["auto", "torch", "torch_optimized", "fa4"])
+def test_hf_sft_cli_preserves_explicit_replay_settings(monkeypatch, tmp_path, backend):
+    received = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(sft_hf, "train", received.append)
+    sft_hf.main(
+        [
+            "train",
+            "--replay-attention-backend",
+            backend,
+            "--query-chunk-size",
+            "32",
+            "--loss-chunk-size",
+            "7",
+        ]
+    )
+    args = received.pop()
+    dataset = TraceDataset(examples(), trace_options=sft_hf._trace_options(args))
+    assert args.loss_chunk_size == 7
+    assert all(
+        trace.attention_backend == backend and trace.query_chunk_size == 32
+        for trace, _ in dataset.replay_examples
+    )
 
 
 @pytest.mark.parametrize(

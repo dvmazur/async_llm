@@ -90,7 +90,8 @@ uv run --no-sync python -m minisgl_examples.training.sft_hf mine \
 uv run --no-sync python -m minisgl_examples.training.sft_hf train \
   --data training_runs/qwen3_sft_hf/trajectories.json \
   --output training_runs/qwen3_sft_hf/checkpoint \
-  --steps 80 --gradient-checkpointing --fast --lora
+  --steps 80 --gradient-checkpointing --fast --lora \
+  --replay-attention-backend auto --query-chunk-size 1024 --loss-chunk-size 128
 ```
 
 Trace targets are already aligned with the logits rows that sampled them; the
@@ -105,6 +106,14 @@ With the same model and default options, the two trainers use the same FP32
 weights, summed token loss, AdamW parameter group and gradient clipping. Their
 checkpoints are standard Hugging Face checkpoints; the HF variant additionally
 saves Trainer state and writes `metrics_hf.json`.
+
+For controlled comparisons, pass the same `--replay-attention-backend`,
+`--query-chunk-size`, and `--loss-chunk-size` to both CLIs. The selected replay
+settings also apply to initial evaluation, final evaluation, and reload
+verification; `metrics_hf.json` records them together with loss chunking and
+checkpointing. For example, use `--replay-attention-backend torch
+--query-chunk-size 128 --loss-chunk-size 128` on both commands to compare their
+optimizer steps with the reference Torch attention implementation.
 
 The CLIs require exactly one visible GPU. Output paths must be new; use a
 separate run directory for each experiment's metrics.
@@ -194,8 +203,12 @@ The model comes from the data file. There is no separate training model flag.
 
 ### `minisgl_examples.training.sft_hf train`
 
-This accepts all replay and checkpointing flags from the original trainer above,
-plus the Trainer-specific controls below. Unlike the original CLI, `--model` may
+This accepts the replay backend, query/loss chunk sizes, replay-plan cache,
+attention/loss checkpointing, and GDN replay flags from the original trainer above,
+plus the Trainer-specific controls below. `--gradient-checkpointing` checkpoints
+all decoder layers through Trainer; the original CLI's selective
+`--gdn-checkpoint-every` and allocator `--expandable-segments` controls are not
+exposed here. Unlike the original CLI, `--model` may
 select a different student model; recorded-logprob parity is then skipped because
 the logits are not expected to match the teacher.
 

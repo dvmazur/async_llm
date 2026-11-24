@@ -35,6 +35,7 @@ from minisgl_examples.training.trainer_hf import (
 def _trace_options(args: argparse.Namespace) -> dict[str, Any]:
     options = {
         "query_chunk_size": args.query_chunk_size,
+        "attention_backend": args.replay_attention_backend,
         "attention_checkpointing": args.attention_checkpointing,
         "cache_plans": args.cache_replay_plans,
         "gdn_segment_size": args.gdn_segment_size,
@@ -47,6 +48,7 @@ def _trace_options(args: argparse.Namespace) -> dict[str, Any]:
         options["gdn_segment_size"],
         options["gdn_read_mode"],
         options["gdn_read_backend"],
+        options["attention_backend"],
     )
     return options
 
@@ -217,7 +219,9 @@ def train(args: argparse.Namespace) -> None:
 
     reload_exact = False
     if args.verify_reload:
-        del trainer, model
+        # AdamW owns both its parameters and their optimizer state. The explicit
+        # parameter list also keeps the trained weights alive after Trainer exits.
+        del trainer, model, optimizer, trainable
         for trace, _ in dataset.replay_examples:
             trace._attention.clear()
             trace._gdn.clear()
@@ -256,6 +260,9 @@ def train(args: argparse.Namespace) -> None:
         "max_logprob_error": max_error,
         "reload_exact": reload_exact,
         "precision": precision,
+        "replay_options": trace_options,
+        "loss_chunk_size": args.loss_chunk_size,
+        "loss_checkpointing": args.loss_checkpointing,
         "lora": args.lora,
         "trainable_parameters": trainable_parameters,
         "total_parameters": total_parameters,
@@ -327,6 +334,12 @@ def _add_train_arguments(parser: argparse.ArgumentParser) -> None:
         "--cache-replay-plans", action=argparse.BooleanOptionalAction, default=Trace.cache_plans
     )
     parser.add_argument("--query-chunk-size", type=int, default=Trace.query_chunk_size)
+    parser.add_argument(
+        "--replay-attention-backend",
+        choices=("auto", "torch", "torch_optimized", "fa4"),
+        default=Trace.attention_backend,
+        help="Replay attention implementation; use the same backend and chunk sizes for comparisons",
+    )
     parser.add_argument("--loss-chunk-size", type=int, default=128)
     parser.add_argument("--gdn-segment-size", type=int, default=Trace.gdn_segment_size)
     parser.add_argument(
