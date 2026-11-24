@@ -17,6 +17,7 @@ class _ReplayOptions(TypedDict, total=False):
     gdn_cache_reused: bool
     gdn_read_backend: Literal["torch", "triton"]
     attention_checkpointing: bool
+    attention_backend: Literal["auto", "torch", "torch_optimized", "fa4"]
     cache_plans: bool
 
 
