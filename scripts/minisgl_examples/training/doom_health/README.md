@@ -66,7 +66,7 @@ rerunning; the saved successful experiment already occupies these artifact paths
 
 ```bash
 export CUDA_VISIBLE_DEVICES=1
-export DOOM_ALLOW_SHARED_GPU=1 DOOM_GPU_LIMIT_GIB=32
+export DOOM_ALLOW_SHARED_GPU=0 DOOM_GPU_LIMIT_GIB=32
 bash scripts/minisgl_examples/training/doom_health/run_remote.sh collect \
   --model Qwen/Qwen3.5-4B --output training_runs/doom_health/teacher.json
 bash scripts/minisgl_examples/training/doom_health/run_remote.sh check \
@@ -96,3 +96,23 @@ Artifacts live in `training_runs/doom_health`: CPU environment/processor diagnos
 then (only after actual GPU runs) teacher/before/after JSON traces with frame folders,
 parity results, training/checkpoint outputs, and comparison. PNG notebook displays are
 embedded, so reading results does not depend on a browser image renderer.
+
+## Replay settings after the training refactor
+
+Every parity check, optimizer step, evaluation, and checkpoint reload uses the
+settings stored in the collected rollout's `setup`. Defaults are
+`replay_attention_backend="torch"` and `replay_query_chunk_size=64`, independent
+of Hugging Face's `attn_implementation`. Reports record the effective
+`replay_options`; the notebook refuses cached results with missing or different
+settings. Use a fresh run directory when changing settings or code. Historical
+`RUN_REPORT.md` results are not new measurements of these defaults.
+
+The collection CLI accepts `--replay-attention-backend` and
+`--replay-query-chunk-size`; subsequent stages inherit those values from the
+trace. To exercise current automatic backend selection, collect teacher and
+student into a separate directory with
+`--replay-attention-backend auto --replay-query-chunk-size 1024`. The notebook
+exposes the same fields in `SETUP`. Existing parity and quality gates still apply.
+
+The notebook defaults `DOOM_ALLOW_SHARED_GPU` to `0`. Set it to `1` only after
+explicitly authorizing shared GPU use; otherwise an occupied GPU is rejected.

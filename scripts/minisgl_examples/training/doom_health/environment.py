@@ -28,6 +28,8 @@ class Setup:
     max_seq_len: int = 8192
     prefill_rows: int = 128
     dtype: str = "float16"
+    replay_attention_backend: str = "torch"
+    replay_query_chunk_size: int = 64
 
     def validate(self):
         if (
