@@ -1,93 +1,45 @@
-import inspect
 import os
 from dataclasses import replace
 from itertools import groupby
-from types import SimpleNamespace as NS
 
 import pytest
 import torch
 from minisgl.training import replay_trace
-from test_training import (
+from transformers import AutoConfig, AutoModelForCausalLM
+
+from tests.training.fixtures import cuda_delta_math as cuda_delta_math
+from tests.training.fixtures import torch_reference_kernels as torch_reference_kernels
+from tests.training.models import four_layer_hybrid, live_llm, tiny_hybrid, tiny_model
+from tests.training.references import sequential_hybrid_logits
+from tests.training.workloads import (
     example_trace,
     mutation_trace,
     repeated_view_trace,
-    sequential_attention,
     single_block_trace,
-    tiny_model,
 )
-from test_training_gdn import (
-    cuda_delta_math as cuda_delta_math,
-)
-from test_training_gdn import (
-    sequential_gdn,
-    tiny_hybrid,
-)
-from transformers import AutoConfig, AutoModelForCausalLM, Qwen3_5ForCausalLM
-from transformers.models.qwen3_5 import modeling_qwen3_5
 
 
-@pytest.fixture(scope="module", autouse=True)
-def torch_reference_kernels():
-    """Keep FP32 reference arithmetic independent of optional inference kernels."""
-    with pytest.MonkeyPatch.context() as patch:
-        for name in (
-            "causal_conv1d_fn",
-            "causal_conv1d_update",
-            "chunk_gated_delta_rule",
-            "fused_recurrent_gated_delta_rule",
-            "FusedRMSNormGated",
-        ):
-            patch.setattr(modeling_qwen3_5, name, None)
-        for name in (
-            "torch_causal_conv1d_update",
-            "torch_chunk_gated_delta_rule",
-            "torch_recurrent_gated_delta_rule",
-        ):
-            patch.setattr(modeling_qwen3_5, name, inspect.unwrap(getattr(modeling_qwen3_5, name)))
-        patch.setattr(torch.backends.cudnn, "allow_tf32", False)
-        yield
-
-
-def sequential_hybrid_logits(model, trace):
-    """Evaluate each layer's recorded steps using raw KV and direct GDN recurrence."""
-    backbone = model.model
-    device = backbone.embed_tokens.weight.device
-    ids = torch.tensor([token.token_id for token in trace.tokens], device=device)
-    order = torch.arange(len(trace.tokens), device=device)
-    x = backbone.embed_tokens(ids)
-    for layer in backbone.layers:
-        h = layer.input_layernorm(x)
-        if hasattr(layer, "linear_attn"):
-            output = sequential_gdn(layer.linear_attn, h, trace)
-        else:
-            attn = layer.self_attn
-            query, gate = attn.q_proj(h).view(len(h), -1, 2 * attn.head_dim).chunk(2, -1)
-            query = attn.q_norm(query)
-            key = attn.k_norm(attn.k_proj(h).view(len(h), -1, attn.head_dim))
-            value = attn.v_proj(h).view(len(h), -1, attn.head_dim)
-            output = sequential_attention(
-                query, key, value, trace, order, backbone.rotary_emb.inv_freq, attn.scaling
-            )
-            output = attn.o_proj(output * gate.reshape_as(output).sigmoid())
-        x = x + output
-        x = x + layer.mlp(layer.post_attention_layernorm(x))
-    return model.lm_head(backbone.norm(x))
-
-
-def four_layer_hybrid(device):
-    config = tiny_hybrid().config
-    config.num_hidden_layers = 4
-    config.layer_types = ["linear_attention", "full_attention"] * 2
-    model = Qwen3_5ForCausalLM(config).to(device).eval()
-    with torch.no_grad():
-        for layer in model.model.layers:
-            if hasattr(layer, "linear_attn"):
-                layer.linear_attn.A_log.fill_(-1)
-    return model
+@pytest.fixture(scope="module")
+def pretrained_hybrid(torch_reference_kernels):
+    source = os.environ.get("MINISGL_TRAINING_LOGITS_MODEL")
+    if not source:
+        pytest.skip("Set MINISGL_TRAINING_LOGITS_MODEL to a local or already-cached Qwen3.5 model")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    config = AutoConfig.from_pretrained(source, local_files_only=True).get_text_config()
+    assert config.model_type == "qwen3_5_text", "A dense Qwen3.5 text model is required"
+    return AutoModelForCausalLM.from_pretrained(
+        source,
+        config=config,
+        dtype=torch.float32,
+        device_map="cuda",
+        attn_implementation="eager",
+        local_files_only=True,
+    ).eval()
 
 
 def test_hybrid_trace_mutation_recompiles_attention_and_recurrent_plans():
-    model, trace = tiny_hybrid(), mutation_trace()
+    model, trace = tiny_hybrid().cuda(), mutation_trace()
     before = replay_trace(model, trace, hidden_only=False)
     recurrent = next(iter(trace._gdn.values()))
     attention = next(iter(trace._attention.values()))
@@ -100,40 +52,9 @@ def test_hybrid_trace_mutation_recompiles_attention_and_recurrent_plans():
     assert next(iter(trace._attention.values())) is not attention
 
 
-def live_llm(reference):
-    """Represent inference's fused leaf tensors without initializing a GPU engine."""
-    from minisgl.llm import AsyncLLM
-
-    parameters = dict(reference.named_parameters())
-    groups = {name: [name] for name in parameters}
-    for name in parameters:
-        for projections, fused in ((("q", "k", "v"), "qkv"), (("gate", "up"), "gate_up")):
-            part = f".{projections[0]}_proj."
-            if part in name:
-                sources = [name.replace(part, f".{projection}_proj.") for projection in projections]
-                for source in sources:
-                    groups.pop(source)
-                groups[name.replace(part, f".{fused}_proj.")] = sources
-    weights = {
-        name: (
-            parameters[sources[0]].detach().clone()
-            if len(sources) == 1
-            else torch.cat([parameters[source].detach() for source in sources])
-        )
-        for name, sources in groups.items()
-    }
-    llm = object.__new__(AsyncLLM)
-    llm.engine = NS(
-        model=NS(state_dict=lambda: weights),
-        config=NS(hf_config=reference.config, tp_info=NS(size=1), quantization=None),
-    )
-    llm.async_engine = NS(has_work=False)
-    return llm, weights, groups
-
-
 @pytest.mark.parametrize("factory", [tiny_model, tiny_hybrid], ids=["qwen3", "qwen3.5"])
 def test_async_llm_replay_uses_live_fused_weights_and_gradients(factory):
-    reference = factory()
+    reference = factory().cuda()
     llm, weights, groups = live_llm(reference)
     addresses = {name: weight.data_ptr() for name, weight in weights.items()}
     trace = mutation_trace()
@@ -157,7 +78,7 @@ def test_async_llm_replay_uses_live_fused_weights_and_gradients(factory):
 
 @pytest.mark.parametrize("factory", [tiny_model, tiny_hybrid], ids=["qwen3", "qwen3.5"])
 def test_async_llm_replay_observes_weight_updates_and_defaults_to_hidden(factory):
-    reference = factory()
+    reference = factory().cuda()
     llm, weights, groups = live_llm(reference)
     trace = single_block_trace(mixed_steps=True)
     before = replay_trace(llm, trace)
@@ -180,7 +101,7 @@ def test_async_llm_replay_observes_weight_updates_and_defaults_to_hidden(factory
 
 @pytest.mark.parametrize("factory", [tiny_model, tiny_hybrid], ids=["qwen3", "qwen3.5"])
 def test_async_llm_replay_trains_replaced_weights_after_inference_warmup(factory):
-    reference = factory()
+    reference = factory().cuda()
     llm, weights, groups = live_llm(reference)
     trace = mutation_trace()
     with torch.inference_mode():
@@ -208,20 +129,7 @@ def test_async_llm_replay_trains_replaced_weights_after_inference_warmup(factory
     assert original.grad is None
 
 
-@pytest.mark.parametrize("unsupported", ["tensor_parallel", "quantization", "pending_work"])
-def test_async_llm_replay_rejects_unsupported_engine_state(unsupported):
-    llm, _, _ = live_llm(tiny_model())
-    if unsupported == "tensor_parallel":
-        llm.engine.config.tp_info.size = 2
-    elif unsupported == "quantization":
-        llm.engine.config.quantization = "fp8"
-    else:
-        llm.async_engine.has_work = True
-    with pytest.raises((NotImplementedError, RuntimeError), match="AsyncLLM"):
-        replay_trace(llm, mutation_trace())
-
-
-@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("device", ["cuda"])
 @torch.no_grad()
 def test_sequential_hybrid_logits_match_cached_huggingface(request, device):
     if device == "cuda":
@@ -242,9 +150,7 @@ def test_sequential_hybrid_logits_match_cached_huggingface(request, device):
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
 
 
-@pytest.mark.parametrize(
-    "device,backend", [("cpu", "torch"), ("cuda", "torch"), ("cuda", "triton")]
-)
+@pytest.mark.parametrize("device,backend", [("cuda", "torch"), ("cuda", "triton")])
 @pytest.mark.parametrize("trace_factory", [example_trace, mutation_trace, repeated_view_trace])
 @pytest.mark.parametrize(
     "read_mode,segment_size,query_chunk_size,cache_reused",
@@ -279,25 +185,6 @@ def test_parallel_hybrid_logits_match_sequential(
         atol=3e-06,
         rtol=3e-05,
     )
-
-
-@pytest.fixture(scope="module")
-def pretrained_hybrid(torch_reference_kernels):
-    source = os.environ.get("MINISGL_TRAINING_LOGITS_MODEL")
-    if not source:
-        pytest.skip("Set MINISGL_TRAINING_LOGITS_MODEL to a local or already-cached Qwen3.5 model")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA is unavailable")
-    config = AutoConfig.from_pretrained(source, local_files_only=True).get_text_config()
-    assert config.model_type == "qwen3_5_text", "A dense Qwen3.5 text model is required"
-    return AutoModelForCausalLM.from_pretrained(
-        source,
-        config=config,
-        dtype=torch.float32,
-        device_map="cuda",
-        attn_implementation="eager",
-        local_files_only=True,
-    ).eval()
 
 
 @pytest.mark.parametrize("backend", ["torch", "triton"])

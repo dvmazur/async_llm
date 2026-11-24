@@ -375,9 +375,7 @@ class RuntimeHistory:
                         paths[row].append(
                             (order[source],)
                             if kind == 0
-                            else dense[source]
-                            if kind == 1
-                            else short[source]
+                            else dense[source] if kind == 1 else short[source]
                         )
             for packed, path in enumerate(paths):
                 assert sum(reversed(path), ()) == self.gdn[order[packed]][0], (

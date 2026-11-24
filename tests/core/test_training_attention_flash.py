@@ -14,8 +14,15 @@ from minisgl.training.attention import attention
 from minisgl.training.attention.torch import _attention_impl
 from minisgl.training.recording import _TraceRecorder
 from minisgl.training.trace import ForwardBatch, ForwardRequest
-from test_training import Session, causal_trace, mutation_trace, repeated_view_trace
-from test_training_images import cache_image_trace
+
+from tests.training.fixtures import cpu_profiling as cpu_profiling
+from tests.training.helpers import Session
+from tests.training.workloads import (
+    cache_image_trace,
+    causal_trace,
+    mutation_trace,
+    repeated_view_trace,
+)
 
 
 def historical_trace():

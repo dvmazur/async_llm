@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from minisgl.engine.engine import _adjust_config
-from minisgl.utils.arch import _get_torch_cuda_version, is_turing
+from minisgl.utils.arch import _get_torch_cuda_version, get_device_capability, is_turing
 
 
 @pytest.fixture(autouse=True)
@@ -48,3 +48,29 @@ def test_turing_detection_is_exact(monkeypatch, arch, expected):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *args: arch)
     assert is_turing(torch.device("cuda:0")) is expected
+
+
+@pytest.mark.parametrize("device", ["cpu", torch.device("cpu"), "meta"])
+def test_non_cuda_device_does_not_probe_available_gpu(monkeypatch, device):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    def forbidden(*args):
+        raise AssertionError("non-CUDA tensors must not query a CUDA device")
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", forbidden)
+    assert get_device_capability(device) is None
+    assert not is_turing(device)
+
+
+@pytest.mark.parametrize("device", [None, 0, "cuda:2", torch.device("cuda:2")])
+def test_cuda_capability_preserves_requested_device(monkeypatch, device):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    queried = []
+
+    def capability(selected):
+        queried.append(selected)
+        return (7, 5)
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", capability)
+    assert get_device_capability(device) == (7, 5)
+    assert queried == [device]

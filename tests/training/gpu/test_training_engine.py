@@ -1,6 +1,7 @@
 """Opt-in MiniSGL engine versus parallel Torch replay, using a local Qwen3.5 checkpoint."""
 
 import argparse
+import asyncio
 import hashlib
 import inspect
 import json
@@ -15,7 +16,8 @@ from pathlib import Path
 
 import pytest
 import torch
-import training_engine_reference as reference
+
+import tests.training.training_engine_reference as reference
 
 ROOT = None
 MODEL = None
@@ -55,11 +57,12 @@ def build_engine(args):
     return engine
 
 
-def record(args):
-    from minisgl.shared_cache import AsyncContext, PrefillJob, SharedCacheSession, WorkerGroup
-    from minisgl.training import Trace
-    from minisgl.training.recording import _TraceRecorder
-    from minisgl.training.stress import generate_workload
+async def record(args):
+    from minisgl.llm import AsyncLLM
+    from minisgl.scheduler import AsyncCacheEngine
+    from minisgl.shared_cache import AsyncContext, SharedCacheSession
+    from minisgl.training import RecordedAsyncLLM, Trace
+    from minisgl_examples.training.stress import generate_workload
 
     engine = build_engine(args)
     dtype = getattr(torch, args.dtype)
@@ -76,9 +79,11 @@ def record(args):
         raw.sc_gdn.prepare_decode = lambda *a, **kw: None
         raw.sc_gdn.state_dtype = getattr(torch, args.dtype)
 
-    class Capture(_TraceRecorder):
-        def __init__(self, session):
-            super().__init__(session)
+    class Capture:
+        def __init__(self, session, recorder):
+            self.trace = recorder.get_trace()
+            self.prefill = session.prefill_batch
+            self.decode = session.decode_step
             self.rows, self.logits, self.phases = [], [], []
             self.pending, self.active = {}, []
             self.features = defaultdict(list)
@@ -103,7 +108,7 @@ def record(args):
                     )
                 cursor += job.input_ids.numel()
                 endpoints.append(cursor - 1)
-            result = super().prefill_batch(jobs)
+            result = self.prefill(jobs)
             self.save(endpoints, result)
             return result
 
@@ -113,13 +118,13 @@ def record(args):
                 (ctx.output_block.block_id, ctx.output_block.num_tokens): cursor + i
                 for i, ctx in enumerate(group)
             }
-            result = super().decode_step(group, input_ids)
+            result = self.decode(group, input_ids)
             self.save(range(cursor, cursor + len(group)), result)
             return result
 
     from contextlib import nullcontext
 
-    from training_engine_reference import DoubleMath
+    from tests.training.training_engine_reference import DoubleMath
 
     math_mode = DoubleMath() if args.dtype == "float64" else nullcontext()
     if args.dtype == "float64":
@@ -127,342 +132,360 @@ def record(args):
             if not layer._is_linear:
                 layer.self_attn._ensure_inv_freq(engine.device)
     math_mode.__enter__()
-    capture = Capture(raw)
-    history = reference.RuntimeHistory(raw)
-    reference.topology = history
-    original_forward = raw._forward
+    llm = AsyncLLM(engine=engine, async_engine=AsyncCacheEngine(engine, session=raw))
+    with RecordedAsyncLLM(llm) as recorded:
+        capture = Capture(raw, recorded)
+        raw.prefill_batch = capture.prefill_batch
+        raw.decode_step = capture.decode_step
+        history = reference.RuntimeHistory(raw)
+        reference.topology = history
+        original_forward = raw._forward
 
-    def session_forward(batch, *a, **kw):
-        targets = kw["write_to"]
-        lengths = (
-            [1] * len(targets)
-            if batch.is_decode
-            else kw.get("prefill_segments") or [batch.input_ids.numel()]
-        )
-        positions = iter(batch.positions.tolist())
-        capture.active = [
-            capture.pending[target.block_id, next(positions)]
-            for target, length in zip(targets, lengths, strict=True)
-            for _ in range(length)
-        ]
-        history.begin(batch, capture.active, kw["cache_structure"], targets, lengths)
-        result = original_forward(batch, *a, **kw)
-        for target in targets:
-            states = [v for pair in target.linear_affine.values() for v in pair]
-            states.extend(target.linear_conv_state.values())
-            assert states and all(value.dtype == dtype for value in states)
-        return result
-
-    raw._forward = session_forward
-
-    def intercept(module, key, tuple_output=False):
-        original = module.forward
-
-        def call(*a, **kw):
-            result = original(*a, **kw)
-            value = result[0] if tuple_output else result
-            assert value.dtype == dtype, (key, value.dtype)
-            assert torch.isfinite(value).all(), key
-            capture.features[key].append((list(capture.active), value.detach().cpu().clone()))
+        def session_forward(batch, *a, **kw):
+            targets = kw["write_to"]
+            lengths = (
+                [1] * len(targets)
+                if batch.is_decode
+                else kw.get("prefill_segments") or [batch.input_ids.numel()]
+            )
+            positions = iter(batch.positions.tolist())
+            capture.active = [
+                capture.pending[target.block_id, next(positions)]
+                for target, length in zip(targets, lengths, strict=True)
+                for _ in range(length)
+            ]
+            history.begin(batch, capture.active, kw["cache_structure"], targets, lengths)
+            result = original_forward(batch, *a, **kw)
+            for target in targets:
+                states = [v for pair in target.linear_affine.values() for v in pair]
+                states.extend(target.linear_conv_state.values())
+                assert states and all(value.dtype == dtype for value in states)
             return result
 
-        module.forward = call
+        raw._forward = session_forward
 
-    for index in LAYERS:
-        layer = engine.model.model.layers.op_list[index]
-        intercept(layer.input_layernorm, f"{index}.input", True)
-        intercept(layer.linear_attn if layer._is_linear else layer.self_attn, f"{index}.attention")
+        def intercept(module, key, tuple_output=False):
+            original = module.forward
 
-    rng = random.Random(917)
-    vocab = engine.config.model_config.vocab_size
+            def call(*a, **kw):
+                result = original(*a, **kw)
+                value = result[0] if tuple_output else result
+                assert value.dtype == dtype, (key, value.dtype)
+                assert torch.isfinite(value).all(), key
+                capture.features[key].append((list(capture.active), value.detach().cpu().clone()))
+                return result
 
-    def ids(n):
-        return torch.tensor([rng.randrange(100, vocab - 100) for _ in range(n)])
+            module.forward = call
 
-    def prefill(block, n, context=(), phase="prefill"):
-        capture.phase = phase
-        capture.prefill_batch([PrefillJob(block, ids(n), list(context))])
+        for index in LAYERS:
+            layer = engine.model.model.layers.op_list[index]
+            intercept(layer.input_layernorm, f"{index}.input", True)
+            intercept(
+                layer.linear_attn if layer._is_linear else layer.self_attn, f"{index}.attention"
+            )
 
-    def decode(outputs, views, phase):
-        capture.phase = phase
-        capture.decode_step(
-            WorkerGroup(
-                [
-                    AsyncContext(cache_view=view, output_block=block)
-                    for block, view in zip(outputs, views, strict=True)
-                ]
-            ),
-            ids(len(outputs)),
-        )
+        rng = random.Random(917)
+        vocab = engine.config.model_config.vocab_size
 
-    started = time.perf_counter()
-    try:
-        generate_workload(capture, vocab, large_size=256)
-        prompt = capture.create_block()
-        prefill(prompt, 2048, phase="long_prefix")
-        a, b, c = [capture.create_block() for _ in range(3)]
-        for block in [a, b, c]:
-            prefill(block, 128, [prompt], "fork_prefill")
-        copied = None
-        for turn in range(32):
-            if turn == 8:
-                copied = capture.merge_blocks(a, b)
-                capture.append_block(copied, c)
-            if turn == 12:
-                capture.append_block(copied, copied)
-                capture.free_block(b)
-                prefill(b, 64, [prompt, copied], "clear_reuse_b")
-            if turn == 16:
-                capture.append_block(copied, a)
-                capture.free_block(a)
-                prefill(a, 64, [copied, prompt], "clear_reuse_a")
-            extra = [] if copied is None else [copied]
-            views = [
-                (
-                    [prompt, b, a, c]
-                    if turn % 4 == 0
-                    else (
-                        [c, prompt, b]
-                        if turn % 4 == 1
-                        else [prompt, b, prompt, a] if turn % 4 == 2 else [b, a, c, prompt]
+        def ids(n):
+            return torch.tensor([rng.randrange(100, vocab - 100) for _ in range(n)])
+
+        async def prefill(block, n, context=(), phase="prefill"):
+            capture.phase = phase
+            await recorded.prefill_block(
+                ids(n), cache_view=list(context), write_to=block, return_logits=True
+            )
+
+        async def decode(outputs, views, phase):
+            capture.phase = phase
+            await asyncio.gather(
+                *(
+                    recorded.forward(
+                        cache_view=AsyncContext(
+                            cache_view=view, output_block=block, next_input_id=int(token)
+                        )
                     )
-                ),
-                [prompt, c, *extra, a, b],
-                [a, prompt, c, b, *extra],
+                    for block, view, token in zip(outputs, views, ids(len(outputs)), strict=True)
+                )
+            )
+
+        started = time.perf_counter()
+        try:
+            await generate_workload(recorded, vocab, large_size=256)
+            prompt = await recorded.create_block()
+            await prefill(prompt, 2048, phase="long_prefix")
+            a, b, c = [await recorded.create_block() for _ in range(3)]
+            for block in [a, b, c]:
+                await prefill(block, 128, [prompt], "fork_prefill")
+            copied = None
+            for turn in range(32):
+                if turn == 8:
+                    copied = await recorded.merge_blocks(a, b)
+                    await recorded.append_block(copied, c)
+                if turn == 12:
+                    await recorded.append_block(copied, copied)
+                    await recorded.free_block(b)
+                    await prefill(b, 64, [prompt, copied], "clear_reuse_b")
+                if turn == 16:
+                    await recorded.append_block(copied, a)
+                    await recorded.free_block(a)
+                    await prefill(a, 64, [copied, prompt], "clear_reuse_a")
+                extra = [] if copied is None else [copied]
+                views = [
+                    (
+                        [prompt, b, a, c]
+                        if turn % 4 == 0
+                        else (
+                            [c, prompt, b]
+                            if turn % 4 == 1
+                            else [prompt, b, prompt, a] if turn % 4 == 2 else [b, a, c, prompt]
+                        )
+                    ),
+                    [prompt, c, *extra, a, b],
+                    [a, prompt, c, b, *extra],
+                ]
+                await decode([a, b, c], views, f"long_decode_{turn:02d}")
+            torch.cuda.synchronize()
+            tokens = capture.trace.tokens
+            serialized = asdict(capture.trace)
+            assert serialized["format_version"] == 2 and "tokens" not in serialized
+            assert Trace.from_dict(json.loads(json.dumps(serialized))) == capture.trace
+            long_requests = [
+                request
+                for batch in capture.trace.batches
+                for request in batch.requests
+                if len(request.input_ids) == 2048
             ]
-            decode([a, b, c], views, f"long_decode_{turn:02d}")
-        torch.cuda.synchronize()
-        tokens = capture.trace.tokens
-        serialized = asdict(capture.trace)
-        assert serialized["format_version"] == 2 and "tokens" not in serialized
-        assert Trace.from_dict(json.loads(json.dumps(serialized))) == capture.trace
-        legacy = Trace.from_dict(
-            json.loads(
+            assert len(long_requests) == 1
+            metadata = {
+                "dtype": args.dtype,
+                "prefill_rows": args.prefill_rows,
+                "seconds": time.perf_counter() - started,
+                "tokens": capture.trace.num_tokens,
+                "format_version": serialized["format_version"],
+                "requests": sum(len(batch.requests) for batch in capture.trace.batches),
+                "long_prefill_tokens": len(long_requests[0].input_ids),
+                "output_rows": len(capture.rows),
+                "steps": capture.trace.steps,
+                "updates": len(capture.trace.updates),
+                "max_visible": max(sum(n for _, n in token.view) for token in tokens),
+                "max_depth": max(len(token.view) for token in tokens),
+                "ordered_views": len({tuple(b for b, _ in token.view) for token in tokens}),
+                "decode_batch_sizes": dict(
+                    Counter(Counter(t.step for t in tokens if t.kind == "decode").values())
+                ),
+                "peak_gpu_bytes": torch.cuda.max_memory_allocated(),
+            }
+
+            metadata["provenance"] = history.assert_replay(capture.trace.to(device="cpu"))
+            assert metadata["tokens"] == 4099 and metadata["updates"] == 39
+            assert metadata["output_rows"] == 213 and metadata["max_depth"] == 12
+            features = {}
+            for key, chunks in capture.features.items():
+                value = torch.empty(
+                    capture.trace.num_tokens, chunks[0][1].shape[-1], dtype=chunks[0][1].dtype
+                )
+                seen = []
+                for rows, chunk in chunks:
+                    value[rows] = chunk
+                    seen.extend(rows)
+                assert sorted(seen) == list(range(capture.trace.num_tokens)), key
+                features[key] = value
+            torch.save(
+                {
+                    "rows": torch.tensor(capture.rows),
+                    "logits": torch.stack(capture.logits),
+                    "phases": capture.phases,
+                    "features": features,
+                },
+                ROOT / f"{args.name}.pt",
+            )
+            (ROOT / f"{args.name}.json").write_text(
                 json.dumps(
                     {
-                        "tokens": [asdict(token) for token in tokens],
-                        "steps": capture.trace.steps,
-                        "updates": serialized["updates"],
+                        "model": str(MODEL),
+                        "trace": serialized,
+                        "metadata": metadata,
+                        "weights": weights,
                     }
                 )
             )
-        )
-        assert legacy == capture.trace and legacy.tokens == tokens
-        long_requests = [
-            request
-            for batch in capture.trace.batches
-            for request in batch.requests
-            if len(request.input_ids) == 2048
-        ]
-        assert len(long_requests) == 1
-        metadata = {
-            "dtype": args.dtype,
-            "prefill_rows": args.prefill_rows,
-            "seconds": time.perf_counter() - started,
-            "tokens": capture.trace.num_tokens,
-            "format_version": serialized["format_version"],
-            "requests": sum(len(batch.requests) for batch in capture.trace.batches),
-            "long_prefill_tokens": len(long_requests[0].input_ids),
-            "output_rows": len(capture.rows),
-            "steps": capture.trace.steps,
-            "updates": len(capture.trace.updates),
-            "max_visible": max(sum(n for _, n in token.view) for token in tokens),
-            "max_depth": max(len(token.view) for token in tokens),
-            "ordered_views": len({tuple(b for b, _ in token.view) for token in tokens}),
-            "decode_batch_sizes": dict(
-                Counter(Counter(t.step for t in tokens if t.kind == "decode").values())
-            ),
-            "peak_gpu_bytes": torch.cuda.max_memory_allocated(),
-        }
-
-        metadata["provenance"] = history.assert_replay(capture.trace.to(device="cpu"))
-        assert metadata["tokens"] == 4099 and metadata["updates"] == 39
-        assert metadata["output_rows"] == 213 and metadata["max_depth"] == 12
-        features = {}
-        for key, chunks in capture.features.items():
-            value = torch.empty(
-                capture.trace.num_tokens, chunks[0][1].shape[-1], dtype=chunks[0][1].dtype
-            )
-            seen = []
-            for rows, chunk in chunks:
-                value[rows] = chunk
-                seen.extend(rows)
-            assert sorted(seen) == list(range(capture.trace.num_tokens)), key
-            features[key] = value
-        torch.save(
-            {
-                "rows": torch.tensor(capture.rows),
-                "logits": torch.stack(capture.logits),
-                "phases": capture.phases,
-                "features": features,
-            },
-            ROOT / f"{args.name}.pt",
-        )
-        (ROOT / f"{args.name}.json").write_text(
-            json.dumps(
-                {
-                    "model": str(MODEL),
-                    "trace": serialized,
-                    "metadata": metadata,
-                    "weights": weights,
-                }
-            )
-        )
-        print(json.dumps(metadata), flush=True)
-    finally:
-        reference.topology = None
-        engine.shutdown()
-        math_mode.__exit__(None, None, None)
+            print(json.dumps(metadata), flush=True)
+        finally:
+            reference.topology = None
+            await llm.close()
+            engine.shutdown()
+            math_mode.__exit__(None, None, None)
 
 
-def record_image(args):
-    from minisgl.shared_cache import SharedCacheSession, WorkerGroup
-    from minisgl.training import Trace
+async def record_image(args):
+    from minisgl.llm import AsyncLLM
+    from minisgl.shared_cache import AsyncContext
+    from minisgl.training import RecordedAsyncLLM, Trace
     from minisgl.training.gdn import GDNReplay
-    from minisgl.training.recording import _TraceRecorder
 
     engine = build_engine(args)
+    llm = AsyncLLM(engine=engine)
     try:
         weights = fingerprints(engine.model.state_dict())
-        raw = SharedCacheSession(engine)
-        recorder = _TraceRecorder(raw)
-        rows, logits, phases = [], [], []
+        raw = llm.async_engine.session
+        with RecordedAsyncLLM(llm) as recorder:
+            rows, logits, phases = [], [], []
 
-        def save(value, phase):
-            assert value.dtype == getattr(torch, args.dtype) and torch.isfinite(value).all()
-            rows.append(recorder.trace.num_tokens - 1)
-            logits.append(value.detach().cpu().flatten())
-            phases.append(phase)
+            def save(value, phase):
+                assert value.dtype == getattr(torch, args.dtype) and torch.isfinite(value).all()
+                rows.append(recorder.get_trace().num_tokens - 1)
+                logits.append(value.detach().cpu().flatten())
+                phases.append(phase)
 
-        config = engine.config.model_config
-        vision = config.vision_config
-        patch_dim = vision.in_channels * vision.temporal_patch_size * vision.patch_size**2
-        grid = torch.tensor([[1, 8, 8]])
-        pixels = (
-            torch.sin(torch.arange(64 * patch_dim).float().reshape(64, patch_dim) * 7.7e-4) * 0.5
-        )
-        original_pixels = pixels.clone()
-        ids = torch.tensor(
-            [config.vision_start_token_id]
-            + [config.image_token_id] * (64 // vision.spatial_merge_size**2)
-            + [config.vision_end_token_id],
-            dtype=torch.int32,
-        )
-        types = (ids == config.image_token_id).long()
-        image = {
-            "pixel_values": pixels,
-            "image_grid_thw": grid,
-            "mm_token_type_ids": types,
-        }
-        baseline, block = raw.create_block(), recorder.create_block()
-        expected = raw.prefill_block(baseline, ids, **image)
-        image_logits = expected.clone()
-        calls = []
-        original_forward = raw._forward
+            config = engine.config.model_config
+            vision = config.vision_config
+            patch_dim = vision.in_channels * vision.temporal_patch_size * vision.patch_size**2
+            grid = torch.tensor([[1, 8, 8]])
+            pixels = (
+                torch.sin(torch.arange(64 * patch_dim).float().reshape(64, patch_dim) * 7.7e-4)
+                * 0.5
+            )
+            original_pixels = pixels.clone()
+            ids = torch.tensor(
+                [config.vision_start_token_id]
+                + [config.image_token_id] * (64 // vision.spatial_merge_size**2)
+                + [config.vision_end_token_id],
+                dtype=torch.int32,
+            )
+            types = (ids == config.image_token_id).long()
+            image = {
+                "pixel_values": pixels,
+                "image_grid_thw": grid,
+                "mm_token_type_ids": types,
+            }
+            baseline, block = await llm.create_block(), await recorder.create_block()
+            expected = (
+                await llm.prefill_block(ids, write_to=baseline, return_logits=True, **image)
+            ).logits
+            image_logits = expected.clone()
+            calls = []
+            original_forward = raw._forward
 
-        def capture(batch, *a, **kw):
-            calls.append((batch.input_ids.cpu().clone(), batch.mrope_positions.cpu().clone()))
-            return original_forward(batch, *a, **kw)
+            def capture(batch, *a, **kw):
+                calls.append((batch.input_ids.cpu().clone(), batch.mrope_positions.cpu().clone()))
+                return original_forward(batch, *a, **kw)
 
-        raw._forward = capture
-        actual = recorder.prefill_block(block, ids, **image)
-        save(actual, "image_prefill")
-        raw._forward = original_forward
-        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-        assert len(calls) > 1 and all(len(tokens) <= args.prefill_rows for tokens, _ in calls)
-        image_chunks = len(calls)
-        batch = recorder.trace.batches[0]
-        request = batch.requests[0]
-        assert batch.kind == "prefill" and len(batch.requests) == 1
-        assert request.input_ids == tuple(ids.tolist()) and request.write_start == 0
-        assert request.write_span == 0 and request.cache_spans == (0,)
-        assert torch.equal(torch.cat([tokens for tokens, _ in calls]), ids)
-        assert torch.equal(
-            torch.cat([positions for _, positions in calls], dim=1),
-            request.mrope_positions.to_tensor(),
-        )
-        for field, tensor in image.items():
-            assert torch.equal(getattr(request, field).to_tensor(), tensor), field
-        pixels.add_(1)
-        assert torch.equal(request.pixel_values.to_tensor(), original_pixels)
-        span = block.mrope_span
-        assert span < block.num_tokens == len(ids)
-        text = torch.tensor([42, 43, 44], dtype=torch.int32)
-        expected = raw.prefill_block(baseline, text)
-        actual = recorder.prefill_block(block, text)
-        save(actual, "text_extension")
-        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-        request = recorder.trace.batches[-1].requests[0]
-        assert request.write_span == span and request.cache_spans == (span,)
-        assert torch.equal(
-            request.mrope_positions.to_tensor(), torch.arange(span, span + 3).expand(3, -1)
-        )
-        assert block.mrope_span == baseline.mrope_span == span + 3
-        token = torch.tensor([45], dtype=torch.int32)
+            raw._forward = capture
+            actual = (
+                await recorder.prefill_block(ids, write_to=block, return_logits=True, **image)
+            ).logits
+            save(actual, "image_prefill")
+            raw._forward = original_forward
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            assert len(calls) > 1 and all(len(tokens) <= args.prefill_rows for tokens, _ in calls)
+            image_chunks = len(calls)
+            batch = recorder.get_trace().batches[0]
+            request = batch.requests[0]
+            assert batch.kind == "prefill" and len(batch.requests) == 1
+            assert request.input_ids == tuple(ids.tolist()) and request.write_start == 0
+            assert request.write_span == 0 and request.cache_spans == (0,)
+            assert torch.equal(torch.cat([tokens for tokens, _ in calls]), ids)
+            assert torch.equal(
+                torch.cat([positions for _, positions in calls], dim=1),
+                request.mrope_positions.to_tensor(),
+            )
+            for field, tensor in image.items():
+                assert torch.equal(getattr(request, field).to_tensor(), tensor), field
+            pixels.add_(1)
+            assert torch.equal(request.pixel_values.to_tensor(), original_pixels)
+            span = block.mrope_span
+            assert span < block.num_tokens == len(ids)
+            text = torch.tensor([42, 43, 44], dtype=torch.int32)
+            expected = (await llm.prefill_block(text, write_to=baseline, return_logits=True)).logits
+            actual = (await recorder.prefill_block(text, write_to=block, return_logits=True)).logits
+            save(actual, "text_extension")
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            request = recorder.get_trace().batches[-1].requests[0]
+            assert request.write_span == span and request.cache_spans == (span,)
+            assert torch.equal(
+                request.mrope_positions.to_tensor(), torch.arange(span, span + 3).expand(3, -1)
+            )
+            assert block.mrope_span == baseline.mrope_span == span + 3
+            token = torch.tensor([45], dtype=torch.int32)
 
-        def group(target):
-            return WorkerGroup(cache_structure=[[target]], write_to=[target])
+            def context(target):
+                return AsyncContext(cache_view=[target], next_input_id=int(token.item()))
 
-        expected = raw.decode_step(group(baseline), token)
-        actual = recorder.decode_step(group(block), token)
-        save(actual, "decode")
-        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-        request = recorder.trace.batches[-1].requests[0]
-        assert request.write_span == span + 3 and request.cache_spans == (span + 3,)
-        span, length = block.mrope_span, block.num_tokens
-        raw.append_block(baseline, baseline)
-        recorder.append_block(block, block)
-        assert block.mrope_span == 2 * span and block.num_tokens == 2 * length
-        expected = raw.prefill_block(baseline, token)
-        actual = recorder.prefill_block(block, token)
-        save(actual, "self_append")
-        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-        assert recorder.trace.batches[-1].requests[0].write_span == 2 * span
-        recorder.free_block(block)
-        assert block.num_tokens == block.mrope_span == 0
-        actual = recorder.prefill_block(block, ids, **{**image, "pixel_values": original_pixels})
-        save(actual, "clear_reuse")
-        torch.testing.assert_close(actual, image_logits, rtol=0, atol=0)
-        request = recorder.trace.batches[-1].requests[0]
-        assert request.write_start == request.write_span == 0 and request.cache_spans == (0,)
-        data = json.loads(json.dumps(asdict(recorder.trace)))
-        restored = Trace.from_dict(data)
-        assert restored == recorder.trace
-        assert data["format_version"] == 2 and "tokens" not in data
-        assert len(restored.batches) == 5 and len(restored.updates) == 2
-        assert sum(r.pixel_values is not None for b in restored.batches for r in b.requests) == 2
-        prepared_trace = restored.to(device="cpu")
-        assert prepared_trace.input_ids.numel() == restored.num_tokens
-        gdn = GDNReplay.from_trace(restored, prepared_trace.order)
-        assert gdn.conv_sources.shape[0] == restored.num_tokens
-        metadata = {
-            "image_tokens": len(ids),
-            "image_chunks": image_chunks,
-            "batches": len(restored.batches),
-            "tokens": restored.num_tokens,
-            "updates": len(restored.updates),
-            "output_rows": len(rows),
-            "max_abs": (actual - image_logits).abs().max().item(),
-        }
-        torch.save(
-            {
-                "rows": torch.tensor(rows),
-                "logits": torch.stack(logits),
-                "phases": phases,
-                "features": {},
-            },
-            ROOT / f"{args.name}.pt",
-        )
-        (ROOT / f"{args.name}.json").write_text(
-            json.dumps({"trace": data, "metadata": metadata, "weights": weights})
-        )
-        print(json.dumps(metadata), flush=True)
+            expected = (await llm.forward(cache_view=context(baseline))).logits
+            actual = (await recorder.forward(cache_view=context(block))).logits
+            save(actual, "decode")
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            request = recorder.get_trace().batches[-1].requests[0]
+            assert request.write_span == span + 3 and request.cache_spans == (span + 3,)
+            span, length = block.mrope_span, block.num_tokens
+            await llm.append_block(baseline, baseline)
+            await recorder.append_block(block, block)
+            assert block.mrope_span == 2 * span and block.num_tokens == 2 * length
+            expected = (
+                await llm.prefill_block(token, write_to=baseline, return_logits=True)
+            ).logits
+            actual = (
+                await recorder.prefill_block(token, write_to=block, return_logits=True)
+            ).logits
+            save(actual, "self_append")
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            assert recorder.get_trace().batches[-1].requests[0].write_span == 2 * span
+            await recorder.free_block(block)
+            assert block.num_tokens == block.mrope_span == 0
+            actual = (
+                await recorder.prefill_block(
+                    ids,
+                    write_to=block,
+                    return_logits=True,
+                    **{**image, "pixel_values": original_pixels},
+                )
+            ).logits
+            save(actual, "clear_reuse")
+            torch.testing.assert_close(actual, image_logits, rtol=0, atol=0)
+            request = recorder.get_trace().batches[-1].requests[0]
+            assert request.write_start == request.write_span == 0 and request.cache_spans == (0,)
+            data = json.loads(json.dumps(asdict(recorder.get_trace())))
+            restored = Trace.from_dict(data)
+            assert restored == recorder.get_trace()
+            assert data["format_version"] == 2 and "tokens" not in data
+            assert len(restored.batches) == 5 and len(restored.updates) == 2
+            assert (
+                sum(r.pixel_values is not None for b in restored.batches for r in b.requests) == 2
+            )
+            prepared_trace = restored.to(device="cpu")
+            assert prepared_trace.input_ids.numel() == restored.num_tokens
+            gdn = GDNReplay.from_trace(restored, prepared_trace.order)
+            assert gdn.conv_sources.shape[0] == restored.num_tokens
+            metadata = {
+                "image_tokens": len(ids),
+                "image_chunks": image_chunks,
+                "batches": len(restored.batches),
+                "tokens": restored.num_tokens,
+                "updates": len(restored.updates),
+                "output_rows": len(rows),
+                "max_abs": (actual - image_logits).abs().max().item(),
+            }
+            torch.save(
+                {
+                    "rows": torch.tensor(rows),
+                    "logits": torch.stack(logits),
+                    "phases": phases,
+                    "features": {},
+                },
+                ROOT / f"{args.name}.pt",
+            )
+            (ROOT / f"{args.name}.json").write_text(
+                json.dumps({"trace": data, "metadata": metadata, "weights": weights})
+            )
+            print(json.dumps(metadata), flush=True)
     finally:
+        await llm.close()
         engine.shutdown()
 
 
-def record_image_long(args):
-    from training_image_workload import record_image_workload
+async def record_image_long(args):
+    from tests.training.training_image_workload import record_image_workload
 
     assert args.dtype == "float32"
     engine = build_engine(args)
@@ -471,7 +494,7 @@ def record_image_long(args):
         weights = fingerprints(engine.model.state_dict())
         print("Recording long multimodal workload", flush=True)
         started = time.perf_counter()
-        trace, metadata, saved = record_image_workload(engine, args.prefill_rows)
+        trace, metadata, saved = await record_image_workload(engine, args.prefill_rows)
         torch.cuda.synchronize()
         metadata.update(dtype=args.dtype, seconds=time.perf_counter() - started)
         torch.save(saved, ROOT / f"{args.name}.pt")
@@ -523,7 +546,7 @@ def replay(args):
     assert not differences, differences
     from contextlib import nullcontext
 
-    from training_engine_reference import DoubleMath
+    from tests.training.training_engine_reference import DoubleMath
 
     math_mode = DoubleMath() if args.dtype == "float64" else nullcontext()
     math_mode.__enter__()
@@ -657,14 +680,15 @@ def engine_runner(tmp_path_factory):
     if not torch.cuda.is_available():
         pytest.skip("CUDA unavailable")
     directory = tmp_path_factory.mktemp("engine_replay")
-    repository = Path(__file__).resolve().parents[2]
+    repository = Path(__file__).resolve().parents[3]
     env = {**os.environ, "HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_PROGRESS_BARS": "1"}
     env["PYTHONPATH"] = str(repository / "python") + os.pathsep + env.get("PYTHONPATH", "")
 
     def run(mode, name, *extra):
         command = [
             sys.executable,
-            str(Path(__file__).resolve()),
+            "-m",
+            "tests.training.gpu.test_training_engine",
             mode,
             "--name",
             name,
@@ -855,4 +879,6 @@ if __name__ == "__main__":
     MODEL = Path(os.environ["MINISGL_TRAINING_LOGITS_MODEL"]).resolve()
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
-    globals()[args.mode](args)
+    result = globals()[args.mode](args)
+    if inspect.isawaitable(result):
+        asyncio.run(result)

@@ -25,6 +25,8 @@ def get_device_capability(device=None) -> Tuple[int, int] | None:
     """Return the capability of *device* without assuming the default GPU."""
     import torch
 
+    if device is not None and not isinstance(device, int) and torch.device(device).type != "cuda":
+        return None
     if not torch.cuda.is_available():
         return None
     return torch.cuda.get_device_capability(device)
