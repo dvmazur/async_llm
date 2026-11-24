@@ -54,6 +54,8 @@ class Setup:
     kv_tokens: int = 8192
     prefill_rows: int = 128
     dtype: str = "float16"
+    replay_attention_backend: str = "torch"
+    replay_query_chunk_size: int = 64
 
 
 def load(path):
@@ -66,6 +68,24 @@ def save(path, value):
     with path.open("x") as stream:
         json.dump(value, stream, ensure_ascii=False, allow_nan=False)
     return value
+
+
+def replay_options(setup):
+    """Pin replay independently of inference and Hugging Face attention settings."""
+    backend = setup.get("replay_attention_backend", "torch")
+    chunk_size = setup.get("replay_query_chunk_size", 64)
+    if backend not in {"torch", "auto", "torch_optimized", "fa4"}:
+        raise ValueError("Unknown replay attention backend")
+    if type(chunk_size) is not int or chunk_size < 1:
+        raise ValueError("Replay query chunk size must be a positive integer")
+    return {"attention_backend": backend, "query_chunk_size": chunk_size}
+
+
+def require_replay_options(report, setup):
+    """Reject cached results measured with different or unrecorded settings."""
+    if report.get("replay_options") != replay_options(setup):
+        raise ValueError("Saved replay settings differ; use a fresh output directory")
+    return report
 
 
 def task():
@@ -172,6 +192,7 @@ async def collect(model, output, setup=None, *, control="normal"):
     from minisgl_examples.training.recording import record_sample
 
     cfg = Setup(**(setup or {}))
+    replay_options(asdict(cfg))
     if cfg.tokens_per_frame < 1 or cfg.writer_tokens < 1:
         raise ValueError("Token quotas must be positive")
     frame_indices(0, control)
@@ -369,12 +390,19 @@ async def collect(model, output, setup=None, *, control="normal"):
                 "peak_gpu_bytes": torch.cuda.max_memory_allocated(),
             },
         }
+        result["replay_options"] = replay_options(asdict(cfg))
         result["assessment"] = assess(result)
         save(output, result)
         print(json.dumps(result["assessment"]), result["answer_text"], flush=True)
         return result["assessment"]
     finally:
         await llm.close()
+
+
+def prepare_trace(data, device="cuda"):
+    from minisgl.training import Trace
+
+    return Trace.from_dict(data["trace"]).to(device, **replay_options(data["setup"]))
 
 
 def load_for_replay(source, model=None, dtype="float32"):
@@ -385,10 +413,12 @@ def load_for_replay(source, model=None, dtype="float32"):
     data = load(source)
     torch.backends.cuda.matmul.allow_tf32 = False
     model, trace, targets, processor = load_student(
-        data, str(model or data["model"]), dtype=getattr(torch, dtype)
+        {**data, "trace": prepare_trace(data, "cpu")},
+        str(model or data["model"]),
+        dtype=getattr(torch, dtype),
     )
     model.set_attn_implementation("eager")
-    return data, model.eval(), trace.to("cuda", query_chunk_size=64), targets, processor
+    return data, model.eval(), trace.to("cuda"), targets, processor
 
 
 def check_replay(source, output, *, dtype="float32"):
@@ -418,7 +448,15 @@ def check_replay(source, output, *, dtype="float32"):
         "passed": max(errors) <= 0.1,
         "errors": errors,
     }
-    save(output, {"dtype": dtype, "parity": parity, "replay": measured})
+    save(
+        output,
+        {
+            "dtype": dtype,
+            "parity": parity,
+            "replay": measured,
+            "replay_options": replay_options(data["setup"]),
+        },
+    )
     print(json.dumps({k: v for k, v in parity.items() if k != "errors"}), flush=True)
     del model, trace, targets
     gc.collect()
@@ -541,6 +579,7 @@ def train(teacher_path, student, baseline_path, output, *, steps=80, lr=3e-6):
         "lr": lr,
         "dtype": "float32",
         "vision_frozen": True,
+        "replay_options": replay_options(data["setup"]),
         "initial": initial,
         "final": final,
         "history": history,
@@ -555,10 +594,17 @@ def train(teacher_path, student, baseline_path, output, *, steps=80, lr=3e-6):
 def verify_checkpoint(teacher_path, checkpoint, training_path, output):
     from minisgl_examples.training.loss import evaluate
 
+    data = load(teacher_path)
+    training = require_replay_options(load(training_path), data["setup"])
     _, model, trace, targets, _ = load_for_replay(teacher_path, checkpoint)
     measured = evaluate(model, [(trace, targets)], 32)
-    error = abs(measured["loss"] - load(training_path)["final"]["loss"])
-    result = {"reloaded": measured, "saved_loss_difference": error, "passed": error < 1e-5}
+    error = abs(measured["loss"] - training["final"]["loss"])
+    result = {
+        "reloaded": measured,
+        "saved_loss_difference": error,
+        "passed": error < 1e-5,
+        "replay_options": replay_options(data["setup"]),
+    }
     save(output, result)
     if not result["passed"]:
         raise RuntimeError("Checkpoint reload changed training replay")
@@ -662,6 +708,7 @@ def compare(teacher_path, before_path, after_path, control_path, output):
             "answer": run["answer_text"],
         }
     result = {
+        "replay_options": replay_options(teacher["setup"]),
         "runs": reports,
         "free_running_success": reports["after"]["assessment"]["behavior_reproduced"]
         and reports["after"]["same_events"],
@@ -680,6 +727,10 @@ def main():
     c.add_argument("--output", required=True)
     c.add_argument("--control", choices=["normal", "freeze"], default="normal")
     c.add_argument("--setup", type=Path)
+    c.add_argument(
+        "--replay-attention-backend", choices=["torch", "auto", "torch_optimized", "fa4"]
+    )
+    c.add_argument("--replay-query-chunk-size", type=int)
     c = sub.add_parser("check")
     c.add_argument("--source", required=True)
     c.add_argument("--output", required=True)
@@ -693,9 +744,13 @@ def main():
     c.add_argument("--lr", type=float, default=3e-6)
     a = p.parse_args()
     if a.command == "collect":
-        asyncio.run(
-            collect(a.model, a.output, load(a.setup) if a.setup else None, control=a.control)
-        )
+        setup = load(a.setup) if a.setup else {}
+        if a.replay_attention_backend is not None:
+            setup["replay_attention_backend"] = a.replay_attention_backend
+        if a.replay_query_chunk_size is not None:
+            setup["replay_query_chunk_size"] = a.replay_query_chunk_size
+        replay_options(setup)
+        asyncio.run(collect(a.model, a.output, setup, control=a.control))
     elif a.command == "check":
         check_replay(a.source, a.output, dtype=a.dtype)
     else:

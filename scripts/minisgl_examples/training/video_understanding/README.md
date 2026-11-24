@@ -148,3 +148,20 @@ execute the notebook. Stage CLI commands `collect`, `check`, and `train` also
 support `--help`. All results/logs go under `training_runs/video_understanding`.
 Only diagnostic artifacts are copied back locally; large checkpoint weights
 remain on the server. Actual metrics and limitations are in `RUN_REPORT.md`.
+
+## Replay settings after the training refactor
+
+Every parity check, optimizer step, evaluation, and checkpoint reload uses the
+settings stored in the collected rollout's `setup`. Defaults are
+`replay_attention_backend="torch"` and `replay_query_chunk_size=64`, independent
+of Hugging Face's `attn_implementation`. Reports record the effective
+`replay_options`; the notebook refuses cached results with missing or different
+settings. Use a fresh run directory when changing settings or code. Historical
+`RUN_REPORT.md` results are not new measurements of these defaults.
+
+The collection CLI accepts `--replay-attention-backend` and
+`--replay-query-chunk-size`; subsequent stages inherit those values from the
+trace. To exercise current automatic backend selection, collect teacher and
+student into a separate directory with
+`--replay-attention-backend auto --replay-query-chunk-size 1024`. The notebook
+exposes the same fields in `SETUP`. Existing parity and quality gates still apply.

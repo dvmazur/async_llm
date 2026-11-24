@@ -71,3 +71,48 @@ def test_manifest_is_pinned_and_reply_sample_in_reference_window():
     a, b = data["annotation"]["answer"][0]["reply_timespan"]
     assert a <= t <= b
     assert data["revision"] == "7f59bce2a6cdf40b8a895767aac7a52a92136c5f"
+
+
+def test_explicit_replay_settings_and_cached_report_guard():
+    from minisgl_examples.training.video_understanding import experiment as exp
+
+    assert exp.replay_options({}) == {"attention_backend": "torch", "query_chunk_size": 64}
+    setup = {"replay_attention_backend": "auto", "replay_query_chunk_size": 1024}
+    expected = {"attention_backend": "auto", "query_chunk_size": 1024}
+    assert exp.replay_options(setup) == expected
+    report = {"replay_options": expected, "passed": True}
+    assert exp.require_replay_options(report, setup) is report
+    for stale in ({}, {"replay_options": exp.replay_options({})}):
+        with pytest.raises(ValueError, match="fresh output directory"):
+            exp.require_replay_options(stale, setup)
+    for bad in (
+        {"replay_attention_backend": "unknown"},
+        {"replay_query_chunk_size": 0},
+        {"replay_query_chunk_size": True},
+    ):
+        with pytest.raises(ValueError):
+            exp.replay_options(bad)
+
+
+@pytest.mark.parametrize("backend,chunk_size", [("torch", 64), ("auto", 1024)])
+def test_prepared_replay_settings_survive_shared_loader(backend, chunk_size):
+    from dataclasses import asdict
+
+    from minisgl.training.trace import ForwardBatch, ForwardRequest, Trace
+    from minisgl_examples.training.student import load_example
+    from minisgl_examples.training.video_understanding import experiment as exp
+
+    trace = Trace(
+        batches=[ForwardBatch(0, "prefill", (ForwardRequest((1, 2), 0, 0, ((0, 0),)),))], steps=1
+    )
+    data = {
+        "trace": asdict(trace),
+        "targets": [-100, 2],
+        "setup": {"replay_attention_backend": backend, "replay_query_chunk_size": chunk_size},
+    }
+    prepared = {**data, "trace": exp.prepare_trace(data, "cpu")}
+    restored = load_example(prepared)["trace"].to("cpu")
+    assert restored.attention_backend == backend
+    assert restored.query_chunk_size == chunk_size
+    assert restored.num_tokens == 2
+    assert asdict(restored) == data["trace"]
