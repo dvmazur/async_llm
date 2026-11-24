@@ -17,6 +17,7 @@ from minisgl_examples.training import sft
         ({"gdn_segment_size": 0}, "gdn_segment_size must be positive"),
         ({"gdn_read_mode": "invalid"}, "gdn_read_mode must be expanded or factorized"),
         ({"gdn_read_backend": "invalid"}, "gdn_read_backend must be torch or triton"),
+        ({"replay_attention_backend": "invalid"}, "attention_backend must be"),
     ],
 )
 def test_sft_rejects_invalid_replay_options_before_loading_data(options, message):
@@ -87,7 +88,13 @@ def test_sft_loads_and_saves_image_model_and_processor(monkeypatch, tmp_path, ki
     output = tmp_path / "checkpoint"
     sft.train(
         SimpleNamespace(
-            data=data, output=output, gradient_checkpointing=False, lr=1e-3, steps=1, seed=7
+            data=data,
+            output=output,
+            gradient_checkpointing=False,
+            lr=1e-3,
+            steps=1,
+            seed=7,
+            replay_attention_backend="torch",
         )
     )
     multimodal = kind != "text"
@@ -107,7 +114,10 @@ def test_sft_loads_and_saves_image_model_and_processor(monkeypatch, tmp_path, ki
     loaders[processor].from_pretrained.return_value.save_pretrained.assert_called_once_with(output)
     loaders[unused].from_pretrained.assert_not_called()
     model.save_pretrained.assert_called_once_with(output)
-    assert json.loads((tmp_path / "metrics.json").read_text())["supervised_tokens"] == len(traces)
+    metrics = json.loads((tmp_path / "metrics.json").read_text())
+    assert metrics["supervised_tokens"] == len(traces)
+    assert metrics["replay_attention_backend"] == "torch"
+    assert all(plan.attention_backend == "torch" for plan, _ in sft.evaluate.call_args.args[1])
 
 
 @pytest.mark.parametrize(
