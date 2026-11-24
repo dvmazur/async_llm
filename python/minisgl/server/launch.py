@@ -38,11 +38,25 @@ def _run_scheduler(args: ServerArgs, ack_queue: mp.Queue[str]) -> None:
 
 
 def launch_server(run_shell: bool = False) -> None:
+    import torch
+    from minisgl.distributed.partition import select_tp_size
+
     from .api_server import run_api_server
     from .args import parse_args
 
     server_args, run_shell = parse_args(sys.argv[1:], run_shell)
     logger = init_logger(__name__, "initializer")
+
+    # Resolve the world size once, before any scheduler processes are created.
+    requested = server_args.tp_info.size
+    available = torch.cuda.device_count()
+    selected = select_tp_size(server_args.model_config, requested, available)
+    if selected != requested:
+        raise RuntimeError(
+            f"Requested TP={requested}, visible GPUs={available}; "
+            f"the largest supported size within this limit is TP={selected}. "
+            f"Restart with --tp-size {selected} to use that size."
+        )
 
     def start_subprocess() -> None:
         import multiprocessing as mp

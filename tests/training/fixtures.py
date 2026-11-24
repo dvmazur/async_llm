@@ -1,4 +1,5 @@
 import inspect
+from contextlib import nullcontext
 from functools import partial
 
 import pytest
@@ -8,9 +9,15 @@ from transformers.models.qwen3_5 import modeling_qwen3_5
 from tests.training.references import Float64AttentionMath
 
 
+@pytest.fixture(autouse=True)
+def cpu_profiling(monkeypatch):
+    if not torch.cuda.is_available():
+        monkeypatch.setattr(torch.cuda.nvtx, "range", lambda *args, **kwargs: nullcontext())
+
+
 @pytest.fixture
 def fp64_attention(monkeypatch):
-    from minisgl.training import attention as attention_module
+    from minisgl.training.attention import torch as attention_module
 
     monkeypatch.setattr(
         attention_module,

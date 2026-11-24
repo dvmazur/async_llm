@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import torch
+from minisgl.distributed import get_tp_info
+from minisgl.utils import div_even
 
 if TYPE_CHECKING:
     from minisgl.models import ModelConfig
@@ -31,7 +33,8 @@ class GDNStatePool:
         dtype: torch.dtype,
     ) -> None:
         num_lin = model_config.num_linear_layers
-        conv_dim = model_config.linear_conv_dim
+        tp_size = get_tp_info().size
+        conv_dim = div_even(model_config.linear_conv_dim, tp_size)
         conv_state_len = model_config.linear_conv_kernel_dim
         self._device = device
         self.conv_state = torch.zeros(
@@ -44,7 +47,7 @@ class GDNStatePool:
             (
                 num_lin,
                 max_running_req,
-                model_config.linear_num_value_heads,
+                div_even(model_config.linear_num_value_heads, tp_size),
                 model_config.linear_key_head_dim,
                 model_config.linear_value_head_dim,
             ),

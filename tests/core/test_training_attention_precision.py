@@ -6,9 +6,12 @@ import pytest
 import torch
 from minisgl.training.attention import attention
 from minisgl.training.attention.torch import _attention_impl
-from test_training import Float64AttentionMath, causal_trace, mutation_trace, repeated_view_trace
-from test_training import fp64_attention as fp64_attention
 from torch.overrides import TorchFunctionMode
+
+from tests.training.fixtures import cpu_profiling as cpu_profiling
+from tests.training.fixtures import fp64_attention as fp64_attention
+from tests.training.references import Float64AttentionMath
+from tests.training.workloads import causal_trace, mutation_trace, repeated_view_trace
 
 
 def _rotate(query, positions, inv_freq):
