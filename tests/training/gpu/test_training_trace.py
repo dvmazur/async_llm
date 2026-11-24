@@ -37,7 +37,7 @@ def test_recording_append_recompiles_and_configured_trace_keeps_snapshot():
                 chunks = next(iter(trace._attention.values()))
                 configured = trace.to(query_chunk_size=1, attention_checkpointing=False)
                 assert configured is not trace
-                assert configured.query_chunk_size == 1 and trace.query_chunk_size == 128
+                assert configured.query_chunk_size == 1 and trace.query_chunk_size == 1024
                 await session.prefill_block([3, 4], write_to=block)
                 actual = replay_trace(model, trace, hidden_only=False)
                 torch.testing.assert_close(actual, sequential(model, trace), atol=2e-06, rtol=2e-05)

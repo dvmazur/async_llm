@@ -289,26 +289,39 @@ def test_native_forward_after_replay_stays_causal_and_masked(backend, padded, de
 
 
 @pytest.mark.parametrize("use_reentrant", [None, False, True])
-def test_attention_inference_warmup_then_training(use_reentrant):
+@pytest.mark.parametrize("attention_backend", ["auto", "torch", "torch_optimized"])
+def test_attention_inference_warmup_then_training(use_reentrant, attention_backend):
     reference, model = (tiny_model().cuda().train(), tiny_model().cuda().eval())
     trace = repeated_view_trace()
     with torch.inference_mode():
-        plan = trace.to(query_chunk_size=3).to("cpu")
+        plan = trace.to(query_chunk_size=3, attention_backend=attention_backend).to("cpu")
         replay_trace(model, plan, hidden_only=False)
-    chunks = plan._attention[next(model.parameters()).device, 3]
+    device = next(model.parameters()).device
+    cache_key = (device, 3) if attention_backend == "torch" else ("torch_optimized", device, 3)
+    cached = plan._attention[cache_key]
+    if attention_backend == "torch":
+        metadata = [entries for _, entries in cached]
+    else:
+        metadata = [cached.k_indices, cached.k_positions, cached.k_offsets]
+        metadata.extend(chunk.entries for chunk in cached.chunks)
+        metadata.extend(group.entries for chunk in cached.chunks for group in chunk.groups)
     assert not plan.input_ids.is_inference() and (not plan.order.is_inference())
-    assert all((not entries.is_inference() for _, entries in chunks))
+    assert all(not tensor.is_inference() for tensor in metadata)
     model.train()
     if use_reentrant is not None:
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": use_reentrant}
         )
-    expected = replay_trace(reference, trace.to(query_chunk_size=3), hidden_only=False)
+    expected = replay_trace(
+        reference,
+        trace.to(query_chunk_size=3, attention_backend=attention_backend),
+        hidden_only=False,
+    )
     actual = replay_trace(model, plan, hidden_only=False)
     torch.testing.assert_close(actual, expected)
     expected.square().mean().backward()
     actual.square().mean().backward()
-    assert plan._attention[next(model.parameters()).device, 3] is chunks
+    assert plan._attention[cache_key] is cached
     for parameter, target in zip(model.parameters(), reference.parameters(), strict=True):
         torch.testing.assert_close(parameter.grad, target.grad, atol=1e-06, rtol=0.0002)
 

@@ -5,8 +5,9 @@ from unittest.mock import patch
 import pytest
 import torch
 import torch.nn.functional as F
-from minisgl.training import attention as attention_module
 from minisgl.training import replay_trace
+from minisgl.training.attention import torch as reference_attention
+from minisgl.training.attention import torch_optimized as optimized_attention
 from minisgl.training.gdn import GDNReplay
 from minisgl_examples.training import loss as loss_module
 from minisgl_examples.training import sft
@@ -91,17 +92,27 @@ def test_switching_off_plan_cache_releases_previous_plans():
 
 @pytest.mark.parametrize("attention_checkpointing", [False, True])
 @pytest.mark.parametrize("loss_checkpointing", [False, True])
-def test_sft_checkpointing_switches_are_independent(attention_checkpointing, loss_checkpointing):
+@pytest.mark.parametrize("attention_backend", ["auto", "torch", "torch_optimized"])
+def test_sft_checkpointing_switches_are_independent(
+    attention_checkpointing, loss_checkpointing, attention_backend
+):
     reference, model = tiny_model().cuda().train(), tiny_model().cuda().train()
     trace = mutation_trace()
     targets = torch.arange(len(trace.tokens)) % 32
     targets[::3] = -100
-    native = trace.to(query_chunk_size=3, attention_checkpointing=False)
+    native = trace.to(
+        query_chunk_size=3, attention_checkpointing=False, attention_backend=attention_backend
+    )
     expected = sft.compute_supervised_loss(
         reference, native, targets, chunk_size=4, checkpointing=False
     )
     expected.backward()
-    replay = trace.to(query_chunk_size=3, attention_checkpointing=attention_checkpointing)
+    replay = trace.to(
+        query_chunk_size=3,
+        attention_checkpointing=attention_checkpointing,
+        attention_backend=attention_backend,
+    )
+    attention_module = reference_attention if attention_backend == "torch" else optimized_attention
     with (
         patch.object(
             attention_module, "checkpoint", wraps=attention_module.checkpoint
