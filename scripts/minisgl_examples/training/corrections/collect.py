@@ -15,7 +15,7 @@ import torch
 from huggingface_hub import hf_hub_download
 from minisgl.llm import AsyncLLM
 
-from minisgl_examples.training.corrections.rollout import collect_correction_example
+from minisgl_examples.training.corrections.rollout import CORRECTION_PROTOCOL, collect_correction_example
 
 DATASET = "MrDarkTesla/math_500_sharded"
 DATASET_REVISION = "660e78826c964737cfb75851913536b16dc2942e"
@@ -60,6 +60,7 @@ async def collect_dataset_traces(args: argparse.Namespace) -> dict[str, Any]:
         "count": args.count,
         "k_steps": args.k_steps,
         "max_tokens": args.max_tokens,
+        "correction_protocol": CORRECTION_PROTOCOL,
         "precision": args.precision,
         "concurrency": args.concurrency,
     }

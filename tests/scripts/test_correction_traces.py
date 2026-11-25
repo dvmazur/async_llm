@@ -2,6 +2,8 @@
 
 import argparse
 import asyncio
+import json
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
@@ -26,6 +28,10 @@ class Tokenizer:
             return [4]
         if text.startswith(INJECTION_PREFIX):
             return [5, 6, 7]
+        if text == "correction":
+            return [8]
+        if text.endswith("questioncorrection"):
+            return [1, 2, 3, 8]
         return [1, 2, 3]
 
     def apply_chat_template(self, messages, **kwargs):
@@ -36,7 +42,7 @@ class Tokenizer:
 
 
 @pytest.mark.parametrize("k_steps", [0, 2])
-def test_correction_rollout_has_aligned_targets_and_two_cache_writes(k_steps):
+def test_correction_rollout_updates_only_the_prompt_and_aligns_targets(k_steps):
     async def run():
         llm, _ = make_llm()
         llm.tokenizer = Tokenizer()
@@ -64,6 +70,25 @@ def test_correction_rollout_has_aligned_targets_and_two_cache_writes(k_steps):
     assert len(example["targets"]) == report["trace_tokens"]
     assert example["targets"].count(-100) == report["trace_tokens"] - 4
     assert example["answer_evaluation"]["label"] == "incorrect"
+    trace = example["trace"]
+    assert validate_correction_example({**example, "trace": asdict(trace)}) == report
+    requests = [(batch.step, req) for batch in trace.batches for req in batch.requests]
+    first_step, first_request = requests[0]
+    prompt = first_request.write_to
+    prompt_writes = [(step, req) for step, req in requests if req.write_to == prompt]
+    output_writes = [(step, req) for step, req in requests if req.write_to != prompt]
+    assert [req.input_ids for _, req in output_writes] == [(4,), (0,), (0,), (0,)]
+    if k_steps == 0:
+        assert "questioncorrection" in example["prompt"]
+        assert [req.input_ids for _, req in prompt_writes] == [(1, 2, 3, 8)]
+        assert example["injection_trace_step"] == first_step
+    else:
+        assert example["prompt"].endswith("question")
+        assert [req.input_ids for _, req in prompt_writes] == [(1, 2, 3), (5, 6, 7)]
+        correction_step = prompt_writes[-1][0]
+        assert example["injection_trace_step"] == correction_step
+        assert output_writes[k_steps - 1][0] < correction_step < output_writes[k_steps][0]
+    assert dict(output_writes[k_steps][1].cache_view)[prompt] == (4 if k_steps == 0 else 6)
 
 
 def test_eos_before_correction_is_recorded_but_does_not_stop_injection():
@@ -209,6 +234,12 @@ def test_collector_checkpoints_each_trace_and_resumes(tmp_path, monkeypatch):
     ]
     second = asyncio.run(collector.collect_dataset_traces(args))
     assert second == {"output": str(args.output), "collected": 0, "skipped": 2}
+    config_path = args.output / "config.json"
+    config = json.loads(config_path.read_text())
+    assert config.pop("correction_protocol") == "prompt_only"
+    config_path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="Existing run configuration differs"):
+        asyncio.run(collector.collect_dataset_traces(args))
 
 
 def test_cli_defaults_to_pinned_dataset_and_bfloat16(tmp_path):

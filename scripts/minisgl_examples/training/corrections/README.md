@@ -1,9 +1,11 @@
 # Correction trace collection
 
 This collector records the async-input protocol from
-`MrDarkTesla/math_500_sharded` on top of the current `training` APIs. A model starts
-from `problem_shards[0]`; after `--k-steps` generated tokens,
-`problem_shards[1]` arrives as `ADDITIONAL INFORMATION`. The resulting format-v2
+`MrDarkTesla/math_500_sharded` on top of the current `training` APIs. At K=0,
+both shards are concatenated in the initial user prompt before generation.
+At K>0, the second shard is appended once to the prompt KV block as
+`ADDITIONAL INFORMATION` after K model-generated tokens. Decoding then
+continues in the existing output block. The resulting format-v2
 traces, row-aligned targets, and inference log probabilities are checkpointed as
 individual one-example JSON files. Each file can be consumed directly by
 `minisgl_examples.training.sft train`.
@@ -25,7 +27,10 @@ uv run --no-sync python -m minisgl_examples.training.sft train \
 ```
 
 The dataset revision is pinned. Existing completed trace files are skipped when the
-same command is restarted; a differing `config.json` is rejected. Every example keeps
+same command is restarted. The `prompt_only` protocol is recorded in the run
+configuration and each example. Use a new output directory for this protocol
+when coming from a run with two correction writes. Earlier trace files still
+support replay. Every example keeps
 all boxed-answer decisions, correct/incorrect/mixed labels, pre-correction text and
 grading, and EOS positions. Use `--no-cuda-graphs` only when debugging graph-specific
 failures; it does not change trace semantics. `--concurrency` controls independent

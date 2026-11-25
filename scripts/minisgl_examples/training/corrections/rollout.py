@@ -14,6 +14,7 @@ from minisgl_examples.training.corrections.grading import grade_text
 from minisgl_examples.training.recording import build_training_example, record_sample
 
 INJECTION_PREFIX = "\n\nADDITIONAL INFORMATION: "
+CORRECTION_PROTOCOL = "prompt_only"
 PROMPT = (
     "Solve the problem in at most five short reasoning steps. Additional information "
     "may arrive while you work; apply it before finalizing. Do not restate or audit "
@@ -58,13 +59,15 @@ async def collect_correction_example(
         raise ValueError("The inference engine has no tokenizer")
 
     user_prompt = PROMPT + first_shard
+    if k_steps == 0:
+        user_prompt += correction_shard
     initial = tokenizer.apply_chat_template(
         [{"role": "user", "content": user_prompt}],
         tokenize=False,
         add_generation_prompt=True,
         enable_thinking=False,
     )
-    correction = INJECTION_PREFIX + correction_shard + "\n\n"
+    correction = correction_shard if k_steps == 0 else INJECTION_PREFIX + correction_shard + "\n\n"
     correction_ids = _encode(tokenizer, correction)
     if correction_ids.numel() == 0:
         raise ValueError("The correction encoded to no tokens")
@@ -81,62 +84,38 @@ async def collect_correction_example(
         with RecordedAsyncLLM(llm) as recorded:
             prompt = await recorded.create_block()
             output = await recorded.create_block()
+            if k_steps == 0:
+                injection_trace_step = recorded.get_trace().steps
             await recorded.forward(
                 _encode(tokenizer, initial), write_to=prompt, return_logits=False
             )
             context = AsyncContext([prompt, output], next_input_id=int(newline_ids[-1]))
 
             for generation_step in range(max_tokens):
-                if generation_step == k_steps:
-                    # The last pre-correction sample is committed to KV, but its logits do
-                    # not predict another model token: external input arrives next.
-                    if generated:
-                        await recorded.forward(cache_view=context, return_logits=False)
+                if generation_step == k_steps and k_steps > 0:
+                    # Update the prompt before decoding the pending output token.
                     injection_trace_step = recorded.get_trace().steps
-
-                    # Extend the earlier prompt memory and present the same arriving text
-                    # at the live end of the reasoning stream.
                     await recorded.forward(
                         correction_ids,
                         cache_view=[prompt],
                         write_to=prompt,
                         return_logits=False,
                     )
-                    trace = recorded.get_trace()
-                    batch_cursor, row_cursor = len(trace.batches), trace.num_tokens
-                    write_end = output.num_tokens + correction_ids.numel()
-                    result = await recorded.forward(
-                        correction_ids,
-                        cache_view=[prompt, output],
-                        write_to=output,
-                    )
-                    token = int(result.logits.argmax().item())
-                    record_sample(
-                        recorded,
-                        samples,
-                        block_id=output.block_id,
-                        write_end=write_end,
-                        batch_cursor=batch_cursor,
-                        row_cursor=row_cursor,
-                        token=token,
-                        logits=result.logits,
-                    )
-                else:
-                    trace = recorded.get_trace()
-                    batch_cursor, row_cursor = len(trace.batches), trace.num_tokens
-                    write_end = output.num_tokens + 1
-                    result = await recorded.forward(cache_view=context)
-                    token = int(result.logits.argmax().item())
-                    record_sample(
-                        recorded,
-                        samples,
-                        block_id=output.block_id,
-                        write_end=write_end,
-                        batch_cursor=batch_cursor,
-                        row_cursor=row_cursor,
-                        token=token,
-                        logits=result.logits,
-                    )
+                trace = recorded.get_trace()
+                batch_cursor, row_cursor = len(trace.batches), trace.num_tokens
+                write_end = output.num_tokens + 1
+                result = await recorded.forward(cache_view=context)
+                token = int(result.logits.argmax().item())
+                record_sample(
+                    recorded,
+                    samples,
+                    block_id=output.block_id,
+                    write_end=write_end,
+                    batch_cursor=batch_cursor,
+                    row_cursor=row_cursor,
+                    token=token,
+                    logits=result.logits,
+                )
 
                 generated.append(token)
                 context.next_input_id = token
@@ -164,6 +143,7 @@ async def collect_correction_example(
             "dataset_index": dataset_index,
             "k_steps": k_steps,
             "precision": precision,
+            "correction_protocol": CORRECTION_PROTOCOL,
             "injection_trace_step": injection_trace_step,
             "correction_tokens": correction_ids.tolist(),
             "pre_correction_tokens": pre_correction_tokens,
@@ -191,15 +171,50 @@ async def collect_correction_example(
             await llm.free_block(prompt)
 
 
-def validate_correction_example(example: Mapping[str, Any]) -> dict[str, int]:
-    """Reject traces that do not contain one well-aligned mid-stream correction."""
-    raw_trace = example.get("trace")
-    trace = raw_trace if isinstance(raw_trace, Trace) else Trace.from_dict(raw_trace)
-    targets = list(example.get("targets", ()))
-    correction = tuple(example.get("correction_tokens", ()))
-    if not correction or len(targets) != trace.num_tokens:
-        raise ValueError("Trace targets or correction token metadata are invalid")
+def _validate_prompt_only(trace, targets, correction, k_steps, injection_step):
+    if not trace.batches or not trace.batches[0].requests:
+        raise ValueError("The trace is missing its prompt prefill")
+    initial_step = trace.batches[0].step
+    prompt_block = trace.batches[0].requests[0].write_to
+    if injection_step is None or not (
+        injection_step == initial_step if k_steps == 0 else injection_step > initial_step
+    ):
+        raise ValueError("The correction step does not match its position in the rollout")
 
+    correction_inputs = []
+    decode_steps_before_injection = 0
+    saw_prompt_after_injection = False
+    prompt_length = 0
+    row = 0
+    for batch in trace.batches:
+        for request in batch.requests:
+            end = row + len(request.input_ids)
+            if request.write_to == prompt_block:
+                if batch.step not in (initial_step, injection_step) or any(
+                    value != -100 for value in targets[row:end]
+                ):
+                    raise ValueError("Prompt writes must be unsupervised and occur during prefill or injection")
+                if batch.step == injection_step:
+                    correction_inputs.extend(request.input_ids)
+                prompt_length = request.write_start + len(request.input_ids)
+            else:
+                if len(request.input_ids) != 1 or targets[row] == -100 or batch.step == injection_step:
+                    raise ValueError("Output writes must be supervised single-token decode steps")
+                if batch.step < injection_step:
+                    decode_steps_before_injection += 1
+                elif not saw_prompt_after_injection:
+                    seen_length = dict(request.cache_view).get(prompt_block, 0)
+                    if seen_length != prompt_length:
+                        raise ValueError("The first post-correction decode must see the updated prompt")
+                    saw_prompt_after_injection = True
+            row = end
+    if not correction_inputs or not saw_prompt_after_injection or decode_steps_before_injection != k_steps:
+        raise ValueError("The correction must precede the first post-correction decode")
+    if k_steps > 0 and tuple(correction_inputs) != correction:
+        raise ValueError("Expected exactly one correction append to the prompt")
+
+
+def _validate_legacy_correction(trace, targets, correction):
     occurrences: list[tuple[int, Any]] = []
     row = 0
     correction_rows: list[range] = []
@@ -226,6 +241,24 @@ def validate_correction_example(example: Mapping[str, Any]) -> dict[str, int]:
     live_targets = [targets[index] for index in correction_rows[1]]
     if live_targets[-1] == -100 or any(value != -100 for value in live_targets[:-1]):
         raise ValueError("Only the final live correction row may predict a model token")
+
+
+def validate_correction_example(example: Mapping[str, Any]) -> dict[str, int]:
+    """Check prompt-only recordings and earlier two-write traces."""
+    raw_trace = example.get("trace")
+    trace = raw_trace if isinstance(raw_trace, Trace) else Trace.from_dict(raw_trace)
+    targets = list(example.get("targets", ()))
+    correction = tuple(example.get("correction_tokens", ()))
+    if not correction or len(targets) != trace.num_tokens:
+        raise ValueError("Trace targets or correction token metadata are invalid")
+
+    protocol = example.get("correction_protocol")
+    if protocol == CORRECTION_PROTOCOL:
+        _validate_prompt_only(trace, targets, correction, example["k_steps"], example["injection_trace_step"])
+    elif protocol is None:
+        _validate_legacy_correction(trace, targets, correction)
+    else:
+        raise ValueError(f"Unknown correction protocol: {protocol}")
     supervised = sum(value != -100 for value in targets)
     if supervised != len(example.get("output_tokens", ())):
         raise ValueError("Every generated token must have exactly one aligned target")
