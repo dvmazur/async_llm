@@ -10,6 +10,10 @@ traces, row-aligned targets, and inference log probabilities are checkpointed as
 individual one-example JSON files. Each file can be consumed directly by
 `minisgl_examples.training.sft train`.
 
+Use `--two-correction-writes` to reproduce the historical protocol. At any K,
+including K=0, the collector appends the same correction to the prompt KV
+block and to the live reasoning KV block before sampling the next token.
+
 The default path is intended for Ampere-or-newer GPUs and preserves the normal BF16
 configuration. It contains no Turing compatibility path.
 
@@ -27,10 +31,10 @@ uv run --no-sync python -m minisgl_examples.training.sft train \
 ```
 
 The dataset revision is pinned. Existing completed trace files are skipped when the
-same command is restarted. The `prompt_only` protocol is recorded in the run
-configuration and each example. Use a new output directory for this protocol
-when coming from a run with two correction writes. Earlier trace files still
-support replay. Every example keeps
+same command is restarted. The selected protocol (`prompt_only` by default,
+`prompt_and_output` with the flag) is recorded in the run configuration and
+each example. Use a separate output directory for each protocol. Earlier trace
+files still support replay. Every example keeps
 all boxed-answer decisions, correct/incorrect/mixed labels, pre-correction text and
 grading, and EOS positions. Use `--no-cuda-graphs` only when debugging graph-specific
 failures; it does not change trace semantics. `--concurrency` controls independent

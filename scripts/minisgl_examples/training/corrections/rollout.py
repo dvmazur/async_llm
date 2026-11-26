@@ -15,6 +15,7 @@ from minisgl_examples.training.recording import build_training_example, record_s
 
 INJECTION_PREFIX = "\n\nADDITIONAL INFORMATION: "
 CORRECTION_PROTOCOL = "prompt_only"
+TWO_WRITE_PROTOCOL = "prompt_and_output"
 PROMPT = (
     "Solve the problem in at most five short reasoning steps. Additional information "
     "may arrive while you work; apply it before finalizing. Do not restate or audit "
@@ -49,17 +50,22 @@ async def collect_correction_example(
     k_steps: int,
     max_tokens: int,
     precision: str,
+    correction_protocol: str = CORRECTION_PROTOCOL,
 ) -> dict[str, Any]:
     """Collect one format-v2 trace while reusing a caller-owned inference engine."""
     if not 0 <= k_steps < max_tokens:
         raise ValueError("Require 0 <= k_steps < max_tokens")
+    if correction_protocol not in (CORRECTION_PROTOCOL, TWO_WRITE_PROTOCOL):
+        raise ValueError(f"Unknown correction protocol: {correction_protocol}")
+    write_to_output = correction_protocol == TWO_WRITE_PROTOCOL
+    correction_in_prefill = k_steps == 0 and not write_to_output
     first_shard, correction_shard = problem_shards(item)
     tokenizer = llm.tokenizer
     if tokenizer is None:
         raise ValueError("The inference engine has no tokenizer")
 
     user_prompt = PROMPT + first_shard
-    if k_steps == 0:
+    if correction_in_prefill:
         user_prompt += correction_shard
     initial = tokenizer.apply_chat_template(
         [{"role": "user", "content": user_prompt}],
@@ -67,7 +73,9 @@ async def collect_correction_example(
         add_generation_prompt=True,
         enable_thinking=False,
     )
-    correction = correction_shard if k_steps == 0 else INJECTION_PREFIX + correction_shard + "\n\n"
+    correction = (
+        correction_shard if correction_in_prefill else INJECTION_PREFIX + correction_shard + "\n\n"
+    )
     correction_ids = _encode(tokenizer, correction)
     if correction_ids.numel() == 0:
         raise ValueError("The correction encoded to no tokens")
@@ -84,7 +92,7 @@ async def collect_correction_example(
         with RecordedAsyncLLM(llm) as recorded:
             prompt = await recorded.create_block()
             output = await recorded.create_block()
-            if k_steps == 0:
+            if correction_in_prefill:
                 injection_trace_step = recorded.get_trace().steps
             await recorded.forward(
                 _encode(tokenizer, initial), write_to=prompt, return_logits=False
@@ -92,8 +100,12 @@ async def collect_correction_example(
             context = AsyncContext([prompt, output], next_input_id=int(newline_ids[-1]))
 
             for generation_step in range(max_tokens):
-                if generation_step == k_steps and k_steps > 0:
-                    # Update the prompt before decoding the pending output token.
+                inject_now = generation_step == k_steps and not correction_in_prefill
+                inject_in_output = inject_now and write_to_output
+                if inject_now:
+                    if inject_in_output and generated:
+                        # Commit the last sampled token before appending live input.
+                        await recorded.forward(cache_view=context, return_logits=False)
                     injection_trace_step = recorded.get_trace().steps
                     await recorded.forward(
                         correction_ids,
@@ -103,8 +115,14 @@ async def collect_correction_example(
                     )
                 trace = recorded.get_trace()
                 batch_cursor, row_cursor = len(trace.batches), trace.num_tokens
-                write_end = output.num_tokens + 1
-                result = await recorded.forward(cache_view=context)
+                if inject_in_output:
+                    write_end = output.num_tokens + correction_ids.numel()
+                    result = await recorded.forward(
+                        correction_ids, cache_view=[prompt, output], write_to=output
+                    )
+                else:
+                    write_end = output.num_tokens + 1
+                    result = await recorded.forward(cache_view=context)
                 token = int(result.logits.argmax().item())
                 record_sample(
                     recorded,
@@ -143,7 +161,7 @@ async def collect_correction_example(
             "dataset_index": dataset_index,
             "k_steps": k_steps,
             "precision": precision,
-            "correction_protocol": CORRECTION_PROTOCOL,
+            "correction_protocol": correction_protocol,
             "injection_trace_step": injection_trace_step,
             "correction_tokens": correction_ids.tolist(),
             "pre_correction_tokens": pre_correction_tokens,
@@ -214,7 +232,7 @@ def _validate_prompt_only(trace, targets, correction, k_steps, injection_step):
         raise ValueError("Expected exactly one correction append to the prompt")
 
 
-def _validate_legacy_correction(trace, targets, correction):
+def _validate_two_write_correction(trace, targets, correction):
     occurrences: list[tuple[int, Any]] = []
     row = 0
     correction_rows: list[range] = []
@@ -244,7 +262,7 @@ def _validate_legacy_correction(trace, targets, correction):
 
 
 def validate_correction_example(example: Mapping[str, Any]) -> dict[str, int]:
-    """Check prompt-only recordings and earlier two-write traces."""
+    """Check prompt-only and two-write recordings, including unmarked legacy traces."""
     raw_trace = example.get("trace")
     trace = raw_trace if isinstance(raw_trace, Trace) else Trace.from_dict(raw_trace)
     targets = list(example.get("targets", ()))
@@ -255,8 +273,8 @@ def validate_correction_example(example: Mapping[str, Any]) -> dict[str, int]:
     protocol = example.get("correction_protocol")
     if protocol == CORRECTION_PROTOCOL:
         _validate_prompt_only(trace, targets, correction, example["k_steps"], example["injection_trace_step"])
-    elif protocol is None:
-        _validate_legacy_correction(trace, targets, correction)
+    elif protocol in (None, TWO_WRITE_PROTOCOL):
+        _validate_two_write_correction(trace, targets, correction)
     else:
         raise ValueError(f"Unknown correction protocol: {protocol}")
     supervised = sum(value != -100 for value in targets)

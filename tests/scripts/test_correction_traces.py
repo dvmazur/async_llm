@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import json
 from dataclasses import asdict
-from types import SimpleNamespace
 
 import pytest
 from minisgl.training import Trace
@@ -12,6 +11,7 @@ from minisgl_examples.training.corrections import collect as collector
 from minisgl_examples.training.corrections.grading import boxed_answers, grade_text
 from minisgl_examples.training.corrections.rollout import (
     INJECTION_PREFIX,
+    TWO_WRITE_PROTOCOL,
     collect_correction_example,
     problem_shards,
     validate_correction_example,
@@ -91,6 +91,50 @@ def test_correction_rollout_updates_only_the_prompt_and_aligns_targets(k_steps):
     assert dict(output_writes[k_steps][1].cache_view)[prompt] == (4 if k_steps == 0 else 6)
 
 
+@pytest.mark.parametrize(
+    ("k_steps", "before_injection", "after_injection"),
+    [(0, [], [(0,), (0,), (0,)]), (2, [(4,), (0,), (0,)], [(0,)])],
+)
+def test_two_write_rollout_matches_legacy_protocol(k_steps, before_injection, after_injection):
+    async def run():
+        llm, _ = make_llm()
+        llm.tokenizer = Tokenizer()
+        try:
+            return await collect_correction_example(
+                llm,
+                {"problem_shards": ["question", "correction"], "answer": "answer"},
+                dataset="dataset",
+                dataset_revision="revision",
+                dataset_split="train",
+                dataset_index=3,
+                k_steps=k_steps,
+                max_tokens=4,
+                precision="bfloat16",
+                correction_protocol=TWO_WRITE_PROTOCOL,
+            )
+        finally:
+            await llm.close()
+
+    example = asyncio.run(run())
+    assert example["correction_protocol"] == TWO_WRITE_PROTOCOL
+    assert example["prompt"].endswith("question")
+    assert example["pre_correction_tokens"] == [0] * k_steps
+    report = validate_correction_example(example)
+    legacy = {**example, "trace": asdict(example["trace"])}
+    del legacy["correction_protocol"]
+    assert validate_correction_example(legacy) == report
+
+    requests = [(batch.step, req) for batch in example["trace"].batches for req in batch.requests]
+    prompt = requests[0][1].write_to
+    prompt_writes = [(step, req) for step, req in requests if req.write_to == prompt]
+    output_writes = [(step, req) for step, req in requests if req.write_to != prompt]
+    assert [req.input_ids for _, req in prompt_writes] == [(1, 2, 3), (5, 6, 7)]
+    assert [req.input_ids for _, req in output_writes] == before_injection + [(5, 6, 7)] + after_injection
+    assert example["injection_trace_step"] == prompt_writes[-1][0]
+    assert output_writes[len(before_injection)][1].cache_view[0] == (prompt, 6)
+    assert report["supervised_tokens"] == 4
+
+
 def test_eos_before_correction_is_recorded_but_does_not_stop_injection():
     async def run():
         llm, _ = make_llm()
@@ -165,12 +209,14 @@ def test_collector_refuses_file_output_before_loading_dataset(tmp_path, monkeypa
         split="train",
         precision="bfloat16",
         concurrency=1,
+        correction_protocol="prompt_only",
     )
     with pytest.raises(FileExistsError):
         asyncio.run(collector.collect_dataset_traces(args))
 
 
-def test_collector_checkpoints_each_trace_and_resumes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("protocol", ["prompt_only", TWO_WRITE_PROTOCOL])
+def test_collector_checkpoints_each_trace_and_resumes(tmp_path, monkeypatch, protocol):
     class Table:
         num_rows = 1
 
@@ -189,6 +235,7 @@ def test_collector_checkpoints_each_trace_and_resumes(tmp_path, monkeypatch):
 
     async def collect(llm, item, **options):
         nonlocal active, peak_active
+        assert options["correction_protocol"] == protocol
         active += 1
         peak_active = max(peak_active, active)
         await asyncio.sleep(0)
@@ -207,7 +254,7 @@ def test_collector_checkpoints_each_trace_and_resumes(tmp_path, monkeypatch):
     monkeypatch.setattr(collector, "load_table", lambda *args: Table())
     monkeypatch.setattr(collector, "AsyncLLM", lambda *args, **kwargs: LLM())
     monkeypatch.setattr(collector, "collect_correction_example", collect)
-    args = SimpleNamespace(
+    args = argparse.Namespace(
         output=tmp_path / "run",
         start_index=0,
         count=1,
@@ -218,6 +265,7 @@ def test_collector_checkpoints_each_trace_and_resumes(tmp_path, monkeypatch):
         dataset_revision="revision",
         split="train",
         precision="bfloat16",
+        correction_protocol=protocol,
         concurrency=2,
         cuda_graphs=False,
         memory_ratio=0.7,
@@ -236,9 +284,17 @@ def test_collector_checkpoints_each_trace_and_resumes(tmp_path, monkeypatch):
     assert second == {"output": str(args.output), "collected": 0, "skipped": 2}
     config_path = args.output / "config.json"
     config = json.loads(config_path.read_text())
-    assert config.pop("correction_protocol") == "prompt_only"
+    assert config.pop("correction_protocol") == protocol
+    original_protocol = args.correction_protocol
+    args.correction_protocol = TWO_WRITE_PROTOCOL if protocol == "prompt_only" else "prompt_only"
+    with pytest.raises(ValueError, match="Existing run configuration differs"):
+        asyncio.run(collector.collect_dataset_traces(args))
+    args.correction_protocol = original_protocol
     config_path.write_text(json.dumps(config))
     with pytest.raises(ValueError, match="Existing run configuration differs"):
+        asyncio.run(collector.collect_dataset_traces(args))
+    config_path.unlink()
+    with pytest.raises(ValueError, match="Existing traces require a run configuration"):
         asyncio.run(collector.collect_dataset_traces(args))
 
 
@@ -251,6 +307,9 @@ def test_cli_defaults_to_pinned_dataset_and_bfloat16(tmp_path):
     assert args.k_steps == [0, 16, 32, 64, 128, 256, 512]
     assert args.max_tokens == 1024
     assert args.concurrency == 1
+    assert args.correction_protocol == "prompt_only"
+    args = collector.parser().parse_args(["--output", str(tmp_path), "--two-correction-writes"])
+    assert args.correction_protocol == TWO_WRITE_PROTOCOL
 
 
 @pytest.mark.parametrize(

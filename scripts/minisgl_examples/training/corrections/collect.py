@@ -15,7 +15,11 @@ import torch
 from huggingface_hub import hf_hub_download
 from minisgl.llm import AsyncLLM
 
-from minisgl_examples.training.corrections.rollout import CORRECTION_PROTOCOL, collect_correction_example
+from minisgl_examples.training.corrections.rollout import (
+    CORRECTION_PROTOCOL,
+    TWO_WRITE_PROTOCOL,
+    collect_correction_example,
+)
 
 DATASET = "MrDarkTesla/math_500_sharded"
 DATASET_REVISION = "660e78826c964737cfb75851913536b16dc2942e"
@@ -60,18 +64,20 @@ async def collect_dataset_traces(args: argparse.Namespace) -> dict[str, Any]:
         "count": args.count,
         "k_steps": args.k_steps,
         "max_tokens": args.max_tokens,
-        "correction_protocol": CORRECTION_PROTOCOL,
+        "correction_protocol": args.correction_protocol,
         "precision": args.precision,
         "concurrency": args.concurrency,
     }
     args.output.mkdir(parents=True, exist_ok=True)
     config_path = args.output / "config.json"
+    trace_dir = args.output / "traces"
     if config_path.exists():
         if json.loads(config_path.read_text()) != config:
             raise ValueError(f"Existing run configuration differs: {config_path}")
     else:
+        if any(trace_dir.glob("*.json")):
+            raise ValueError(f"Existing traces require a run configuration: {config_path}")
         config_path.write_text(json.dumps(config, indent=2) + "\n")
-    trace_dir = args.output / "traces"
     trace_dir.mkdir(exist_ok=True)
 
     table = load_table(args.dataset, args.dataset_revision)
@@ -127,6 +133,7 @@ async def collect_dataset_traces(args: argparse.Namespace) -> dict[str, Any]:
             k_steps=k_steps,
             max_tokens=args.max_tokens,
             precision=args.precision,
+            correction_protocol=args.correction_protocol,
         )
         trace = example["trace"]
         report = {
@@ -185,6 +192,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--start-index", type=int, default=0)
     result.add_argument("--count", type=int, default=1)
     result.add_argument("--k-steps", type=int, nargs="+", default=[0, 16, 32, 64, 128, 256, 512])
+    result.add_argument(
+        "--two-correction-writes",
+        dest="correction_protocol",
+        action="store_const",
+        const=TWO_WRITE_PROTOCOL,
+        default=CORRECTION_PROTOCOL,
+        help="Append the correction to both the prompt and live output KV blocks.",
+    )
     result.add_argument("--max-tokens", type=int, default=1024)
     result.add_argument("--concurrency", type=int, default=1)
     result.add_argument("--precision", choices=("bfloat16", "float16"), default="bfloat16")
