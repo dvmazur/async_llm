@@ -42,3 +42,7 @@ the project environment as their kernel. Both call the same Python functions.
 
 `demo.py` contains the workflow and CLI; `rollout.py` contains the cache schedule
 and prompts.
+
+For the traced seven-condition MATH-500 comparison and truncated-reasoning budget
+sweeps, follow the [reproduction instructions](../../../../docs/hogwild/README.md).
+They include the pinned environment, GPU commands and numerical CSV reports.

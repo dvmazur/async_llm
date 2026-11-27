@@ -1,18 +1,22 @@
-"""Alice/Bob generation, cache publication, and prompt formatting."""
+"""Collaborative generation, cache publication, and prompt formatting."""
 
 from __future__ import annotations
 
 import asyncio
 import gc
+import hashlib
+import json
+import math
 import time
-from collections.abc import AsyncIterator, Coroutine, Sequence
+from collections.abc import AsyncIterator, Coroutine, Mapping, Sequence
 from contextlib import aclosing, asynccontextmanager
+from dataclasses import asdict
 from typing import Any, TypeVar
 
 import torch
 from minisgl.core import SamplingParams
 from minisgl.llm import AsyncLLM
-from minisgl.shared_cache import AsyncContext
+from minisgl.shared_cache import AsyncContext, CacheBlock
 from minisgl.training import RecordedAsyncLLM
 from transformers import PreTrainedTokenizerBase
 
@@ -25,6 +29,8 @@ from minisgl_examples.training.recording import (
 T = TypeVar("T")
 
 WORKERS = ("Alice", "Bob")
+NATIVE_PUBLICATION_POLICY = "encoded_separator_v1"
+TERMINAL_ANSWER_POLICY = "eos_worker_last_box_v1"
 PROBLEM = (
     "Three vertices of a cube are $P=(7,12,10)$, $Q=(8,8,1)$, and "
     "$R=(11,3,9)$. What is the surface area of the cube?"
@@ -106,91 +112,250 @@ async def run_agents(
     delay_every: int = 32,
     sampling: SamplingParams | None = None,
     samples: Samples | None = None,
+    total_token_budget: int | None = None,
+    max_context_tokens: int | None = None,
+    reminder_interval: int = 0,
+    finish_if_missing: bool = False,
+    eos_token_ids: Sequence[int] | None = None,
+    retain_details: bool = True,
+    causal_headers: bool = False,
+    symbolic_answers: bool = False,
+    flat_finisher: bool = False,
+    cached_finisher: bool = False,
+    publish_paragraphs: bool = True,
+    native_workers: bool = False,
+    native_answer_cue: bool | None = None,
+    capture_trace: bool = False,
 ) -> dict[str, Any]:
     tokenizer = llm.tokenizer
+    workers = tuple(getattr(fmt, "workers", WORKERS))
+    count = len(workers)
+    if not 1 <= count <= 16 or len(set(workers)) != count:
+        raise ValueError("Expected 1 to 16 distinct worker names")
+    if max_steps < 1 or answer_steps < 1 or delay_every < 1 or bob_delay < 0:
+        raise ValueError("Token budgets/delay interval must be positive and delay nonnegative")
+    if any(value is not None and value < 1 for value in (total_token_budget, max_context_tokens)):
+        raise ValueError("Token and context budgets must be positive")
+    if reminder_interval < 0:
+        raise ValueError("Reminder interval must be nonnegative")
+    if capture_trace and not synchronized:
+        raise ValueError("Capturing an inference trace requires synchronized workers")
+    if native_workers:
+        if not synchronized:
+            raise ValueError("Native workers require synchronized generation")
+        cached_finisher, finish_if_missing = True, True
+    if native_answer_cue is None:
+        native_answer_cue = native_workers
+    if native_answer_cue and not cached_finisher:
+        raise ValueError("The native answer cue requires a cached finisher")
+    if flat_finisher and cached_finisher:
+        raise ValueError("Choose either the flat or the cached finisher")
+    if flat_finisher and samples is not None:
+        raise ValueError("The flat finisher is an inference-only option")
+    if cached_finisher and (samples is not None or (isinstance(llm, RecordedAsyncLLM) and not capture_trace)):
+        raise ValueError("The cached finisher is an inference-only option")
+    if flat_finisher or cached_finisher:
+        native_limit = getattr(getattr(llm, "engine", None), "max_seq_len", None)
+        if native_limit is not None:
+            max_context_tokens = min(native_limit, max_context_tokens or native_limit)
+    if not synchronized and (total_token_budget or max_context_tokens or reminder_interval):
+        raise ValueError("Evaluation budgets and reminders require synchronized workers")
 
     def encode(text: str) -> list[int]:
         return tokenizer.encode(text, add_special_tokens=False)
 
-    blocks = [await llm.create_block() for _ in range(6)]
+    blocks = []
     try:
-        common, others_header, own_header, alice, bob, answer_block = blocks
-        worker_blocks = [alice, bob]
+        for _ in range(count + (2 if native_workers else 4)):
+            blocks.append(await llm.create_block())
+        common, *middle, answer_block = blocks
+        if native_workers:
+            worker_blocks, others, own = middle, [], []
+            other_header_ids, own_header_ids = [], []
+        else:
+            others_header, own_header, *worker_blocks = middle
+            others, own = [others_header], [own_header]
+            other_header_ids, own_header_ids = encode(fmt.current_step_header), encode(fmt.current_worker_header)
         contexts = [
-            AsyncContext(cache_view=[common, others_header, bob, own_header, alice]),
-            AsyncContext(cache_view=[common, others_header, alice, own_header, bob]),
+            AsyncContext(cache_view=[
+                common, *others,
+                *(block for j, block in enumerate(worker_blocks) if j != i),
+                *own, worker_blocks[i],
+            ])
+            for i in range(count)
         ]
-        initial_ids = (
-            list(prompt_ids) if prompt_ids is not None else encode(fmt.apply_chat_template(problem))
-        )
-        await llm.forward(initial_ids, write_to=common, return_logits=False)
-        await together(
-            llm.forward(
-                encode(fmt.current_step_header), write_to=others_header, return_logits=False
-            ),
-            llm.forward(
-                encode(fmt.current_worker_header), write_to=own_header, return_logits=False
-            ),
-        )
-        current = [
-            encode(
-                f"{fmt.get_step_prefix(WORKERS[0], 1)}Hi, I'm {WORKERS[0]}. Here's how we can collaborate"
-            ),
-            encode(f"{fmt.get_step_prefix(WORKERS[1], 1)}Hi, I'm {WORKERS[1]}."),
-        ]
-        await together(
-            *(
-                llm.forward(
-                    ids[:-1],
-                    cache_view=[common, others_header, own_header, block],
-                    return_logits=False,
-                )
-                for ids, block in zip(current, worker_blocks)
+        if prompt_ids is not None:
+            initial_ids = list(prompt_ids)
+        elif native_workers:
+            rendered = tokenizer.apply_chat_template(
+                [{"role": "user", "content": problem}], tokenize=False, add_generation_prompt=True,
+                enable_thinking=True, reasoning_effort="xhigh",
             )
+            initial_ids = encode(rendered)
+        else:
+            initial_ids = encode(fmt.apply_chat_template(problem))
+        suffix = fmt.s1_finisher_suffix
+        finisher_ids = encode(suffix)
+        suffix_reserve = len(finisher_ids)
+        if native_answer_cue:
+            open_think_id, close_think_id = tokenizer.vocab["<think>"], tokenizer.vocab["</think>"]
+            answer_cue = "\n\nThe final answer is \\boxed{"
+            cues = {False: (answer_cue, encode(answer_cue)),
+                    True: ("</think>" + answer_cue, encode("</think>" + answer_cue))}
+            suffix_reserve = max(len(ids) for _, ids in cues.values())
+        marker = fmt.sep if native_workers else fmt.incomplete_step + fmt.sep
+        incomplete_ids = encode(marker) if flat_finisher or cached_finisher else []
+        # Both finisher views replace the own-header with one new marker per worker.
+        markup_reserve = max(0, count * len(incomplete_ids) - len(own_header_ids))
+        reasoning_context_limit = (
+            None if max_context_tokens is None
+            else max_context_tokens - suffix_reserve - answer_steps - markup_reserve
         )
-        for ctx, ids in zip(contexts, current):
-            ctx.next_input_id = ids[-1]
-        history, events, progress = [], [], []
-        step_indices, generated, sampled = [1, 1], [0, 0], [[], []]
-        eos = tokenizer.eos_token_id
-        forbidden = [
+        current = [[] for _ in workers] if native_workers else [
+            encode(
+                f"{fmt.get_step_prefix(worker, 1)}Hi, I'm {worker}."
+                + (" Here's how we can collaborate" if i == 0 and count > 1 else "")
+            )
+            for i, worker in enumerate(workers)
+        ]
+        if capture_trace:
+            initial_worker_prefix_ids = {worker: ids.copy() for worker, ids in zip(workers, current)}
+            publications = []
+        history, events, progress, reminder_events = [], [], [], []
+        compare_boundary = synchronized and count == 1
+        prompt_token_ids_sha256 = (
+            _token_ids_sha256(initial_ids + other_header_ids + own_header_ids + current[0])
+            if compare_boundary else None
+        )
+
+        def context_tokens() -> int:
+            return len(initial_ids) + len(history) + len(other_header_ids) + len(own_header_ids) + sum(map(len, current))
+
+        if reasoning_context_limit is not None and context_tokens() > reasoning_context_limit:
+            raise ValueError("Prompt, worker prefixes, and final-answer reserve exceed the context budget")
+        prompt_output = await llm.forward(initial_ids, write_to=common, return_logits=native_workers)
+        if not native_workers:
+            if causal_headers:
+                await llm.forward(other_header_ids, cache_view=[common, others_header], return_logits=False)
+                await llm.forward(own_header_ids, cache_view=[common, others_header, own_header], return_logits=False)
+            else:
+                await together(
+                    llm.forward(other_header_ids, write_to=others_header, return_logits=False),
+                    llm.forward(own_header_ids, write_to=own_header, return_logits=False),
+                )
+            await together(*(
+                llm.forward(ids[:-1], cache_view=[common, others_header, own_header, block], return_logits=False)
+                for ids, block in zip(current, worker_blocks)
+            ))
+            for ctx, ids in zip(contexts, current):
+                ctx.next_input_id = ids[-1]
+        step_indices, generated, sampled = [1] * count, [0] * count, [[] for _ in workers]
+        eos = set(eos_token_ids if eos_token_ids is not None else [tokenizer.eos_token_id])
+        forbidden = [] if native_workers else [
             tokenizer.vocab[t]
             for t in ("<|im_start|>", "<|endoftext|>")
-            if t in tokenizer.vocab and tokenizer.vocab[t] != eos
+            if t in tokenizer.vocab and tokenizer.vocab[t] not in eos
         ]
         gate, stopped = PublicationGate(), False
+        stop_reason = "max_steps"
+        stopping_eos_id, stopping_worker = None, None
+        decode_rounds = 0
+        delayed_publications: set[int] = set()
+        completed_steps = 0
+        first_boundary_round = first_boundary_prefix_sha256 = first_publication_round = None
+        max_token_gap = 0
+        inserted_worker_tokens = sum(map(len, current))
+        tokens_since_reminder = 0
         generation_started = time.perf_counter()
 
         async def advance(i: int) -> int:
-            token = await one_token(llm, contexts[i], forbidden, sampling, samples=samples)
-            current[i].append(token)
+            nonlocal max_token_gap
+            if native_workers and decode_rounds == 0:
+                # The last prompt token already has KV in common. Each worker
+                # takes a separate draw from that one prefill's logits.
+                params = sampling or SamplingParams(temperature=0.0, max_tokens=1)
+                token = int((await llm.sample(prompt_output.logits, **asdict(params))).item())
+                contexts[i].next_input_id = token
+            else:
+                token = await one_token(llm, contexts[i], forbidden, sampling, samples=samples)
+            if cached_finisher and token in eos:
+                # EOS ends reasoning. The cached answer continues the open
+                # assistant turn, so count the sample without encoding EOS.
+                contexts[i].next_input_id = None
+            else:
+                current[i].append(token)
             generated[i] += 1
-            sampled[i].append(token)
-            progress.append(tuple(generated))
+            if retain_details or capture_trace or native_workers:
+                sampled[i].append(token)
+            if retain_details:
+                progress.append(tuple(generated))
+            max_token_gap = max(max_token_gap, max(generated) - min(generated))
             return token
 
-        async def publish(indices: Sequence[int]) -> None:
-            await together(
-                *(llm.forward(cache_view=contexts[i], return_logits=False) for i in indices)
-            )
+        async def publish(indices: Sequence[int], advanced: Sequence[int] = ()) -> None:
+            nonlocal stopped, stop_reason, inserted_worker_tokens, tokens_since_reminder, completed_steps
+            nonlocal first_publication_round
+            prefixes = {}
+            next_counter = tokens_since_reminder
+            reminders = []
+            # Follow the reference implementation's stable worker order. The
+            # reminder counter excludes initial prefixes and counts each next
+            # input token plus any newly injected paragraph prefix.
+            for i in (() if native_workers else advanced or indices):
+                if i in indices:
+                    text = fmt.get_step_prefix(workers[i], step_indices[i] + 1)
+                    if reminder_interval and next_counter > reminder_interval:
+                        text += fmt.s1_collab_message
+                        reminders.append({"worker": workers[i], "generated_tokens": sum(generated)})
+                        next_counter = 0
+                    prefixes[i] = encode(text)
+                next_counter += 1 + len(prefixes.get(i, ()))
+            extra = sum(map(len, prefixes.values()))
+            if reasoning_context_limit is not None and context_tokens() + extra > reasoning_context_limit:
+                stopped, stop_reason = True, "context_limit"
+                return
+            if not native_workers:
+                await together(*(llm.forward(cache_view=contexts[i], return_logits=False) for i in indices))
             for i in indices:
                 block = worker_blocks[i]
-                assert block.token_ids == current[i], "A boundary token was lost or duplicated"
+                # Native publication waits for the next normal decode, so
+                # the separator is already encoded. Its newly sampled token
+                # stays pending unless it was EOS, which has been discarded.
+                encoded_count = block.num_tokens
+                paragraph = current[i][:encoded_count] if native_workers else current[i]
+                assert block.token_ids == paragraph, "A boundary token was lost or duplicated"
+                if native_workers:
+                    assert len(current[i]) - encoded_count == int(contexts[i].next_input_id is not None)
+                if not paragraph:
+                    continue
                 await llm.append_block(common, block)
-                history.extend(current[i])
+                history.extend(paragraph)
                 assert common.token_ids == initial_ids + history
-                events.append(
-                    {
-                        "worker": WORKERS[i],
+                completed_steps += 1
+                if synchronized and first_publication_round is None:
+                    first_publication_round = decode_rounds
+                if capture_trace:
+                    publications.append({
+                        "round": decode_rounds, "worker": workers[i], "step": step_indices[i],
+                        "committed_token_count": len(paragraph),
+                        "next_prefix_ids": prefixes.get(i, []).copy(),
+                    })
+                if retain_details:
+                    events.append({
+                        "worker": workers[i],
                         "step": step_indices[i],
-                        "tokens": len(current[i]),
+                        "tokens": len(paragraph),
                         "generated": tuple(generated),
-                        "text": tokenizer.decode(current[i]),
-                    }
-                )
+                        "text": tokenizer.decode(paragraph),
+                    })
                 await llm.free_block(block)
                 step_indices[i] += 1
-                current[i] = encode(fmt.get_step_prefix(WORKERS[i], step_indices[i]))
+                current[i] = current[i][encoded_count:] if native_workers else prefixes[i]
+            if native_workers:
+                return
+            tokens_since_reminder = next_counter
+            inserted_worker_tokens += extra
+            reminder_events.extend(reminders)
             await together(
                 *(
                     llm.forward(current[i][:-1], cache_view=contexts[i], return_logits=False)
@@ -201,7 +366,7 @@ async def run_agents(
                 contexts[i].next_input_id = current[i][-1]
 
         async def generate_agent(i: int) -> None:
-            nonlocal stopped
+            nonlocal stopped, stop_reason, stopping_eos_id, stopping_worker
             for local_step in range(1, max_steps + 1):
                 if stopped:
                     break
@@ -209,74 +374,243 @@ async def run_agents(
                     await asyncio.sleep(bob_delay)
                 async with gate.forward():
                     token = await advance(i)
-                if token == eos:
-                    stopped = True
+                if token in eos:
+                    if stopping_eos_id is None:
+                        stopping_eos_id, stopping_worker = token, workers[i]
+                    stopped, stop_reason = True, "eos"
                     break
-                if fmt.is_end_of_step(current[i]):
+                if publish_paragraphs and fmt.is_end_of_step(current[i]):
                     async with gate.publish():
                         await publish([i])
 
         if synchronized:
             for _ in range(max_steps):
-                new_tokens = await together(advance(0), advance(1))
-                await publish([i for i in range(2) if fmt.is_end_of_step(current[i])])
-                if eos in new_tokens:
+                remaining = count if total_token_budget is None else total_token_budget - sum(generated)
+                if remaining <= 0:
+                    stop_reason = "token_budget"
+                    break
+                active = list(range(min(count, remaining)))
+                if reasoning_context_limit is not None and context_tokens() + len(active) > reasoning_context_limit:
+                    stop_reason = "context_limit"
+                    break
+                new_tokens = await together(*(advance(i) for i in active))
+                decode_rounds += 1
+                if native_workers and publish_paragraphs:
+                    ready = [i for i in active if i in delayed_publications]
+                    await publish(ready)
+                    delayed_publications.difference_update(ready)
+                if publish_paragraphs or (compare_boundary and first_boundary_round is None):
+                    boundaries = [
+                        i for i in active
+                        if contexts[i].next_input_id is not None and fmt.is_end_of_step(current[i])
+                    ]
+                    if compare_boundary and boundaries and first_boundary_round is None:
+                        first_boundary_round = decode_rounds
+                        first_boundary_prefix_sha256 = _token_ids_sha256(current[0])
+                    if publish_paragraphs:
+                        if native_workers:
+                            delayed_publications.update(boundaries)
+                        else:
+                            await publish(boundaries, active)
+                if any(token in eos for token in new_tokens):
+                    stopping_worker, stopping_eos_id = next(
+                        (workers[i], token) for i, token in zip(active, new_tokens) if token in eos
+                    )
+                    stop_reason = "eos"
+                    break
+                if stopped:
+                    break
+                if total_token_budget is not None and sum(generated) >= total_token_budget:
+                    stop_reason = "token_budget"
                     break
         else:
-            await together(generate_agent(0), generate_agent(1))
+            await together(*(generate_agent(i) for i in range(count)))
 
-        await together(*(llm.forward(cache_view=ctx, return_logits=False) for ctx in contexts))
+        await together(*(
+            llm.forward(cache_view=ctx, return_logits=False) for ctx in contexts if ctx.next_input_id is not None
+        ))
         for i, ctx in enumerate(contexts):
             assert ctx.output_block.token_ids == current[i]
         parallel_seconds = time.perf_counter() - generation_started
-        transcript = fmt.history_header + fmt.sep + tokenizer.decode(history)
-        transcript += fmt.sep + fmt.current_step_header
-        transcript += "".join(
-            tokenizer.decode(ids) + fmt.incomplete_step + fmt.sep for ids in current
-        )
-        suffix = fmt.s1_finisher_suffix
-        answer_ids = encode(suffix)
-        answer_ctx = AsyncContext(
-            cache_view=[common, others_header, alice, own_header, bob, answer_block]
-        )
-        await llm.forward(answer_ids[:-1], cache_view=answer_ctx, return_logits=False)
-        answer_ctx.next_input_id = answer_ids[-1]
+        transcript = ""
+        if retain_details or (not flat_finisher and (finish_if_missing or symbolic_answers)):
+            if native_workers:
+                transcript = tokenizer.decode(history) + fmt.sep.join(tokenizer.decode(ids) for ids in current)
+            else:
+                transcript = fmt.history_header + fmt.sep + tokenizer.decode(history)
+                transcript += fmt.sep + fmt.current_step_header
+                transcript += "".join(
+                    tokenizer.decode(ids) + fmt.incomplete_step + fmt.sep for ids in current
+                )
+        if flat_finisher:
+            generated_ids = [*history, *other_header_ids]
+            for ids in current:
+                generated_ids.extend(ids)
+                generated_ids.extend(incomplete_ids)
+            reasoning_text = tokenizer.decode(generated_ids)
+        else:
+            reasoning_text = transcript
+        answer_selection = None
+        if native_workers:
+            # Worker order is not completion order. In particular, an unfinished
+            # peer's draft box must not override the worker that ended the turn.
+            existing_answer, answer_selection = select_terminal_worker_answer(
+                tokenizer, dict(zip(workers, sampled)), eos_worker=stopping_worker,
+                eos_token_ids=eos, numeric_only=not symbolic_answers,
+            )
+        else:
+            existing_answer = (
+                extract_boxed_answer(reasoning_text, numeric_only=not symbolic_answers)
+                if finish_if_missing or symbolic_answers else None
+            )
         answer_tokens = []
-        async with aclosing(
-            generate_with_targets(
-                llm,
-                answer_ctx,
-                samples,
-                max_steps=answer_steps,
-                forbid_ids=forbidden,
+        answer_generated_tokens = 0
+        finisher_eos_id = None
+        finisher_stop_reason = "existing_answer" if existing_answer is not None else "max_steps"
+        reasoning_stop_reason = stop_reason
+        reasoning_peak = context_tokens()
+        finisher_prefix_length = 0
+        used_finisher = existing_answer is None
+        if used_finisher and flat_finisher:
+            response = tokenizer.decode([*initial_ids, *generated_ids])
+            flat_ids = encode(response + suffix)
+            if max_context_tokens is not None and len(flat_ids) + answer_steps > max_context_tokens:
+                used_finisher = False
+                stop_reason = finisher_stop_reason = "context_limit"
+            else:
+                # The flattened response owns a new causal cache. Release the
+                # reasoning pages before allocating another long prompt.
+                for block in blocks[:-1]:
+                    await llm.free_block(block)
+                blocks = [answer_block]
+                finisher_prefix_length = len(flat_ids)
+                stream = _flat_greedy_tokens(llm, answer_block, flat_ids, answer_steps)
+        elif used_finisher:
+            if cached_finisher:
+                # Move the live worker blocks into answer order. Only the new
+                # delimiters, suffix and generated answer enter the engine.
+                view = [common, *others]
+                for block in worker_blocks:
+                    view.append(block)
+                    if incomplete_ids:
+                        await llm.forward(incomplete_ids, cache_view=view, return_logits=False)
+                if native_answer_cue:
+                    # Inspect the final view in the same order the model will
+                    # read it. Its last thinking tag owns the answer phase.
+                    last_tag = next((token for block in reversed(view) for token in reversed(block.token_ids)
+                                     if token in (open_think_id, close_think_id)), None)
+                    suffix, finisher_ids = cues[last_tag == open_think_id]
+            else:
+                view = [common, others_header, *worker_blocks[:-1], own_header, worker_blocks[-1]]
+            answer_ctx = AsyncContext(cache_view=[*view, answer_block])
+            finisher_prefix_length = answer_ctx.num_cached_tokens + len(finisher_ids)
+            if len(finisher_ids) > 1:
+                await llm.forward(finisher_ids[:-1], cache_view=answer_ctx, return_logits=False)
+            answer_ctx.next_input_id = finisher_ids[-1]
+            stream = generate_with_targets(
+                llm, answer_ctx, samples, max_steps=answer_steps, forbid_ids=forbidden,
                 sampling_params=SamplingParams(temperature=0.0, max_tokens=answer_steps),
             )
-        ) as stream:
-            async for token in stream:
-                if token == eos:
-                    break
-                answer_tokens.append(token)
-                if fmt.get_final_answer(suffix + tokenizer.decode(answer_tokens)) is not None:
-                    break
-        answer_text = suffix + tokenizer.decode(answer_tokens)
-        return {
+        if used_finisher:
+            async with aclosing(stream):
+                async for token in stream:
+                    answer_generated_tokens += 1
+                    if token in eos:
+                        finisher_eos_id = token
+                        finisher_stop_reason = "eos"
+                        break
+                    answer_tokens.append(token)
+                    text = suffix + tokenizer.decode(answer_tokens)
+                    candidate = extract_boxed_answer(text) if symbolic_answers else fmt.get_final_answer(text)
+                    if candidate is not None:
+                        finisher_stop_reason = "answer"
+                        break
+            answer_text = suffix + tokenizer.decode(answer_tokens)
+        elif existing_answer is not None:
+            answer_text = f"\\boxed{{{existing_answer}}}"
+        else:
+            answer_text = ""
+        answer = extract_boxed_answer(answer_text) if symbolic_answers else fmt.get_final_answer(answer_text)
+        if not symbolic_answers and finish_if_missing and answer is not None and not math.isfinite(answer):
+            answer = None
+        result = {
             "problem": problem,
             "rounds": max(generated),
-            "generated_tokens": dict(zip(WORKERS, generated)),
-            "completed_steps": len(events),
+            "generated_tokens": dict(zip(workers, generated)),
+            "reasoning_generated_tokens": sum(generated),
+            "answer_generated_tokens": answer_generated_tokens,
+            "total_generated_tokens": sum(generated) + answer_generated_tokens,
+            "peak_context_tokens": max(reasoning_peak, finisher_prefix_length + len(answer_tokens)),
+            "decode_rounds": decode_rounds if synchronized else None,
+            "inserted_worker_tokens": inserted_worker_tokens,
+            "reminder_events": reminder_events,
+            "stop_reason": stop_reason,
+            "reasoning_stop_reason": reasoning_stop_reason,
+            "eos_token_id": stopping_eos_id,
+            "eos_worker": stopping_worker,
+            "used_finisher": used_finisher,
+            "finisher_mode": "cached" if cached_finisher else "flat" if flat_finisher else "shared",
+            "finisher_stop_reason": finisher_stop_reason,
+            "finisher_eos_token_id": finisher_eos_id,
+            "completed_steps": completed_steps,
+            "publication_policy": NATIVE_PUBLICATION_POLICY if native_workers else None,
+            "first_publication_round": first_publication_round,
+            "prompt_token_ids_sha256": prompt_token_ids_sha256,
+            "first_boundary_round": first_boundary_round,
+            "first_boundary_prefix_sha256": first_boundary_prefix_sha256,
             "merge_events": events,
             "transcript": transcript,
             "answer_text": answer_text,
-            "answer": fmt.get_final_answer(answer_text),
+            "answer": answer,
+            "boxed_answer": extract_boxed_answer(answer_text),
             "parallel_seconds": parallel_seconds,
-            "generated_text": {w: tokenizer.decode(ids) for w, ids in zip(WORKERS, sampled)},
+            "generated_text": {w: tokenizer.decode(ids) for w, ids in zip(workers, sampled)} if retain_details else {},
             "prompt_ids": initial_ids,
             "history_ids": history,
             "current_ids": current,
             "answer_ids": answer_tokens,
             "progress": progress,
-            "max_token_gap": max(abs(a - b) for a, b in progress),
+            "max_token_gap": max_token_gap,
         }
+        if not retain_details:
+            for key in ("merge_events", "transcript", "generated_text", "prompt_ids", "history_ids",
+                        "current_ids", "answer_ids", "progress", "reminder_events"):
+                result.pop(key)
+        if answer_selection is not None:
+            result["answer_selection"] = answer_selection
+        if capture_trace:
+            # A worker's nth sample is its token in synchronized round n.
+            # Publications are ordered after sampling that round. Native
+            # publication includes the previous round's encoded separator.
+            result["trace"] = {
+                "workers": list(workers), "synchronized": True,
+                "layout": "native_workers" if native_workers else "legacy",
+                "publication_policy": result["publication_policy"],
+                "causal_headers": causal_headers and not native_workers,
+                "block_ids": {
+                    "history": common.block_id, "others_header": others[0].block_id if others else None,
+                    "own_header": own[0].block_id if own else None, "answer": answer_block.block_id,
+                    "workers": {w: b.block_id for w, b in zip(workers, worker_blocks)},
+                },
+                "prompt_ids": initial_ids, "other_header_ids": other_header_ids, "own_header_ids": own_header_ids,
+                "initial_worker_prefix_ids": initial_worker_prefix_ids,
+                "worker_token_ids": dict(zip(workers, sampled)), "publications": publications,
+                "decode_rounds": decode_rounds, "reasoning_stop_reason": reasoning_stop_reason,
+                "eos_token_ids": sorted(eos), "eos_token_id": stopping_eos_id, "eos_worker": stopping_worker,
+                "boxed_answer": result["boxed_answer"],
+                "finisher": {
+                    "used": used_finisher, "mode": result["finisher_mode"],
+                    "worker_marker_ids": incomplete_ids if used_finisher else [],
+                    "suffix_ids": finisher_ids if used_finisher else [],
+                    "sampled_token_ids": answer_tokens + ([] if finisher_eos_id is None else [finisher_eos_id]),
+                    "stop_reason": finisher_stop_reason, "eos_token_id": finisher_eos_id,
+                },
+            }
+            if flat_finisher and used_finisher:
+                result["trace"]["finisher"]["flat_input_ids"] = flat_ids
+            if answer_selection is not None:
+                result["trace"]["answer_selection"] = answer_selection
+        return result
     finally:
         for block in blocks:
             await llm.free_block(block)
@@ -291,6 +625,91 @@ async def together(*coroutines: Coroutine[Any, Any, T]) -> list[T]:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+
+
+async def _flat_greedy_tokens(
+    llm: AsyncLLM, block: CacheBlock, prefix: list[int], steps: int,
+) -> AsyncIterator[int]:
+    """Prefill the complete flattened response, then continue greedily in that block."""
+    input_ids = prefix
+    for _ in range(steps):
+        result = await llm.forward(input_ids, cache_view=[block], return_logits=True)
+        token = int(result.logits.argmax().item())
+        yield token
+        input_ids = [token]
+
+
+def _token_ids_sha256(ids: Sequence[int]) -> str:
+    return hashlib.sha256(json.dumps(ids, separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+def extract_boxed_answer(response: str, *, numeric_only: bool = False) -> str | None:
+    """Return the last complete boxed expression, preserving nested LaTeX braces."""
+    marker = "\\boxed{"
+    end = len(response)
+    while (start := response.rfind(marker, 0, end)) >= 0:
+        depth = 1
+        content_start = start + len(marker)
+        escaped = False
+        for i in range(content_start, len(response)):
+            if response[i] == "\\":
+                escaped = not escaped
+                continue
+            if not escaped and response[i] == "{":
+                depth += 1
+            elif not escaped and response[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    answer = response[content_start:i].strip()
+                    if answer:
+                        if not numeric_only:
+                            return answer
+                        try:
+                            if math.isfinite(float(answer)):
+                                return answer
+                        except ValueError:
+                            pass
+                    break
+            escaped = False
+        end = start
+    return None
+
+
+def select_terminal_worker_answer(
+    tokenizer: PreTrainedTokenizerBase,
+    worker_token_ids: Mapping[str, Sequence[int]],
+    *,
+    eos_worker: str | None,
+    eos_token_ids: Sequence[int],
+    numeric_only: bool = False,
+) -> tuple[str | None, dict[str, Any]]:
+    """Select the last complete box from the terminating native worker.
+
+    Full sampled streams retain paragraphs moved into shared history. Selection
+    reads those IDs on CPU; it never forwards tokens or changes a cache. A worker
+    can inherit a peer's thinking delimiter through shared KV, so its own stream
+    does not independently identify the thinking phase. Use the same last-box
+    extraction as the baseline, but only on the worker that actually ended the
+    turn. Missing EOS or no complete box requires the cached finisher.
+    The caller owns the stable worker-order tie-break for simultaneous EOS.
+    """
+    provenance = {
+        "policy": TERMINAL_ANSWER_POLICY, "worker": eos_worker, "reason": "no_eos",
+        "answer_token_start": None, "answer_token_end": None, "selected_answer": None,
+    }
+    if eos_worker is None:
+        return None, provenance
+    ids = worker_token_ids.get(eos_worker, ())
+    if not ids or ids[-1] not in eos_token_ids:
+        provenance["reason"] = "invalid_terminal_stream"
+        return None, provenance
+    start, end = 0, len(ids) - 1
+    answer = extract_boxed_answer(tokenizer.decode(ids[start:end]), numeric_only=numeric_only)
+    provenance.update(
+        reason="terminal_final_box" if answer is not None else "missing_final_box",
+        answer_token_start=start, answer_token_end=end, selected_answer=answer,
+    )
+    return answer, provenance
 
 
 async def one_token(
@@ -354,7 +773,7 @@ class PublicationGate:
 
 
 class MathFormatting:
-    """The original two-worker math prompt and publication boundaries."""
+    """Math prompts and publication boundaries, preserving the original two-worker prompt."""
 
     sep = "\n\n"
     history_header = "### Past steps"
@@ -364,6 +783,7 @@ class MathFormatting:
     generation_prefix = f"\n{history_header}{sep}"
     current_step_header = work_in_progress_others + sep
     current_worker_header = incomplete_step + sep + work_in_progress_self + sep
+    s1_collab_message = "Quick check: am I doing redundant work? (yes/no): "
     s1_finisher_suffix = (
         "\n\nWait, given the limited time, I have to give an answer right now. "
         "Considering all my previous attempts, I have to conclude that the final answer is \\boxed{"
@@ -397,6 +817,8 @@ class MathFormatting:
         **template_options: Any,
     ) -> None:
         self.tokenizer, self.workers = tokenizer, tuple(workers)
+        if not 1 <= len(self.workers) <= 16 or len(set(self.workers)) != len(self.workers):
+            raise ValueError("Expected 1 to 16 distinct worker names")
         self.template_options = template_options
         (separator_id,) = tokenizer.encode(self.sep, add_special_tokens=False)
         separator = {i: token for token, i in tokenizer.vocab.items()}[separator_id]
@@ -441,6 +863,13 @@ class MathFormatting:
 
 
 def _make_system_prompt(fmt: MathFormatting) -> str:
+    if len(fmt.workers) == 1:
+        return (
+            f"You are {fmt.workers[0]}. Solve the following problem step by step. "
+            "There are no other assistants. The automated system records your completed "
+            "steps under '### Past steps' and your current step under '### Work in progress (own)'. "
+            "Give the final answer in \\boxed{} notation.\n\n# Solve the following problem"
+        )
     return f"""
 # Collaborative Reasoning
 
