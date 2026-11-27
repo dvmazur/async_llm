@@ -12,6 +12,7 @@ dependencies = ["minisgl"]
 
 [project.optional-dependencies]
 notebooks = ["ipykernel", "ipywidgets", "jupyterlab"]
+doom-health = ["vizdoom==1.3.0", "gymnasium==1.2.3", "pygame==2.6.1"]
 
 [project.scripts]
 async-thoughts = "minisgl_examples.demos.async_thoughts.__main__:main"
