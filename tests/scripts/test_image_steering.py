@@ -14,6 +14,7 @@ def rollout(*, old=True, new=True, revision=True, eos=True, changed=True, answer
         "text": before + after,
         "image_replaced": changed,
         "hit_eos": eos,
+        "task": {"answer_before": "3", "answer_after": "-3"},
     }
 
 

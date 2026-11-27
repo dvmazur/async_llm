@@ -18,18 +18,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-ASSETS = Path(__file__).with_name("assets")
-QUESTION = (
-    "An administrator at the Department of Motor Vehicles (DMV) tracked the average "
-    "wait time from month to month. According to the table, what was the rate of "
-    "change between August and September? (Unit: minutes per month)"
-)
-NOTICE = (
-    "</think><|im_end|>\n<|im_start|>user\n"
-    "The earlier picture contained an error. It has now been corrected. "
-    "Recheck your reasoning using the current picture."
-    "<|im_end|>\n<|im_start|>assistant\n<think>\n"
-)
+from minisgl_examples.training.image_steering.dataset import load_image, notification, task
+
 SYSTEM = (
     "Solve the visual question. Read the relevant table entries, explain the "
     "calculation briefly, and put the final answer in \\boxed{}. "
@@ -82,24 +72,10 @@ def require_replay_options(report, setup):
     return report
 
 
-def task():
-    return {
-        "question": QUESTION,
-        "answer_before": "3",
-        "answer_after": "-3",
-        "images": {
-            s: hashlib.sha256((ASSETS / f"{s}.png").read_bytes()).hexdigest()
-            for s in ("before", "after")
-        },
-        "provenance": load(ASSETS / "provenance.json"),
-    }
-
-
 def image_inputs(processor, side, max_pixels):
     import torch
-    from PIL import Image
 
-    with Image.open(ASSETS / f"{side}.png") as im:
+    with load_image(side) as im:
         values = processor(
             text="<|vision_start|>" + processor.image_token + "<|vision_end|>\n",
             images=im.convert("RGB"),
@@ -142,7 +118,8 @@ def stages(result):
             re.I,
         )
     )
-    expected = "-3" if changed and result.get("replacement_image", "after") == "after" else "3"
+    corrected = changed and result.get("replacement_image", "after") == "after"
+    expected = result["task"]["answer_after" if corrected else "answer_before"]
     return {
         "final_answer": answer,
         "correct_answer": answer == expected,
@@ -152,7 +129,7 @@ def stages(result):
         "behavior_reproduced": changed
         and old_seen
         and new_seen
-        and answer == "-3"
+        and answer == result["task"]["answer_after"]
         and result["hit_eos"],
     }
 
@@ -169,6 +146,8 @@ async def collect(model, output, setup=None, *, update=True, replacement_image="
         raise ValueError("replacement_image must be before/after")
     cfg = Setup(**(setup or {}))
     replay_options(asdict(cfg))
+    selected_task = task()
+    notice = notification()
     if cfg.update_after < 1 or cfg.max_tokens <= cfg.update_after:
         raise ValueError("Require 0 < update_after < max_tokens")
     torch.manual_seed(cfg.seed)
@@ -192,10 +171,11 @@ async def collect(model, output, setup=None, *, update=True, replacement_image="
         tok = llm.tokenizer
         encode = lambda text: tok.encode(text, add_special_tokens=False)
         prompt_ids = encode(
-            f"<|im_start|>system\n{SYSTEM}<|im_end|>\n<|im_start|>user\n{QUESTION}\n"
+            f"<|im_start|>system\n{SYSTEM}<|im_end|>\n<|im_start|>user\n"
+            + selected_task["question"] + "\n"
         )
         prefix_ids = encode("<|im_end|>\n<|im_start|>assistant\n<think>\n")
-        notice_ids = encode(NOTICE)
+        notice_ids = encode(notice)
         generated, samples, events = [], {}, []
         sampled_rows, phases = [], []
         image_replaced = False
@@ -274,7 +254,7 @@ async def collect(model, output, setup=None, *, update=True, replacement_image="
                     )
                     view = [prompt, picture, reasoning]
                     image_replaced = True
-                    event("image_B", replaced_block=old_id, notice=NOTICE)
+                    event("image_B", replaced_block=old_id, notice=notice)
                     pending = await run(notice_ids, view, reasoning, supervise=True)
                 else:
                     pending = await run([pending], view, reasoning, supervise=True)
@@ -298,7 +278,7 @@ async def collect(model, output, setup=None, *, update=True, replacement_image="
             "setup": asdict(cfg),
             "update": update,
             "replacement_image": replacement_image,
-            "task": task(),
+            "task": selected_task,
             "prompt_ids": prompt_ids,
             "prefix_ids": prefix_ids,
             "notice_ids": notice_ids,
@@ -588,8 +568,8 @@ def compare_pixel_control(teacher_path, after_path, control_path, output):
         "identical_A_pixels_reused": True,
         "with_B": after["assessment"],
         "with_A_again": control["assessment"],
-        "passed": after["assessment"]["final_answer"] == "-3"
-        and control["assessment"]["final_answer"] == "3"
+        "passed": after["assessment"]["final_answer"] == teacher["task"]["answer_after"]
+        and control["assessment"]["final_answer"] == teacher["task"]["answer_before"]
         and after["hit_eos"]
         and control["hit_eos"],
     }

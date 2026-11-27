@@ -12,6 +12,7 @@ dependencies = ["minisgl"]
 
 [project.optional-dependencies]
 notebooks = ["ipykernel", "ipywidgets", "jupyterlab"]
+image-steering = ["huggingface_hub", "pyarrow"]
 
 [project.scripts]
 async-thoughts = "minisgl_examples.demos.async_thoughts.__main__:main"

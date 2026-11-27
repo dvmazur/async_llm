@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run from the repository root on caradhras; choose GPU only after checking nvidia-smi.
+# Run from the repository root with CUDA_VISIBLE_DEVICES set to one available GPU.
 set -euo pipefail
 : "${CUDA_VISIBLE_DEVICES:?Set CUDA_VISIBLE_DEVICES to a free GPU}"
 export PATH="$PWD/.venv/bin:/usr/local/cuda/bin:$PATH"

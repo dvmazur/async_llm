@@ -1,1 +1,7 @@
-!assets/provenance.json
+# Raw datasets belong in the HF cache; runtime artifacts belong in training_runs/.
+*.parquet
+*.arrow
+assets/before.*
+assets/after.*
+assets/provenance.json
+assets/training_loss.png
