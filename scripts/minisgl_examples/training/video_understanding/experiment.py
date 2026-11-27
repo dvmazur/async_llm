@@ -20,7 +20,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-ASSETS = Path(__file__).with_name("assets")
+from .prepare import frame_path, prepare
+
 SYSTEM = (
     "You monitor an incoming video stream. Each observation contains two frames: "
     "a previous frame followed by the current frame. Describe only visible changes "
@@ -89,9 +90,9 @@ def require_replay_options(report, setup):
 
 
 def task():
-    data = load(ASSETS / "task.json")
+    data = prepare()
     for frame in data["frames"]:
-        if hashlib.sha256((ASSETS / frame["path"]).read_bytes()).hexdigest() != frame["sha256"]:
+        if hashlib.sha256(frame_path(frame).read_bytes()).hexdigest() != frame["sha256"]:
             raise ValueError("Frame does not match its pinned manifest")
     return data
 
@@ -110,7 +111,7 @@ def prepare_observation(processor, index, cfg, control):
 
     frames = task()["frames"]
     a, b = frame_indices(index, control)
-    images = [Image.open(ASSETS / frames[j]["path"]).convert("RGB") for j in (a, b)]
+    images = [Image.open(frame_path(frames[j])).convert("RGB") for j in (a, b)]
     marker = "<|vision_start|>" + processor.image_token + "<|vision_end|>"
     # Only acquisition timestamps enter the prompt, never filenames, labels or event times.
     text = (

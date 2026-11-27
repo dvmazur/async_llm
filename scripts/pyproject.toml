@@ -12,6 +12,7 @@ dependencies = ["minisgl"]
 
 [project.optional-dependencies]
 notebooks = ["ipykernel", "ipywidgets", "jupyterlab"]
+video-understanding = ["huggingface_hub", "remotezip", "imageio-ffmpeg==0.6.0"]
 
 [project.scripts]
 async-thoughts = "minisgl_examples.demos.async_thoughts.__main__:main"

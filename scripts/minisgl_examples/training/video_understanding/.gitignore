@@ -1,1 +1,2 @@
-!assets/task.json
+# Generated observations, plots, and manifests belong in the runtime cache.
+assets/

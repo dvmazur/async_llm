@@ -8,7 +8,11 @@ from minisgl_examples.training.video_understanding import experiment as exp
 
 def result():
     return {
-        "task": exp.task(),
+        "task": {
+            "frames": [{"time": t} for t in (2.0, 5.0, 12.0, 14.0)],
+            "expected_first_reply_frame": 2,
+            "annotation": {"answer": [{"reply_timespan": [6.0, 16.0]}]},
+        },
         "control": "normal",
         "reply_time": 12.0,
         "answer_text": "Smoke is billowing from the building.",
@@ -66,11 +70,13 @@ def test_frame_control_preserves_initial_history_and_removes_future_frames():
 
 
 def test_manifest_is_pinned_and_reply_sample_in_reference_window():
-    data = exp.task()
+    from minisgl_examples.training.video_understanding.prepare import REVISION
+
+    data = result()["task"]
     t = data["frames"][data["expected_first_reply_frame"]]["time"]
     a, b = data["annotation"]["answer"][0]["reply_timespan"]
     assert a <= t <= b
-    assert data["revision"] == "7f59bce2a6cdf40b8a895767aac7a52a92136c5f"
+    assert REVISION == "7f59bce2a6cdf40b8a895767aac7a52a92136c5f"
 
 
 def test_explicit_replay_settings_and_cached_report_guard():

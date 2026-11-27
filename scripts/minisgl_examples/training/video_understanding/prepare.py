@@ -1,50 +1,68 @@
-"""Fetch one ProactiveVideoQA ZIP member and decode a few genuine video frames.
-
-CPU-only optional preparation; the notebook uses the bundled PNG frames.
-Requires remotezip and ffmpeg (only for rerunning preparation, not training).
-"""
+"""Download a pinned ProactiveVideoQA clip and decode frames into the HF cache."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 REPO = "wangyueqian/ProactiveVideoQA"
 REVISION = "7f59bce2a6cdf40b8a895767aac7a52a92136c5f"
 VIDEO = "Explosion016_x264.mp4"
 TIMES = (2.0, 5.0, 12.0, 14.0)
-ROOT = Path(__file__).resolve().parents[4]
-ASSETS = Path(__file__).with_name("assets")
+VIDEO_SHA256 = "0672b58c87ec43c15e03f5a543f1b86f81852bc34756a6eb6dabf9080b7de42c"
 
 
+def cache_dir():
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    return Path(HF_HUB_CACHE) / "video-understanding" / REVISION
+
+
+def frame_path(frame):
+    return cache_dir() / frame["path"]
+
+
+@lru_cache(maxsize=1)
 def prepare():
-    import urllib.request
-
+    import imageio_ffmpeg
+    from filelock import FileLock
+    from huggingface_hub import hf_hub_download
     from remotezip import RemoteZip
 
-    work = ROOT / "training_runs/video_understanding/source"
+    work = cache_dir()
     work.mkdir(parents=True, exist_ok=True)
-    ASSETS.mkdir(parents=True, exist_ok=True)
     base = f"https://huggingface.co/datasets/{REPO}/resolve/{REVISION}/VAD/"
-    annotation = json.load(urllib.request.urlopen(base + "anno.json"))
+    annotation = json.loads(
+        Path(
+            hf_hub_download(
+                repo_id=REPO, repo_type="dataset", revision=REVISION, filename="VAD/anno.json"
+            )
+        ).read_text()
+    )
     row = next(r for r in annotation if r["video"] == VIDEO)
     video = work / VIDEO
     member = None
-    if not video.exists():
-        with RemoteZip(base + "videos.zip") as archive:
-            member = next(i for i in archive.infolist() if Path(i.filename).name == VIDEO)
-            print("Selected ZIP member:", member.filename, "bytes:", member.file_size, flush=True)
-            if member.file_size > 25_000_000:
-                raise ValueError("Unexpectedly large clip; do not download it blindly")
-            video.write_bytes(archive.read(member))
+    with FileLock(str(video) + ".lock"):
+        if not video.exists():
+            with RemoteZip(base + "videos.zip") as archive:
+                member = next(i for i in archive.infolist() if Path(i.filename).name == VIDEO)
+                if member.file_size > 25_000_000:
+                    raise ValueError("Unexpectedly large video clip")
+                payload = archive.read(member)
+                if hashlib.sha256(payload).hexdigest() != VIDEO_SHA256:
+                    raise ValueError("Source video SHA256 mismatch")
+                video.write_bytes(payload)
+        if hashlib.sha256(video.read_bytes()).hexdigest() != VIDEO_SHA256:
+            raise ValueError("Cached video SHA256 mismatch")
     frames = []
     for i, seconds in enumerate(TIMES):
-        output = ASSETS / f"frame_{i:02d}.png"
+        output = work / f"frame_{i:02d}.png"
         subprocess.run(
             [
-                "ffmpeg",
+                imageio_ffmpeg.get_ffmpeg_exe(),
                 "-y",
                 "-hide_banner",
                 "-loglevel",
@@ -78,14 +96,13 @@ def prepare():
         "video_sha256": hashlib.sha256(video.read_bytes()).hexdigest(),
         "video_bytes": video.stat().st_size,
         "archive_url": base + "videos.zip",
-        "zip_member": member.filename if member else VIDEO,
+        "zip_member": "videos/" + VIDEO,
         "frames": frames,
         "expected_first_reply_frame": 2,
         "description": "A short sampled-frame stream from the original video, not a full benchmark run.",
     }
-    (ASSETS / "task.json").write_text(json.dumps(manifest, indent=2))
-    print(json.dumps(manifest, indent=2), flush=True)
+    return manifest
 
 
 if __name__ == "__main__":
-    prepare()
+    print(json.dumps(prepare(), indent=2))
