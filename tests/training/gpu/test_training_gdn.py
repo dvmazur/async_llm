@@ -122,6 +122,9 @@ def test_gdn_inference_metadata_supports_backward(request, device, backend, read
     [
         ("mutation", 1, "expanded", 5, 7, False),
         ("mutation", 1, "factorized", 128, 128, False),
+        ("mutation", 1, "expanded", 128, 128, False),
+        ("mutation", 8, "factorized", 128, 128, True),
+        ("mutation", 8, "factorized", 127, 129, False),
         ("mutation", 8, "expanded", 7, 5, True),
         ("mutation", 8, "factorized", 5, 7, True),
         ("stress", 8, "expanded", 16, 12, False),

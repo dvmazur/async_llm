@@ -565,6 +565,7 @@ def _chunk_columns_backward(
     BT: tl.constexpr,
     BK: tl.constexpr,
     BC: tl.constexpr,
+    TRANSPOSE: tl.constexpr,
     PRECISION: tl.constexpr,
 ):
     chunk = tl.program_id(0).to(tl.int64)
@@ -573,8 +574,10 @@ def _chunk_columns_backward(
     slot = chunk * BT + t
     bottom = ((chunk * H + head) * BT + BT - 1) * BT + t
     tail = tl.load(Decay + bottom)
-    grad_w = tl.zeros((BT, BK), tl.float32)
-    grad_tail = tl.zeros((BT, BK), tl.float32)
+    # Wide-key Blackwell dots need narrower accumulator columns to fit TMEM.
+    shape: tl.constexpr = (BK, BT) if TRANSPOSE else (BT, BK)
+    grad_w = tl.zeros(shape, tl.float32)
+    grad_tail = tl.zeros(shape, tl.float32)
     grad_last = tl.zeros((BK,), tl.float32)
     for offset in range((1 - tl.load(Full + chunk)) * BK, DW, BC):
         c = offset + tl.arange(0, BC)
@@ -585,9 +588,15 @@ def _chunk_columns_backward(
         new = tl.load(New + (slot[:, None] * H + head) * DW + c[None, :], columns, other=0.0)
         new = new.to(tl.float32)
         grad_new = tl.load(DNew + (slot[:, None] * H + head) * DW + c[None, :], columns, other=0.0)
-        grad_w -= _mm(grad_new, tl.trans(state), PRECISION)
-        grad_tail += _mm(new, tl.trans(grad_state), PRECISION)
+        if TRANSPOSE:
+            grad_w -= _mm(state, tl.trans(grad_new), PRECISION)
+            grad_tail += _mm(grad_state, tl.trans(new), PRECISION)
+        else:
+            grad_w -= _mm(grad_new, tl.trans(state), PRECISION)
+            grad_tail += _mm(new, tl.trans(grad_state), PRECISION)
         grad_last += tl.sum(state * grad_state, 1)
+    if TRANSPOSE:
+        grad_w, grad_tail = tl.trans(grad_w), tl.trans(grad_tail)
     through = tl.sum(grad_tail * _rows(Key, slot, head, H, BK, BK), 1)
     tl.store(DDecay + bottom, tl.load(DDecay + bottom) + through)
     pointer = DPrefix + (chunk * BT + BT - 1) * H + head
@@ -999,6 +1008,7 @@ def chunk_states_backward(
             CHUNK,
             width,
             COLUMNS,
+            TRANSPOSE=torch.cuda.get_device_capability(key.device)[0] == 10 and width > CHUNK,
             **_launch("columns_backward", key.device),
         )
         _chunk_prepare_backward[(slots // CHUNK, heads)](
